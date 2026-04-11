@@ -122,21 +122,39 @@ export default function App(){
   const startDirect=()=>{setAnswers(Array(qc).fill(null));setTypes(Array(qc).fill("obj"));setSubAns({});setScreen("direct");};
 
   // 답 입력
-  const hAns=useCallback((i,v)=>{setAnswers(p=>{const n=[...p];n[i]=p[i]===v?null:v;return n;});},[]);
+  // 객관식 버튼: 복수정답 토글(동일 클릭 해제 / 다른 숫자 클릭 시 추가)
+  const hAns=useCallback((i,v)=>{setAnswers(p=>{
+    const n=[...p];
+    const cur=n[i];
+    if(cur===null||cur===undefined||cur===""){n[i]=v;}
+    else if(Array.isArray(cur)){
+      if(cur.includes(v)){
+        const nx=cur.filter(x=>x!==v);
+        n[i]=nx.length===0?null:(nx.length===1?nx[0]:nx);
+      }else{n[i]=[...cur,v].sort((a,b)=>a-b);}
+    }else{
+      if(cur===v){n[i]=null;}
+      else{n[i]=[cur,v].sort((a,b)=>a-b);}
+    }
+    return n;
+  });},[]);
   const hType=useCallback(i=>{setTypes(p=>{const n=[...p];n[i]=p[i]==="obj"?"sub":"obj";return n;});setAnswers(p=>{const n=[...p];n[i]=null;return n;});setSubAns(p=>{const n={...p};delete n[i];return n;});},[]);
   const hSub=useCallback((i,v)=>{setSubAns(p=>({...p,[i]:v}));setAnswers(p=>{const n=[...p];n[i]=v;return n;});},[]);
 
-  const filled=answers.filter(a=>a!==null&&a!=="").length;
+  const _isFilled=a=>{if(a===null||a===undefined||a==="")return false;if(Array.isArray(a))return a.length>0;return true;};
+  const filled=answers.filter(a=>_isFilled(a)).length;
 
   // 직접입력 저장
   const saveDirect=async()=>{
     if(filled===0)return alert("최소 1문항 이상 정답을 입력하세요.");
     setSaving(true);setError("");
     try{
+      // 복수정답 배열은 "2,3" 형태 문자열로 직렬화
+      const answersSer=answers.map(v=>Array.isArray(v)?v.join(","):v);
       // 1) 정답 데이터 시트 저장 (반별)
       for(const cls of classes){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers,types,teacher,studentCount:cls.count,date:dateStr})});
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers:answersSer,types,teacher,studentCount:cls.count,date:dateStr})});
       }
       // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 실장님 프린트용
       if(examFiles.length>0||answerFiles.length>0){
@@ -355,13 +373,19 @@ export default function App(){
             <span style={{marginLeft:"auto",fontSize:12,fontWeight:600,color:filled===qc?T.accent:T.textMuted}}>{filled===qc?"✓ 완료":`${qc-filled}문항 남음`}</span>
           </div></div>
         <div style={{padding:"6px 12px",background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,textAlign:"center"}}>{classes.map(c=>c.name).join(", ")} · {examType}</div>
+        <div style={{padding:"8px 12px",background:T.accentLight+"55",fontSize:11,color:T.accent,fontWeight:600,textAlign:"center",lineHeight:1.5}}>💡 <b>객관식 복수정답</b>: 2개 이상 버튼 눌러서 선택 · <b>주관식 여러 빈칸</b>: "solve|gathered|announced"처럼 <b>|</b>로 구분 · <b>대체답</b>: "to look/looking"처럼 <b>/</b>로 구분</div>
 
         <div style={{padding:"8px 10px 100px"}}>
-          {Array.from({length:qc},(_,i)=>{const isObj=types[i]==="obj";const sel=answers[i];const fi=sel!==null&&sel!=="";
-            return(<div key={i} style={{...S.qRow,borderLeft:fi?`3px solid ${isObj?T.gold:T.accent}`:`3px solid transparent`,background:fi?(isObj?T.goldPale:T.accentLight+"66"):T.white}}>
-              <div style={{...S.qNum,background:fi?(isObj?T.gold:T.accent):T.borderLight,color:fi?T.white:T.textMuted}}>{i+1}</div>
+          {Array.from({length:qc},(_,i)=>{const isObj=types[i]==="obj";const sel=answers[i];const fi=_isFilled(sel);
+            const selArr=Array.isArray(sel)?sel:(fi&&typeof sel!=="string"?[Number(sel)]:[]);
+            const multi=selArr.length>1;
+            return(<div key={i} style={{...S.qRow,borderLeft:fi?`3px solid ${isObj?(multi?T.accent:T.gold):T.accent}`:`3px solid transparent`,background:fi?(isObj?(multi?T.accentLight+"66":T.goldPale):T.accentLight+"66"):T.white}}>
+              <div style={{...S.qNum,background:fi?(isObj?(multi?T.accent:T.gold):T.accent):T.borderLight,color:fi?T.white:T.textMuted}}>{i+1}</div>
               <button onClick={()=>hType(i)} style={{padding:"4px 8px",borderRadius:6,fontSize:10,fontWeight:700,border:`1px solid ${isObj?T.border:T.accent}`,cursor:"pointer",fontFamily:"inherit",background:isObj?T.white:T.accentLight,color:isObj?T.textMuted:T.accent,flex:"0 0 auto"}}>{isObj?"객":"주"}</button>
-              {isObj?(<div style={{display:"flex",gap:4,flex:1}}>{[1,2,3,4,5].map(v=>{const p=sel===v;return(<button key={v} onClick={()=>hAns(i,v)} style={{...S.cBtn,background:p?T.goldDark:T.white,color:p?T.white:T.text,borderColor:p?T.goldDark:T.border,fontWeight:p?700:400}}>{v}</button>);})}</div>
+              {isObj?(<div style={{display:"flex",gap:4,flex:1,alignItems:"center"}}>
+                {[1,2,3,4,5].map(v=>{const p=selArr.includes(v);return(<button key={v} onClick={()=>hAns(i,v)} style={{...S.cBtn,background:p?T.goldDark:T.white,color:p?T.white:T.text,borderColor:p?T.goldDark:T.border,fontWeight:p?700:400}}>{v}</button>);})}
+                {multi&&<span style={{fontSize:10,fontWeight:700,color:T.accent,marginLeft:4}}>복수 {selArr.join(",")}</span>}
+              </div>
               ):(<input style={S.sInp} placeholder="주관식 정답" value={subAns[i]||""} onChange={e=>hSub(i,e.target.value)}/>)}
             </div>);})}
         </div>
