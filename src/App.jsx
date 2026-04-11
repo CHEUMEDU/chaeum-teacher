@@ -1,7 +1,8 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 /* ============================================================
-   채움학원 — 선생님용 시험 등록 (직접입력 + 파일업로드 통합)
+   채움학원 — 선생님용 시험 등록 v2
+   신규: 선생님 이름, 반별 인원, 오늘의 현황 대시보드
    ============================================================ */
 
 const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4s02vNmncvteesBn3875WDF3lO176nc4YzAKj7B6zOJVECQO/exec";
@@ -9,6 +10,9 @@ const SUBJECTS=["영어","국어","수학"];
 const GRADES=["초3","초4","초5","초6","중1","중2","중3","고1","고2","고3"];
 const LEVELS=["SB","B","I","A","SA"];
 const EXAM_TYPES=["단어시험","문법시험","종합시험","모의고사","수학테스트","Daily Test","해석테스트","WEEKLY TEST","MONTHLY TEST","기타"];
+const LS_KEY="chaeum_teacher";
+function lsGet(){try{return JSON.parse(localStorage.getItem(LS_KEY)||"{}");}catch(e){return{};}}
+function lsSet(o){try{localStorage.setItem(LS_KEY,JSON.stringify(o));}catch(e){}}
 
 const T={gold:"#D4A017",goldDark:"#B8860B",goldDeep:"#8B6914",goldLight:"#FFF3D0",goldPale:"#FFFBF0",goldMuted:"#F5E6B8",bg:"#FAFAF7",text:"#1A1A1A",textSub:"#5C5C5C",textMuted:"#999999",border:"#E8E4DA",borderLight:"#F0EDE4",accent:"#2E7D32",accentLight:"#E8F5E9",danger:"#C62828",dangerLight:"#FFEBEE",white:"#FFFFFF",blue:"#1E40AF",blueLight:"#DBEAFE"};
 
@@ -47,11 +51,18 @@ function FileUploadMulti({label,req,files,onFilesChange,accept}){
 function fileToBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});}
 
 export default function App(){
+  // 상단 탭 (등록 / 오늘의 현황)
+  const[tab,setTab]=useState("register");
   // 화면 상태
-  const[screen,setScreen]=useState("home"); // home, setup, direct, upload, saving, done
+  const[screen,setScreen]=useState("home"); // home, modeSelect, directSetup, direct, upload, done
+
+  // 선생님 정보 (localStorage)
+  const _ls=lsGet();
+  const[teacher,setTeacher]=useState(_ls.teacher||"");
 
   // 반 추가
   const[ts,setTs]=useState("");const[tg,setTg]=useState("");const[tl,setTl]=useState("");const[tcl,setTcl]=useState("");
+  const[tcount,setTcount]=useState(""); // 반별 예상 인원
   const[classes,setClasses]=useState([]);
 
   // 시험 정보
@@ -70,23 +81,38 @@ export default function App(){
   const[examFiles,setExamFiles]=useState([]);
   const[answerFiles,setAnswerFiles]=useState([]);
   const[memo,setMemo]=useState("");
+  // 주관식 힌트 (업로드 모드)
+  const[subjMode,setSubjMode]=useState("none"); // none | mixed | all
+  const[subjRanges,setSubjRanges]=useState(""); // "21-30, 45, 50-55"
+  const[objRanges,setObjRanges]=useState("");   // "1-20, 31-44"
 
   // 상태
   const[saving,setSaving]=useState(false);const[done,setDone]=useState(false);const[error,setError]=useState("");
 
+  // 대시보드
+  const[dashData,setDashData]=useState(null);const[dashLoading,setDashLoading]=useState(false);const[dashErr,setDashErr]=useState("");
+
   const dateStr=examDate.replace(/-/g,".")+" "+examTime;
+  const totalStudents=classes.reduce((s,c)=>s+(parseInt(c.count)||0),0);
+
+  // 선생님 이름 저장
+  useEffect(()=>{if(teacher)lsSet({teacher});},[teacher]);
 
   // 반 추가
   const addClass=()=>{
+    if(!teacher.trim())return alert("먼저 선생님 이름을 입력하세요.");
     if(!ts)return alert("과목을 선택하세요.");if(!tg)return alert("학년을 선택하세요.");
     const lv=tl==="custom"?tcl:tl;if(!lv)return alert("레벨을 선택하세요.");
     const name=`${ts} ${tg} ${lv}반`;
     if(classes.some(c=>c.name===name))return alert("이미 추가된 반입니다.");
-    setClasses(p=>[...p,{subject:ts,grade:tg,level:lv,name}]);setTl("");setTcl("");
+    const cnt=parseInt(tcount)||0;
+    setClasses(p=>[...p,{subject:ts,grade:tg,level:lv,name,count:cnt}]);
+    setTl("");setTcl("");setTcount("");
   };
 
   // 시험정보 확인 → 모드 선택
   const goToMode=()=>{
+    if(!teacher.trim())return alert("선생님 이름을 입력하세요.");
     if(classes.length===0)return alert("반을 1개 이상 추가하세요.");
     if(!examType)return alert("시험 종류를 선택하세요.");
     setScreen("modeSelect");
@@ -107,9 +133,17 @@ export default function App(){
     if(filled===0)return alert("최소 1문항 이상 정답을 입력하세요.");
     setSaving(true);setError("");
     try{
+      // 1) 정답 데이터 시트 저장 (반별)
       for(const cls of classes){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers,types})});
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers,types,teacher,studentCount:cls.count,date:dateStr})});
+      }
+      // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 실장님 프린트용
+      if(examFiles.length>0||answerFiles.length>0){
+        const aData=await Promise.all(answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+        const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+        await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({action:"upload_exam",classes:classes.map(c=>({subject:c.subject,grade:c.grade,level:c.level,count:c.count})),classNames:classes.map(c=>c.name).join(", "),examType,date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:totalStudents,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
       }
       setDone(true);setScreen("done");
     }catch(e){setError("저장 실패. 다시 시도해주세요.");}
@@ -124,24 +158,48 @@ export default function App(){
       const aData=await Promise.all(answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
       const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
       await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({action:"upload_exam",classes:classes.map(c=>({subject:c.subject,grade:c.grade,level:c.level})),classNames:classes.map(c=>c.name).join(", "),examType,date:dateStr,memo,answerFiles:aData,examFiles:eData})});
+        body:JSON.stringify({action:"upload_exam",classes:classes.map(c=>({subject:c.subject,grade:c.grade,level:c.level,count:c.count})),classNames:classes.map(c=>c.name).join(", "),examType,date:dateStr,memo,teacher,studentCount:totalStudents,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
       setDone(true);setScreen("done");
     }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
     setSaving(false);
   };
 
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");
+  // 대시보드 조회
+  const loadDashboard=()=>{
+    setDashLoading(true);setDashErr("");setDashData(null);
+    fetch(`${SHEETS_URL}?action=teacher_dashboard`)
+      .then(r=>r.json()).then(d=>{if(d.result==="ok"){setDashData(d);}else{setDashErr(d.message||"조회 실패");}setDashLoading(false);})
+      .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
+  };
+  useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab]);
+
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
 
   return(
     <div style={S.app}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:${T.bg}}input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-shadow:0 0 0 3px ${T.goldLight}!important}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes spin{to{transform:rotate(360deg)}}.fade-up{animation:fadeUp .3s ease-out}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}`}</style>
 
-      <header style={S.hdr}><div style={S.hdrIn}><div style={S.logoR}><div style={S.logoM}>채움</div><div><div style={S.hdrT}>채움학원</div><div style={S.hdrS}>시험 등록 (선생님용)</div></div></div></div></header>
+      <header style={S.hdr}><div style={S.hdrIn}><div style={S.logoR}><div style={S.logoM}>채움</div><div><div style={S.hdrT}>채움학원</div><div style={S.hdrS}>시험 등록 (선생님용)</div></div></div>{teacher&&<div style={S.hdrB}>👤 {teacher}</div>}</div></header>
+
+      {/* ═══ 상단 탭 (home 에서만 표시) ═══ */}
+      {screen==="home"&&(<div style={{display:"flex",gap:6,padding:"10px 14px 0"}}>
+        <button onClick={()=>setTab("register")} style={{flex:1,padding:"10px",fontSize:13,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="register"?T.goldDark:T.white,color:tab==="register"?T.white:T.textSub,boxShadow:tab==="register"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📋 시험 등록</button>
+        <button onClick={()=>setTab("dashboard")} style={{flex:1,padding:"10px",fontSize:13,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="dashboard"?T.goldDark:T.white,color:tab==="dashboard"?T.white:T.textSub,boxShadow:tab==="dashboard"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📊 오늘의 현황</button>
+      </div>)}
 
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
-      {screen==="home"&&(<div style={S.wrap} className="fade-up">
+      {screen==="home"&&tab==="register"&&(<div style={S.wrap} className="fade-up">
         <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📋</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 등록</h1><p style={{fontSize:13,color:T.textMuted}}>시험 대상 반과 정보를 설정하세요</p></div>
+
+        {/* 선생님 이름 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>선생님 정보</div>
+          <div style={{marginBottom:0}}>
+            <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span><span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:6}}>(다음부터 자동 입력)</span></div>
+            <input style={S.inp} placeholder="예: 김선생" value={teacher} onChange={e=>setTeacher(e.target.value)}/>
+          </div>
+        </div>
 
         <div style={S.card}>
           <div style={S.secLabel}>시험 대상 반 추가</div>
@@ -155,13 +213,21 @@ export default function App(){
             </div>
             {tl==="custom"&&<input style={{...S.inp,marginTop:6}} placeholder="레벨 직접 입력" value={tcl} onChange={e=>setTcl(e.target.value)}/>}
           </div>
+          {/* 인원 입력 */}
+          <div style={{marginBottom:14}}>
+            <div style={S.label}>예상 응시 인원 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(실장님 프린트 장수 참고용)</span></div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input style={{...S.inp,maxWidth:120}} placeholder="예: 12" value={tcount} onChange={e=>setTcount(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric" maxLength={3}/>
+              <span style={{fontSize:13,color:T.textSub}}>명</span>
+            </div>
+          </div>
           {ts&&tg&&(tl&&tl!=="custom"||tcl)&&(<div style={S.addRow}>
-            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {tl==="custom"?tcl:tl}반</div>
+            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {tl==="custom"?tcl:tl}반{tcount?` · ${tcount}명`:""}</div>
             <button onClick={addClass} style={S.addBtn}>+ 반 추가</button>
           </div>)}
           {classes.length>0&&(<div style={{marginTop:12}}>
-            <div style={{fontSize:12,fontWeight:600,color:T.textMuted,marginBottom:6}}>추가된 반 ({classes.length}개)</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{classes.map((c,i)=>(<div key={i} style={S.tag}><span>{c.name}</span><button onClick={()=>setClasses(p=>p.filter((_,j)=>j!==i))} style={S.tagX}>×</button></div>))}</div>
+            <div style={{fontSize:12,fontWeight:600,color:T.textMuted,marginBottom:6}}>추가된 반 ({classes.length}개 · 총 {totalStudents}명)</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{classes.map((c,i)=>(<div key={i} style={S.tag}><span>{c.name}{c.count?` ${c.count}명`:""}</span><button onClick={()=>setClasses(p=>p.filter((_,j)=>j!==i))} style={S.tagX}>×</button></div>))}</div>
           </div>)}
         </div>
 
@@ -180,6 +246,47 @@ export default function App(){
         <button style={S.btnG} onClick={goToMode}>다음 →</button>
       </div>)}
 
+      {/* ═══ 오늘의 현황 대시보드 ═══ */}
+      {screen==="home"&&tab==="dashboard"&&(<div style={S.wrap} className="fade-up">
+        <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>오늘의 현황</h1><p style={{fontSize:13,color:T.textMuted}}>오늘 등록된 시험과 학생 제출 현황</p></div>
+        <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
+          <button onClick={loadDashboard} style={{...S.btnO,padding:"8px 14px",fontSize:12}}>🔄 새로고침</button>
+        </div>
+        {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
+        {dashErr&&<div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{dashErr}</div>}
+        {dashData&&!dashLoading&&(<>
+          {/* 요약 카드 */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
+            <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>등록 시험</div><div style={{fontSize:22,fontWeight:800,color:T.goldDark}}>{dashData.exams?.length||0}</div></div>
+            <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>예상 인원</div><div style={{fontSize:22,fontWeight:800,color:T.blue}}>{dashData.expectedTotal||0}</div></div>
+            <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>제출 수</div><div style={{fontSize:22,fontWeight:800,color:T.accent}}>{dashData.submissionTotal||0}</div></div>
+          </div>
+          {/* 프린트 안내 박스 */}
+          {dashData.expectedTotal>0&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginBottom:14}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>🖨️ 실장님 프린트 참고</div>
+            <div style={{fontSize:12,color:T.textSub,lineHeight:1.6}}>오늘 총 <b style={{color:T.blue}}>{dashData.expectedTotal}장</b>의 시험지가 필요합니다.</div>
+          </div>)}
+          {/* 시험별 상세 */}
+          {(dashData.exams||[]).length===0?(
+            <div style={{padding:24,background:T.borderLight,borderRadius:10,color:T.textMuted,fontSize:13,textAlign:"center"}}>오늘 등록된 시험이 없습니다.</div>
+          ):(
+            (dashData.exams||[]).map((ex,i)=>(<div key={i} style={{...S.card,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:6}}>
+                <div style={{fontSize:14,fontWeight:800,color:T.text}}>{ex.subject} {ex.grade} {ex.level}반 · {ex.examType}</div>
+                <div style={{fontSize:11,color:T.textMuted}}>{ex.teacher||""}</div>
+              </div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",fontSize:11,marginBottom:8}}>
+                <span style={S.pill}>📝 {ex.totalQuestions}문항</span>
+                <span style={S.pillBlue}>👥 예상 {ex.expected||0}명</span>
+                <span style={S.pillGreen}>✅ 제출 {ex.submitted||0}명</span>
+                {(ex.avgScore!=null)&&<span style={S.pillGold}>📊 평균 {ex.avgScore}점</span>}
+              </div>
+              {ex.submitted>0&&ex.expected>0&&(<div style={{height:6,background:T.borderLight,borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,(ex.submitted/ex.expected)*100)}%`,background:T.accent}}/></div>)}
+            </div>))
+          )}
+        </>)}
+      </div>)}
+
       {/* ═══ 모드 선택 ═══ */}
       {screen==="modeSelect"&&(<div style={S.wrap} className="fade-up">
         <div style={{textAlign:"center",padding:"20px 0 16px"}}><h2 style={{fontSize:20,fontWeight:800,color:T.text,marginBottom:8}}>정답 등록 방식 선택</h2>
@@ -188,9 +295,10 @@ export default function App(){
         {/* 미리보기 */}
         <div style={{...S.card,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
           <div style={{fontSize:12,color:T.textMuted}}>등록 대상</div>
-          <div style={{fontSize:14,fontWeight:700,color:T.goldDark,marginTop:2}}>{classes.map(c=>c.name).join(", ")}</div>
+          <div style={{fontSize:14,fontWeight:700,color:T.goldDark,marginTop:2}}>{classes.map(c=>c.name+(c.count?`(${c.count}명)`:"")).join(", ")}</div>
           <div style={{fontSize:12,color:T.textMuted,marginTop:6}}>시험 종류</div>
           <div style={{fontSize:14,fontWeight:700,color:T.goldDark,marginTop:2}}>{examType} · {dateStr}</div>
+          {totalStudents>0&&<div style={{fontSize:12,color:T.blue,marginTop:6,fontWeight:600}}>🖨️ 예상 프린트 {totalStudents}장</div>}
         </div>
 
         {/* 모드 A: 직접 입력 */}
@@ -212,7 +320,7 @@ export default function App(){
         <button style={{...S.btnO,width:"100%",marginTop:8}} onClick={()=>setScreen("home")}>← 뒤로</button>
       </div>)}
 
-      {/* ═══ 직접입력: 문항수 설정 ═══ */}
+      {/* ═══ 직접입력: 문항수 설정 + 파일 업로드(선택) ═══ */}
       {screen==="directSetup"&&(<div style={S.wrap} className="fade-up">
         <div style={S.card}>
           <div style={S.secLabel}>문항 수 설정</div>
@@ -220,8 +328,22 @@ export default function App(){
             {[30,50,72,100,200,300].map(n=>(<button key={n} onClick={()=>{setTotalQ(n);setCustomQ("");}} style={{...S.ch,background:!customQ&&totalQ===n?T.goldDark:T.white,color:!customQ&&totalQ===n?T.white:T.textSub,borderColor:!customQ&&totalQ===n?T.goldDark:T.border,fontWeight:!customQ&&totalQ===n?700:500}}>{n}</button>))}
             <input style={S.chInp} placeholder="직접" value={customQ} onChange={e=>setCustomQ(e.target.value.replace(/[^0-9]/g,""))} onFocus={()=>setTotalQ(0)}/>
           </div>
-          <button style={{...S.btnG,marginTop:16}} onClick={startDirect}>정답 입력 시작 →</button>
-          <button style={{...S.btnO,width:"100%",marginTop:8}} onClick={()=>setScreen("modeSelect")}>← 뒤로</button>
+        </div>
+
+        {/* 시험지/정답지 파일 업로드 (선택) — 실장님 프린트용 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>시험지·정답지 파일 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(선택 · 실장님 프린트용)</span></div>
+          <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:10}}>
+            파일을 올리면 구글 드라이브에 저장돼서 실장님이 바로 프린트할 수 있어요.
+          </div>
+          <FileUploadMulti label="시험지" files={examFiles} onFilesChange={setExamFiles} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+          <FileUploadMulti label="정답지" files={answerFiles} onFilesChange={setAnswerFiles} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+          {(examFiles.length>0||answerFiles.length>0)&&<div style={{marginTop:8,padding:"10px 12px",borderRadius:8,background:T.accentLight,fontSize:12,color:T.accent,fontWeight:600}}>✓ 저장 시 Google Drive에도 함께 업로드됩니다</div>}
+        </div>
+
+        <div style={{display:"flex",gap:10}}>
+          <button style={{...S.btnO,flex:1}} onClick={()=>setScreen("modeSelect")}>← 뒤로</button>
+          <button style={{...S.btnG,flex:2}} onClick={startDirect}>정답 입력 시작 →</button>
         </div>
       </div>)}
 
@@ -262,6 +384,42 @@ export default function App(){
             <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 파일이 구글 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 분석 완료 후 학생 앱에서 채점이 가능해집니다.</div>
           </div>
         </div>
+
+        {/* 주관식 힌트 입력 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>주관식 문항 힌트 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(Claude 분석 정확도↑)</span></div>
+          <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:10}}>시험에 주관식이 섞여 있으면 꼭 알려주세요. 특히 <b>수학/서술형</b>은 필수예요.</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:subjMode==="none"?0:12}}>
+            {[
+              {v:"none",label:"전체 객관식 (5지선다)",desc:"1~5번 중 하나 선택"},
+              {v:"mixed",label:"객관식 + 주관식 혼합",desc:"일부 문항이 주관식"},
+              {v:"all",label:"전체 주관식",desc:"서술형/단답형만"}
+            ].map(o=>{const a=subjMode===o.v;return(
+              <button key={o.v} onClick={()=>setSubjMode(o.v)} style={{padding:"12px 14px",borderRadius:10,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldLight:T.white,cursor:"pointer",fontFamily:"inherit",textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
+                <div style={{width:18,height:18,borderRadius:"50%",border:`2px solid ${a?T.goldDark:T.border}`,flex:"0 0 auto",display:"flex",alignItems:"center",justifyContent:"center"}}>{a&&<div style={{width:8,height:8,borderRadius:"50%",background:T.goldDark}}/>}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:a?T.goldDeep:T.text}}>{o.label}</div>
+                  <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{o.desc}</div>
+                </div>
+              </button>
+            );})}
+          </div>
+
+          {subjMode==="mixed"&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📍 주관식 문항 번호 (선택)</div>
+            <div style={{fontSize:11,color:T.textSub,lineHeight:1.6,marginBottom:10}}>
+              주관식 번호만 입력하면 <b>나머지는 자동으로 객관식</b>으로 처리돼요.<br/>
+              모르면 비워두셔도 OK — Claude가 정답지를 보고 추정합니다.
+            </div>
+            <div>
+              <input style={S.inp} placeholder="예: 21-30, 41-45" value={subjRanges} onChange={e=>setSubjRanges(e.target.value)}/>
+            </div>
+            <div style={{fontSize:10,color:T.textMuted,marginTop:8,lineHeight:1.5}}>
+              💡 쉼표 구분, 범위는 하이픈. 예: <code>21-30, 45, 50-55</code>
+            </div>
+          </div>)}
+        </div>
+
         <div style={S.card}>
           <div style={S.label}>메모 (선택사항)</div>
           <textarea style={S.textarea} placeholder="참고사항" value={memo} onChange={e=>setMemo(e.target.value)} rows={2}/>
@@ -284,9 +442,11 @@ export default function App(){
           <div style={{fontSize:48,marginBottom:12}}>✅</div>
           <h2 style={{fontSize:22,fontWeight:800,color:T.text,marginBottom:12}}>시험 등록 완료!</h2>
           <div style={{...S.card,textAlign:"left"}}>
+            <div style={S.resRow}><span>선생님</span><span style={{fontWeight:600}}>{teacher}</span></div>
             <div style={S.resRow}><span>대상 반</span><span style={{fontWeight:600}}>{classes.map(c=>c.name).join(", ")}</span></div>
             <div style={S.resRow}><span>시험 종류</span><span style={{fontWeight:600}}>{examType}</span></div>
             <div style={S.resRow}><span>날짜/시간</span><span style={{fontWeight:600}}>{dateStr}</span></div>
+            {totalStudents>0&&<div style={S.resRow}><span>예상 인원</span><span style={{fontWeight:600}}>{totalStudents}명 (프린트 참고)</span></div>}
             {filled>0&&<div style={S.resRow}><span>정답 입력</span><span style={{fontWeight:600}}>{filled}문항</span></div>}
           </div>
           <div style={{padding:"12px 14px",borderRadius:10,background:T.accentLight,fontSize:13,fontWeight:600,color:T.accent,textAlign:"center",marginBottom:20}}>
@@ -307,6 +467,7 @@ const S={
   hdrIn:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",maxWidth:480,margin:"0 auto"},
   logoR:{display:"flex",alignItems:"center",gap:10},logoM:{width:36,height:36,borderRadius:10,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,color:T.white,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13,letterSpacing:-1},
   hdrT:{fontSize:15,fontWeight:800,color:T.text,letterSpacing:-.3},hdrS:{fontSize:10,color:T.textMuted,fontWeight:500,marginTop:-1},
+  hdrB:{fontSize:10,fontWeight:600,color:T.goldDark,background:T.goldLight,padding:"4px 10px",borderRadius:20,whiteSpace:"nowrap"},
   wrap:{padding:"16px 14px"},
   card:{background:T.white,borderRadius:14,padding:"20px 16px",marginBottom:14,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",border:`1px solid ${T.borderLight}`},
   secLabel:{fontSize:14,fontWeight:800,color:T.goldDark,marginBottom:14,paddingBottom:8,borderBottom:`2px solid ${T.goldLight}`},
@@ -338,4 +499,9 @@ const S={
   overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20},
   modal:{background:T.white,borderRadius:18,padding:"40px 20px",maxWidth:320,width:"100%",textAlign:"center"},
   resRow:{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${T.borderLight}`,fontSize:13,color:T.text},
+  sumCard:{background:T.white,borderRadius:12,padding:"12px 8px",border:`1px solid ${T.borderLight}`,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"},
+  pill:{padding:"4px 10px",borderRadius:20,background:T.goldPale,color:T.goldDeep,fontWeight:700},
+  pillBlue:{padding:"4px 10px",borderRadius:20,background:T.blueLight,color:T.blue,fontWeight:700},
+  pillGreen:{padding:"4px 10px",borderRadius:20,background:T.accentLight,color:T.accent,fontWeight:700},
+  pillGold:{padding:"4px 10px",borderRadius:20,background:T.goldLight,color:T.goldDark,fontWeight:700},
 };
