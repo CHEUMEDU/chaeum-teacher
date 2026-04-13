@@ -7,9 +7,12 @@ import { useState, useCallback, useEffect } from "react";
 
 const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4s02vNmncvteesBn3875WDF3lO176nc4YzAKj7B6zOJVECQO/exec";
 const SUBJECTS=["영어","국어","수학"];
-const GRADES=["초3","초4","초5","초6","중1","중2","중3","고1","고2","고3"];
-const LEVELS=["SB","B","I","A","SA"];
-const EXAM_TYPES=["단어시험","문법시험","종합시험","모의고사","수학테스트","Daily Test","해석테스트","WEEKLY TEST","MONTHLY TEST","기타"];
+const GRADES=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
+const LV_LEVELS=["SB","B","I","A","SA","전체"];
+const LV_MIDDLE=["인하부중","인주중","관교중","관교여중","용현중","용현여중","남인천여중","인화여중","제물포여중"];
+const LV_HIGH=["인하부고","학익고","학익여고","인성여고","인명여고","제물포고","인천고"];
+const LV_CATS=[{key:"level",label:"레벨",opts:LV_LEVELS},{key:"middle",label:"중학교",opts:LV_MIDDLE},{key:"high",label:"고등학교",opts:LV_HIGH},{key:"etc",label:"기타",opts:[]}];
+const EXAM_TYPES=["단어시험","문법시험","종합시험","모의고사","수학테스트","영작시험","해석시험","DAILY TEST","WEEKLY TEST","MONTHLY TEST","기타"];
 const LS_KEY="chaeum_teacher";
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS_KEY)||"{}");}catch(e){return{};}}
 function lsSet(o){try{localStorage.setItem(LS_KEY,JSON.stringify(o));}catch(e){}}
@@ -61,7 +64,7 @@ export default function App(){
   const[teacher,setTeacher]=useState(_ls.teacher||"");
 
   // 반 추가
-  const[ts,setTs]=useState("");const[tg,setTg]=useState("");const[tl,setTl]=useState("");const[tcl,setTcl]=useState("");
+  const[ts,setTs]=useState("");const[tg,setTg]=useState("");const[tl,setTl]=useState("");const[tcl,setTcl]=useState("");const[tlCat,setTlCat]=useState("level");
   const[tcount,setTcount]=useState(""); // 반별 예상 인원
   const[classes,setClasses]=useState([]);
 
@@ -102,7 +105,7 @@ export default function App(){
   const addClass=()=>{
     if(!teacher.trim())return alert("먼저 선생님 이름을 입력하세요.");
     if(!ts)return alert("과목을 선택하세요.");if(!tg)return alert("학년을 선택하세요.");
-    const lv=tl==="custom"?tcl:tl;if(!lv)return alert("레벨을 선택하세요.");
+    const lv=tlCat==="etc"?tcl:tl;if(!lv)return alert("레벨/학교를 선택하세요.");
     const name=`${ts} ${tg} ${lv}반`;
     if(classes.some(c=>c.name===name))return alert("이미 추가된 반입니다.");
     const cnt=parseInt(tcount)||0;
@@ -191,7 +194,7 @@ export default function App(){
   };
   useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab]);
 
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
 
   return(
@@ -224,12 +227,10 @@ export default function App(){
           <Chip label="과목" req opts={SUBJECTS} val={ts} onChange={setTs}/>
           <Chip label="학년" req opts={GRADES} val={tg} onChange={setTg}/>
           <div style={{marginBottom:14}}>
-            <div style={S.label}>레벨 <span style={{color:T.danger}}>*</span></div>
-            <div style={S.cw}>
-              {LEVELS.map(lv=>(<button key={lv} onClick={()=>{setTl(lv);setTcl("");}} style={{...S.ch,background:tl===lv?T.goldDark:T.white,color:tl===lv?T.white:T.textSub,borderColor:tl===lv?T.goldDark:T.border,fontWeight:tl===lv?700:500}}>{lv}</button>))}
-              <button onClick={()=>setTl("custom")} style={{...S.ch,background:tl==="custom"?T.goldDark:T.white,color:tl==="custom"?T.white:T.textSub,borderColor:tl==="custom"?T.goldDark:T.border,fontWeight:tl==="custom"?700:500}}>기타</button>
-            </div>
-            {tl==="custom"&&<input style={{...S.inp,marginTop:6}} placeholder="레벨 직접 입력" value={tcl} onChange={e=>setTcl(e.target.value)}/>}
+            <div style={S.label}>레벨 / 학교 <span style={{color:T.danger}}>*</span></div>
+            <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=tlCat===c.key;return(<button key={c.key} onClick={()=>{setTlCat(c.key);setTl("");setTcl("");}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
+            {tlCat!=="etc"?(<div style={S.cw}>{(LV_CATS.find(c=>c.key===tlCat)?.opts||[]).map(o=>{const a=tl===o;return(<button key={o} onClick={()=>{setTl(tl===o?"":o);setTcl("");}} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{o}</button>);})}</div>
+            ):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={tcl} onChange={e=>{setTcl(e.target.value);setTl(e.target.value);}}/>)}
           </div>
           {/* 인원 입력 */}
           <div style={{marginBottom:14}}>
@@ -240,7 +241,7 @@ export default function App(){
             </div>
           </div>
           {ts&&tg&&(tl&&tl!=="custom"||tcl)&&(<div style={S.addRow}>
-            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {tl==="custom"?tcl:tl}반{tcount?` · ${tcount}명`:""}</div>
+            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {tlCat==="etc"?tcl:tl}반{tcount?` · ${tcount}명`:""}</div>
             <button onClick={addClass} style={S.addBtn}>+ 반 추가</button>
           </div>)}
           {classes.length>0&&(<div style={{marginTop:12}}>
