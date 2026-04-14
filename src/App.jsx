@@ -110,7 +110,9 @@ export default function App(){
     const lv=tlCat==="etc"?tcl:tl;if(!lv)return alert("레벨/학교를 선택하세요.");
     const name=`${ts} ${tg} ${lv}반`;
     if(classes.some(c=>c.name===name))return alert("이미 추가된 반입니다.");
+    // ★ 예상 인원 필수 — 실장님 프린트 매수 산출에 필요
     const cnt=parseInt(tcount)||0;
+    if(!cnt||cnt<=0)return alert("예상 인원을 입력하세요.\n(실장님이 시험지를 몇 장 프린트해야 할지 계산하기 위해 필수입니다.)");
     setClasses(p=>[...p,{subject:ts,grade:tg,level:lv,name,count:cnt}]);
     setTl("");setTcl("");setTcount("");
   };
@@ -188,6 +190,24 @@ export default function App(){
   };
 
   // 대시보드 조회
+  // 프록시 다운로드 — Apps Script가 base64로 파일을 서빙 → blob으로 변환해서 저장
+  // 다른 구글 계정(권한 없는 선생님)도 다운 가능
+  const proxyDownload=async(fileId,fileName)=>{
+    try{
+      const res=await fetch(`${SHEETS_URL}?action=download_file&id=${encodeURIComponent(fileId)}`);
+      const d=await res.json();
+      if(d.result!=="ok")throw new Error(d.message||"다운 실패");
+      // base64 → Uint8Array → Blob
+      const bin=atob(d.data);const u8=new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+      const blob=new Blob([u8],{type:d.mimeType||"application/octet-stream"});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a");a.href=url;a.download=fileName||d.name||"download";
+      document.body.appendChild(a);a.click();document.body.removeChild(a);
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }catch(err){alert("다운로드 실패: "+(err.message||err));}
+  };
+
   const loadDashboard=(dateOverride)=>{
     const d=dateOverride||dashDate;
     setDashLoading(true);setDashErr("");setDashData(null);
@@ -235,17 +255,18 @@ export default function App(){
             {tlCat!=="etc"?(<div style={S.cw}>{(LV_CATS.find(c=>c.key===tlCat)?.opts||[]).map(o=>{const a=tl===o;return(<button key={o} onClick={()=>{setTl(tl===o?"":o);setTcl("");}} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{o}</button>);})}</div>
             ):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={tcl} onChange={e=>{setTcl(e.target.value);setTl(e.target.value);}}/>)}
           </div>
-          {/* 인원 입력 */}
+          {/* 인원 입력 (필수) */}
           <div style={{marginBottom:14}}>
-            <div style={S.label}>예상 응시 인원 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(실장님 프린트 장수 참고용)</span></div>
+            <div style={S.label}>예상 응시 인원 <span style={{color:T.danger}}>*</span> <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(실장님 프린트 장수 산출)</span></div>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <input style={{...S.inp,maxWidth:120}} placeholder="예: 12" value={tcount} onChange={e=>setTcount(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric" maxLength={3}/>
+              <input style={{...S.inp,maxWidth:120,borderColor:!tcount&&ts&&tg?T.danger:T.border}} placeholder="예: 12" value={tcount} onChange={e=>setTcount(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric" maxLength={3}/>
               <span style={{fontSize:13,color:T.textSub}}>명</span>
             </div>
+            <div style={{fontSize:11,color:T.textMuted,marginTop:4,lineHeight:1.4}}>⚠️ 인원을 입력해야 실장님이 시험지를 몇 장 프린트할지 알 수 있습니다.</div>
           </div>
           {ts&&tg&&(tl&&tl!=="custom"||tcl)&&(<div style={S.addRow}>
-            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {tlCat==="etc"?tcl:tl}반{tcount?` · ${tcount}명`:""}</div>
-            <button onClick={addClass} style={S.addBtn}>+ 반 추가</button>
+            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {tlCat==="etc"?tcl:tl}반{tcount?` · ${tcount}명`:" · (인원 미입력)"}</div>
+            <button onClick={addClass} style={{...S.addBtn,opacity:!tcount?.5:1,cursor:!tcount?"not-allowed":"pointer"}} disabled={!tcount}>+ 반 추가</button>
           </div>)}
           {classes.length>0&&(<div style={{marginTop:12}}>
             <div style={{fontSize:12,fontWeight:600,color:T.textMuted,marginBottom:6}}>추가된 반 ({classes.length}개 · 총 {totalStudents}명)</div>
@@ -393,7 +414,7 @@ export default function App(){
                                     <div style={{fontSize:11,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fl.name}</div>
                                     <div style={{fontSize:9,color:T.textMuted}}>{fl.kind==="answer"?"정답지":"시험지"} · {fl.size?Math.round(fl.size/1024)+"KB":""}</div>
                                   </div>
-                                  <a href={fl.downloadUrl} download={fl.name} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,textDecoration:"none"}}>⬇ 다운</a>
+                                  <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,textDecoration:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
                                   <a href={fl.viewUrl} target="_blank" rel="noreferrer" style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:5,textDecoration:"none"}}>👁 보기</a>
                                 </div>))}
                               </div>
