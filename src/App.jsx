@@ -94,6 +94,8 @@ export default function App(){
 
   // 대시보드
   const[dashData,setDashData]=useState(null);const[dashLoading,setDashLoading]=useState(false);const[dashErr,setDashErr]=useState("");
+  const todayIsoStr=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
+  const[dashDate,setDashDate]=useState(todayIsoStr());
 
   const dateStr=examDate.replace(/-/g,".")+" "+examTime;
   const totalStudents=classes.reduce((s,c)=>s+(parseInt(c.count)||0),0);
@@ -186,13 +188,14 @@ export default function App(){
   };
 
   // 대시보드 조회
-  const loadDashboard=()=>{
+  const loadDashboard=(dateOverride)=>{
+    const d=dateOverride||dashDate;
     setDashLoading(true);setDashErr("");setDashData(null);
-    fetch(`${SHEETS_URL}?action=teacher_dashboard`)
+    fetch(`${SHEETS_URL}?action=teacher_dashboard&date=${encodeURIComponent(d)}`)
       .then(r=>r.json()).then(d=>{if(d.result==="ok"){setDashData(d);}else{setDashErr(d.message||"조회 실패");}setDashLoading(false);})
       .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
   };
-  useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab]);
+  useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab,dashDate]);
 
   const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
@@ -266,10 +269,21 @@ export default function App(){
       </div>)}
 
       {/* ═══ 오늘의 현황 대시보드 (과목→학년→선생님 계층) ═══ */}
-      {screen==="home"&&tab==="dashboard"&&(<div style={S.wrap} className="fade-up">
-        <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>오늘의 현황</h1><p style={{fontSize:13,color:T.textMuted}}>오늘 {(()=>{const d=new Date();return `${d.getMonth()+1}/${d.getDate()}`;})()} 등록된 시험 · 과목 · 학년 · 선생님별</p></div>
-        <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
-          <button onClick={loadDashboard} style={{...S.btnO,padding:"8px 14px",fontSize:12}}>🔄 새로고침</button>
+      {screen==="home"&&tab==="dashboard"&&(()=>{
+        const isDashToday=dashDate===todayIsoStr();
+        const dashDateLabel=(()=>{const m=dashDate.match(/(\d{4})-(\d{2})-(\d{2})/);return m?`${parseInt(m[2])}/${parseInt(m[3])}`:"";})();
+        return(<div style={S.wrap} className="fade-up">
+        <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1><p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p></div>
+        {/* 날짜 선택 + 새로고침 */}
+        <div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:12,fontWeight:700,color:T.textSub}}>📅 날짜</span>
+            <input type="date" value={dashDate} onChange={e=>setDashDate(e.target.value||todayIsoStr())} style={{padding:"6px 10px",fontSize:13,border:`1.5px solid ${T.border}`,borderRadius:8,fontFamily:"inherit",background:T.white,color:T.text}}/>
+            <button onClick={()=>setDashDate(todayIsoStr())} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:8,border:`1.5px solid ${isDashToday?T.goldDark:T.border}`,background:isDashToday?T.goldLight:T.white,color:isDashToday?T.goldDeep:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>오늘</button>
+            <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()-1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>← 이전</button>
+            <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()+1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>다음 →</button>
+            <button onClick={()=>loadDashboard()} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}}>🔄 새로고침</button>
+          </div>
         </div>
         {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
         {dashErr&&<div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{dashErr}</div>}
@@ -282,7 +296,15 @@ export default function App(){
           const subjOrder=["영어","수학","국어","과학","사회"];
           const gradeOrder=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
           allExams.forEach(ex=>{
-            const s=ex.subject||"기타";const g=ex.grade||"기타";const t=ex.teacher||"미지정";
+            // subject 빈값/오기 fallback: examType, className, examName에서 과목 키워드 추출
+            const guessSubj=(ex)=>{
+              if(ex.subject&&["영어","국어","수학","과학","사회"].includes(ex.subject))return ex.subject;
+              const keys=["영어","국어","수학","과학","사회"];
+              const sources=[ex.examType,ex.className,ex.examName].filter(Boolean).join(" ");
+              for(const k of keys){if(sources.indexOf(k)>=0)return k;}
+              return ex.subject||"기타";
+            };
+            const s=guessSubj(ex);const g=ex.grade||"기타";const t=ex.teacher||"미지정";
             if(!tree[s])tree[s]={};
             if(!tree[s][g])tree[s][g]={};
             if(!tree[s][g][t])tree[s][g][t]=[];
@@ -360,8 +382,23 @@ export default function App(){
                               <span style={S.pillGreen}>✅ 제출 {submitted}명</span>
                               <span style={{padding:"2px 8px",borderRadius:10,fontWeight:600,background:fileStatus.bg,color:fileStatus.c}}>{hasFile?"📎":"⚠️"} {fileStatus.t}</span>
                             </div>
-                            {expected>0&&(<div style={{height:5,background:T.borderLight,borderRadius:3,overflow:"hidden",marginBottom:4}}><div style={{height:"100%",width:`${pct}%`,background:submitted>=expected?T.accent:T.gold,transition:"width .3s"}}/></div>)}
-                            {ex.folderLink&&<a href={ex.folderLink} target="_blank" rel="noreferrer" style={{fontSize:10,color:T.blue,textDecoration:"none",fontWeight:600}}>📁 Drive 폴더 열기 →</a>}
+                            {expected>0&&(<div style={{height:5,background:T.borderLight,borderRadius:3,overflow:"hidden",marginBottom:6}}><div style={{height:"100%",width:`${pct}%`,background:submitted>=expected?T.accent:T.gold,transition:"width .3s"}}/></div>)}
+                            {/* 파일 다운로드 목록 */}
+                            {(ex.files||[]).length>0&&(<div style={{marginTop:6,paddingTop:6,borderTop:`1px dashed ${T.border}`}}>
+                              <div style={{fontSize:10,fontWeight:700,color:T.textSub,marginBottom:4}}>📎 첨부 파일 {ex.files.length}개</div>
+                              <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                                {ex.files.map((fl,fi)=>(<div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:T.white,borderRadius:6,border:`1px solid ${T.borderLight}`}}>
+                                  <span style={{fontSize:11}}>{fl.kind==="answer"?"🔑":"📄"}</span>
+                                  <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
+                                    <div style={{fontSize:11,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fl.name}</div>
+                                    <div style={{fontSize:9,color:T.textMuted}}>{fl.kind==="answer"?"정답지":"시험지"} · {fl.size?Math.round(fl.size/1024)+"KB":""}</div>
+                                  </div>
+                                  <a href={fl.downloadUrl} download={fl.name} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,textDecoration:"none"}}>⬇ 다운</a>
+                                  <a href={fl.viewUrl} target="_blank" rel="noreferrer" style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:5,textDecoration:"none"}}>👁 보기</a>
+                                </div>))}
+                              </div>
+                            </div>)}
+                            {ex.folderLink&&<a href={ex.folderLink} target="_blank" rel="noreferrer" style={{fontSize:10,color:T.blue,textDecoration:"none",fontWeight:600,display:"inline-block",marginTop:6}}>📁 Drive 폴더 열기 →</a>}
                           </div>);
                         })}
                       </div>);
@@ -372,7 +409,7 @@ export default function App(){
             })}
           </>);
         })()}
-      </div>)}
+      </div>);})()}
 
       {/* ═══ 모드 선택 ═══ */}
       {screen==="modeSelect"&&(<div style={S.wrap} className="fade-up">
