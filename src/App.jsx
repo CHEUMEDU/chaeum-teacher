@@ -265,45 +265,113 @@ export default function App(){
         <button style={S.btnG} onClick={goToMode}>다음 →</button>
       </div>)}
 
-      {/* ═══ 오늘의 현황 대시보드 ═══ */}
+      {/* ═══ 오늘의 현황 대시보드 (과목→학년→선생님 계층) ═══ */}
       {screen==="home"&&tab==="dashboard"&&(<div style={S.wrap} className="fade-up">
-        <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>오늘의 현황</h1><p style={{fontSize:13,color:T.textMuted}}>오늘 등록된 시험과 학생 제출 현황</p></div>
+        <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>오늘의 현황</h1><p style={{fontSize:13,color:T.textMuted}}>오늘 {(()=>{const d=new Date();return `${d.getMonth()+1}/${d.getDate()}`;})()} 등록된 시험 · 과목 · 학년 · 선생님별</p></div>
         <div style={{display:"flex",justifyContent:"flex-end",marginBottom:10}}>
           <button onClick={loadDashboard} style={{...S.btnO,padding:"8px 14px",fontSize:12}}>🔄 새로고침</button>
         </div>
         {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
         {dashErr&&<div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{dashErr}</div>}
-        {dashData&&!dashLoading&&(<>
-          {/* 요약 카드 */}
-          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
-            <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>등록 시험</div><div style={{fontSize:22,fontWeight:800,color:T.goldDark}}>{dashData.exams?.length||0}</div></div>
-            <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>예상 인원</div><div style={{fontSize:22,fontWeight:800,color:T.blue}}>{dashData.expectedTotal||0}</div></div>
-            <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>제출 수</div><div style={{fontSize:22,fontWeight:800,color:T.accent}}>{dashData.submissionTotal||0}</div></div>
-          </div>
-          {/* 프린트 안내 박스 */}
-          {dashData.expectedTotal>0&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginBottom:14}}>
-            <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>🖨️ 실장님 프린트 참고</div>
-            <div style={{fontSize:12,color:T.textSub,lineHeight:1.6}}>오늘 총 <b style={{color:T.blue}}>{dashData.expectedTotal}장</b>의 시험지가 필요합니다.</div>
-          </div>)}
-          {/* 시험별 상세 */}
-          {(dashData.exams||[]).length===0?(
-            <div style={{padding:24,background:T.borderLight,borderRadius:10,color:T.textMuted,fontSize:13,textAlign:"center"}}>오늘 등록된 시험이 없습니다.</div>
-          ):(
-            (dashData.exams||[]).map((ex,i)=>(<div key={i} style={{...S.card,marginBottom:10}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:6}}>
-                <div style={{fontSize:14,fontWeight:800,color:T.text}}>{ex.subject} {ex.grade} {ex.level}반 · {ex.examType}</div>
-                <div style={{fontSize:11,color:T.textMuted}}>{ex.teacher||""}</div>
-              </div>
-              <div style={{display:"flex",gap:6,flexWrap:"wrap",fontSize:11,marginBottom:8}}>
-                <span style={S.pill}>📝 {ex.totalQuestions}문항</span>
-                <span style={S.pillBlue}>👥 예상 {ex.expected||0}명</span>
-                <span style={S.pillGreen}>✅ 제출 {ex.submitted||0}명</span>
-                {(ex.avgScore!=null)&&<span style={S.pillGold}>📊 평균 {ex.avgScore}점</span>}
-              </div>
-              {ex.submitted>0&&ex.expected>0&&(<div style={{height:6,background:T.borderLight,borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,(ex.submitted/ex.expected)*100)}%`,background:T.accent}}/></div>)}
-            </div>))
-          )}
-        </>)}
+        {dashData&&!dashLoading&&(()=>{
+          const allExams=dashData.exams||[];
+          const expTot=dashData.expectedTotal||dashData.summary?.totalExpected||0;
+          const subTot=dashData.submissionTotal||dashData.summary?.totalSubmitted||0;
+          // 계층 그룹화: 과목 → 학년 → 선생님 → 시험들
+          const tree={};
+          const subjOrder=["영어","수학","국어","과학","사회"];
+          const gradeOrder=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
+          allExams.forEach(ex=>{
+            const s=ex.subject||"기타";const g=ex.grade||"기타";const t=ex.teacher||"미지정";
+            if(!tree[s])tree[s]={};
+            if(!tree[s][g])tree[s][g]={};
+            if(!tree[s][g][t])tree[s][g][t]=[];
+            tree[s][g][t].push(ex);
+          });
+          const subjKeys=Object.keys(tree).sort((a,b)=>{
+            const ia=subjOrder.indexOf(a),ib=subjOrder.indexOf(b);
+            return (ia<0?99:ia)-(ib<0?99:ib);
+          });
+          return(<>
+            {/* 요약 카드 */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
+              <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>등록 시험</div><div style={{fontSize:22,fontWeight:800,color:T.goldDark}}>{allExams.length}</div></div>
+              <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>예상 인원</div><div style={{fontSize:22,fontWeight:800,color:T.blue}}>{expTot}</div></div>
+              <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>제출 수</div><div style={{fontSize:22,fontWeight:800,color:T.accent}}>{subTot}</div></div>
+            </div>
+            {expTot>0&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginBottom:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>🖨️ 실장님 프린트 참고</div>
+              <div style={{fontSize:12,color:T.textSub,lineHeight:1.6}}>오늘 총 <b style={{color:T.blue}}>{expTot}장</b>의 시험지가 필요합니다.</div>
+            </div>)}
+            {allExams.length===0?(
+              <div style={{padding:24,background:T.borderLight,borderRadius:10,color:T.textMuted,fontSize:13,textAlign:"center"}}>오늘 등록된 시험이 없습니다.</div>
+            ):subjKeys.map(subj=>{
+              const subjExams=[];Object.values(tree[subj]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>subjExams.push(e))));
+              const subjExp=subjExams.reduce((s,e)=>s+(e.studentCount||0),0);
+              const subjSub=subjExams.reduce((s,e)=>s+(e.submitted||0),0);
+              const subjEmoji=subj==="영어"?"🇬🇧":subj==="수학"?"🔢":subj==="국어"?"📖":subj==="과학"?"🔬":subj==="사회"?"🌏":"📚";
+              const gradeKeys=Object.keys(tree[subj]).sort((a,b)=>{
+                const ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);
+                return (ia<0?99:ia)-(ib<0?99:ib);
+              });
+              return(<div key={subj} style={{marginBottom:18,border:`2px solid ${T.goldMuted}`,borderRadius:12,overflow:"hidden",background:T.white}}>
+                <div style={{padding:"12px 14px",background:T.goldDark,color:T.white,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{fontSize:16,fontWeight:800}}>{subjEmoji} {subj}과</div>
+                  <div style={{fontSize:11,opacity:.9}}>시험 {subjExams.length}개 · 예상 {subjExp}명 · 제출 {subjSub}명</div>
+                </div>
+                {gradeKeys.map(gr=>{
+                  const gradeTeachers=tree[subj][gr];
+                  const teachers=Object.keys(gradeTeachers).sort();
+                  const gradeExams=[];teachers.forEach(t=>gradeTeachers[t].forEach(e=>gradeExams.push(e)));
+                  const gradeExp=gradeExams.reduce((s,e)=>s+(e.studentCount||0),0);
+                  return(<div key={gr} style={{borderTop:`1px solid ${T.borderLight}`}}>
+                    <div style={{padding:"8px 14px",background:T.goldPale,fontSize:13,fontWeight:700,color:T.goldDeep,display:"flex",justifyContent:"space-between"}}>
+                      <span>🎓 {gr}</span>
+                      <span style={{fontSize:11,fontWeight:500,color:T.textMuted}}>{gradeExams.length}개 · {gradeExp}명</span>
+                    </div>
+                    {teachers.map(tch=>{
+                      const tExams=gradeTeachers[tch].slice().sort((a,b)=>(a.examTime||"").localeCompare(b.examTime||""));
+                      return(<div key={tch} style={{padding:"6px 10px 10px"}}>
+                        <div style={{fontSize:11,fontWeight:700,color:T.textSub,padding:"6px 4px",display:"flex",alignItems:"center",gap:6}}>
+                          <span style={{padding:"2px 8px",borderRadius:10,background:T.blueLight,color:T.blue,fontSize:10}}>👤 {tch}</span>
+                          <span style={{color:T.textMuted,fontWeight:500}}>{tExams.length}개</span>
+                        </div>
+                        {tExams.map((ex,i)=>{
+                          const timeLabel=ex.examTime||"-";
+                          const lvLabel=ex.level?(ex.level==="전체"?"전체":ex.level+"반"):"";
+                          const title=`${ex.examType}${ex.round?" · "+ex.round:""}${lvLabel?" ("+lvLabel+")":""}`;
+                          const hasFile=ex.hasExamFile||ex.hasAnswerFile;
+                          const fileStatus=ex.hasExamFile&&ex.hasAnswerFile?{t:"시험지·정답지 업로드 완료",c:T.accent,bg:T.accentLight}
+                            :ex.hasAnswerFile?{t:"정답지만 업로드",c:T.goldDark,bg:T.goldLight}
+                            :ex.hasExamFile?{t:"시험지만 업로드",c:T.goldDark,bg:T.goldLight}
+                            :{t:"파일 없음",c:T.danger,bg:T.dangerLight};
+                          const expected=ex.studentCount||0;
+                          const submitted=ex.submitted||0;
+                          const pct=expected>0?Math.min(100,(submitted/expected)*100):0;
+                          return(<div key={i} style={{padding:"10px 12px",marginBottom:6,background:T.bg,border:`1px solid ${T.borderLight}`,borderRadius:8}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4,gap:6}}>
+                              <div style={{fontSize:13,fontWeight:700,color:T.text,flex:1}}>{title}</div>
+                              <div style={{fontSize:11,fontWeight:700,color:T.blue,whiteSpace:"nowrap"}}>🕐 {timeLabel}</div>
+                            </div>
+                            {ex.className&&<div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>{ex.className}</div>}
+                            <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10,marginBottom:6}}>
+                              <span style={S.pill}>📝 {ex.totalQuestions||0}문항</span>
+                              <span style={S.pillBlue}>👥 예상 {expected}명</span>
+                              <span style={S.pillGreen}>✅ 제출 {submitted}명</span>
+                              <span style={{padding:"2px 8px",borderRadius:10,fontWeight:600,background:fileStatus.bg,color:fileStatus.c}}>{hasFile?"📎":"⚠️"} {fileStatus.t}</span>
+                            </div>
+                            {expected>0&&(<div style={{height:5,background:T.borderLight,borderRadius:3,overflow:"hidden",marginBottom:4}}><div style={{height:"100%",width:`${pct}%`,background:submitted>=expected?T.accent:T.gold,transition:"width .3s"}}/></div>)}
+                            {ex.folderLink&&<a href={ex.folderLink} target="_blank" rel="noreferrer" style={{fontSize:10,color:T.blue,textDecoration:"none",fontWeight:600}}>📁 Drive 폴더 열기 →</a>}
+                          </div>);
+                        })}
+                      </div>);
+                    })}
+                  </div>);
+                })}
+              </div>);
+            })}
+          </>);
+        })()}
       </div>)}
 
       {/* ═══ 모드 선택 ═══ */}
