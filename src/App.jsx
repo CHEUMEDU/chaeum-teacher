@@ -56,6 +56,10 @@ function fileToBase64(file){return new Promise((res,rej)=>{const r=new FileReade
 export default function App(){
   // 상단 탭 (등록 / 오늘의 현황)
   const[tab,setTab]=useState("register");
+  // 대시보드 과목 탭 & 첨부파일 토글
+  const[activeSubj,setActiveSubj]=useState(null);
+  const[openFiles,setOpenFiles]=useState({}); // {exam_i_j: bool}
+  const toggleFiles=(k)=>setOpenFiles(p=>({...p,[k]:!p[k]}));
   // 화면 상태
   const[screen,setScreen]=useState("home"); // home, modeSelect, directSetup, direct, upload, done
 
@@ -83,6 +87,14 @@ export default function App(){
   // 파일업로드 모드
   const[examFiles,setExamFiles]=useState([]);
   const[answerFiles,setAnswerFiles]=useState([]);
+  // ★ 차수별 업로드 (1차/2차 기본)
+  const[rounds,setRounds]=useState([
+    {label:"1차",examFiles:[],answerFiles:[]},
+    {label:"2차",examFiles:[],answerFiles:[]},
+  ]);
+  const addRound=()=>setRounds(p=>[...p,{label:`${p.length+1}차`,examFiles:[],answerFiles:[]}]);
+  const removeRound=(i)=>setRounds(p=>p.length<=1?p:p.filter((_,idx)=>idx!==i));
+  const updateRound=(i,key,val)=>setRounds(p=>{const n=[...p];n[i]={...n[i],[key]:val};return n;});
   const[memo,setMemo]=useState("");
   // 주관식 힌트 (업로드 모드)
   const[subjMode,setSubjMode]=useState("none"); // none | mixed | all
@@ -195,15 +207,20 @@ export default function App(){
     setSaving(false);
   };
 
-  // 파일업로드 저장
+  // 파일업로드 저장 (차수별)
   const saveUpload=async()=>{
-    if(answerFiles.length===0)return alert("정답지 파일을 업로드하세요.");
+    const active=rounds.filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
+    if(active.length===0)return alert("최소 1개 차수에 시험지·정답지를 업로드하세요.");
+    const missingAns=active.find(r=>r.answerFiles.length===0);
+    if(missingAns)return alert(`${missingAns.label} 시험에 정답지가 없습니다.\n정답지를 올려주세요 (Claude 분석 필수).`);
     setSaving(true);setError("");
     try{
-      const aData=await Promise.all(answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
-      const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
-      await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({action:"upload_exam",classes:classes.map(c=>({subject:c.subject,grade:c.grade,level:c.level,count:c.count})),classNames:classes.map(c=>c.name).join(", "),examType,date:dateStr,memo,teacher,studentCount:totalStudents,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+      for(const rd of active){
+        const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+        const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+        await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({action:"upload_exam",classes:classes.map(c=>({subject:c.subject,grade:c.grade,level:c.level,count:c.count})),classNames:classes.map(c=>c.name).join(", "),examType,round:rd.label,date:dateStr,memo,teacher,studentCount:totalStudents,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+      }
       setDone(true);setScreen("done");
     }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
     setSaving(false);
@@ -274,7 +291,7 @@ export default function App(){
   const[schStatus,setSchStatus]=useState(null);
   useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab,dashDate]);
 
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"1차",examFiles:[],answerFiles:[]},{label:"2차",examFiles:[],answerFiles:[]}]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
 
   return(
@@ -455,21 +472,44 @@ export default function App(){
             </div>)}
             {allExams.length===0?(
               <div style={{padding:24,background:T.borderLight,borderRadius:10,color:T.textMuted,fontSize:13,textAlign:"center"}}>오늘 등록된 시험이 없습니다.</div>
-            ):subjKeys.map(subj=>{
-              const subjExams=[];Object.values(tree[subj]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>subjExams.push(e))));
-              const subjExp=subjExams.reduce((s,e)=>s+(e.studentCount||0),0);
-              const subjSub=subjExams.reduce((s,e)=>s+(e.submitted||0),0);
-              const subjEmoji=subj==="영어"?"🇬🇧":subj==="수학"?"🔢":subj==="국어"?"📖":subj==="과학"?"🔬":subj==="사회"?"🌏":"📚";
-              const gradeKeys=Object.keys(tree[subj]).sort((a,b)=>{
-                const ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);
-                return (ia<0?99:ia)-(ib<0?99:ib);
+            ):(()=>{
+              // 과목별 요약 계산
+              const subjSummary=subjKeys.map(s=>{
+                const list=[];Object.values(tree[s]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>list.push(e))));
+                const exp=list.reduce((a,e)=>a+(e.studentCount||0),0);
+                const sub=list.reduce((a,e)=>a+(e.submitted||0),0);
+                const files=list.reduce((a,e)=>({exam:a.exam+(e.hasExamFile?1:0),ans:a.ans+(e.hasAnswerFile?1:0)}),{exam:0,ans:0});
+                return{subj:s,count:list.length,exp,sub,files};
               });
-              return(<div key={subj} style={{marginBottom:18,border:`2px solid ${T.goldMuted}`,borderRadius:12,overflow:"hidden",background:T.white}}>
-                <div style={{padding:"12px 14px",background:T.goldDark,color:T.white,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <div style={{fontSize:16,fontWeight:800}}>{subjEmoji} {subj}과</div>
-                  <div style={{fontSize:11,opacity:.9}}>시험 {subjExams.length}개 · 예상 {subjExp}명 · 제출 {subjSub}명</div>
+              const curSubj=activeSubj&&subjKeys.includes(activeSubj)?activeSubj:subjKeys[0];
+              return(<>
+                {/* 과목 탭 네비게이션 */}
+                <div style={{display:"flex",gap:4,marginBottom:12,overflowX:"auto",paddingBottom:4}}>
+                  {subjSummary.map(ss=>{
+                    const isAct=ss.subj===curSubj;
+                    const emj=ss.subj==="영어"?"🇬🇧":ss.subj==="수학"?"🔢":ss.subj==="국어"?"📖":ss.subj==="과학"?"🔬":ss.subj==="사회"?"🌏":"📚";
+                    return(<button key={ss.subj} onClick={()=>setActiveSubj(ss.subj)} style={{flex:"1 0 auto",minWidth:110,padding:"8px 10px",borderRadius:10,border:isAct?`2px solid ${T.goldDark}`:`1.5px solid ${T.border}`,background:isAct?T.goldLight:T.white,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+                      <div style={{fontSize:13,fontWeight:800,color:isAct?T.goldDark:T.text,marginBottom:2}}>{emj} {ss.subj}과 · {ss.count}</div>
+                      <div style={{fontSize:10,color:T.textMuted,lineHeight:1.5}}>예상 {ss.exp}명 · 제출 {ss.sub}명<br/>📄 {ss.files.exam}/{ss.count} · 🔑 {ss.files.ans}/{ss.count}</div>
+                    </button>);
+                  })}
                 </div>
-                {gradeKeys.map(gr=>{
+              {/* 선택된 과목의 내용 */}
+              {[curSubj].map(subj=>{
+                const subjExams=[];Object.values(tree[subj]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>subjExams.push(e))));
+                const subjExp=subjExams.reduce((s,e)=>s+(e.studentCount||0),0);
+                const subjSub=subjExams.reduce((s,e)=>s+(e.submitted||0),0);
+                const subjEmoji=subj==="영어"?"🇬🇧":subj==="수학"?"🔢":subj==="국어"?"📖":subj==="과학"?"🔬":subj==="사회"?"🌏":"📚";
+                const gradeKeys=Object.keys(tree[subj]).sort((a,b)=>{
+                  const ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);
+                  return (ia<0?99:ia)-(ib<0?99:ib);
+                });
+                return(<div key={subj} style={{marginBottom:18,border:`2px solid ${T.goldMuted}`,borderRadius:12,overflow:"hidden",background:T.white}}>
+                  <div style={{padding:"12px 14px",background:T.goldDark,color:T.white,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{fontSize:16,fontWeight:800}}>{subjEmoji} {subj}과</div>
+                    <div style={{fontSize:11,opacity:.9}}>시험 {subjExams.length}개 · 예상 {subjExp}명 · 제출 {subjSub}명</div>
+                  </div>
+                  {gradeKeys.map(gr=>{
                   const gradeTeachers=tree[subj][gr];
                   const teachers=Object.keys(gradeTeachers).sort();
                   const gradeExams=[];teachers.forEach(t=>gradeTeachers[t].forEach(e=>gradeExams.push(e)));
@@ -511,10 +551,16 @@ export default function App(){
                               <span style={{padding:"2px 8px",borderRadius:10,fontWeight:600,background:fileStatus.bg,color:fileStatus.c}}>{hasFile?"📎":"⚠️"} {fileStatus.t}</span>
                             </div>
                             {expected>0&&(<div style={{height:5,background:T.borderLight,borderRadius:3,overflow:"hidden",marginBottom:6}}><div style={{height:"100%",width:`${pct}%`,background:submitted>=expected?T.accent:T.gold,transition:"width .3s"}}/></div>)}
-                            {/* 파일 다운로드 목록 */}
-                            {(ex.files||[]).length>0&&(<div style={{marginTop:6,paddingTop:6,borderTop:`1px dashed ${T.border}`}}>
-                              <div style={{fontSize:10,fontWeight:700,color:T.textSub,marginBottom:4}}>📎 첨부 파일 {ex.files.length}개</div>
-                              <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                            {/* 파일 다운로드 목록 (토글) */}
+                            {(ex.files||[]).length>0&&(()=>{
+                              const fkey=`${subj}_${gr}_${tch}_${i}`;
+                              const isOpen=!!openFiles[fkey];
+                              return(<div style={{marginTop:6,paddingTop:6,borderTop:`1px dashed ${T.border}`}}>
+                              <button onClick={()=>toggleFiles(fkey)} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,fontWeight:700,color:T.textSub,background:"none",border:"none",cursor:"pointer",padding:"2px 0",fontFamily:"inherit",width:"100%",justifyContent:"space-between"}}>
+                                <span>📎 첨부 파일 {ex.files.length}개</span>
+                                <span style={{fontSize:10,color:T.goldDark}}>{isOpen?"▲ 접기":"▼ 펼치기"}</span>
+                              </button>
+                              {isOpen&&(<div style={{display:"flex",flexDirection:"column",gap:3,marginTop:4}}>
                                 {ex.files.map((fl,fi)=>(<div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:T.white,borderRadius:6,border:`1px solid ${T.borderLight}`}}>
                                   <span style={{fontSize:11}}>{fl.kind==="answer"?"🔑":"📄"}</span>
                                   <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
@@ -524,8 +570,9 @@ export default function App(){
                                   <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,border:"none",cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
                                   <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
                                 </div>))}
-                              </div>
-                            </div>)}
+                              </div>)}
+                            </div>);
+                            })()}
                             {ex.folderLink&&<a href={ex.folderLink} target="_blank" rel="noreferrer" style={{fontSize:10,color:T.blue,textDecoration:"none",fontWeight:600,display:"inline-block",marginTop:6}}>📁 Drive 폴더 열기 →</a>}
                           </div>);
                         })}
@@ -535,6 +582,7 @@ export default function App(){
                 })}
               </div>);
             })}
+            </>);})()}
           </>);
         })()}
       </div>);})()}
@@ -735,12 +783,26 @@ export default function App(){
       {/* ═══ 파일 업로드 ═══ */}
       {screen==="upload"&&!done&&(<div style={S.wrap} className="fade-up">
         <div style={S.card}>
-          <div style={S.secLabel}>파일 업로드</div>
-          <FileUploadMulti label="시험지 (선택사항)" files={examFiles} onFilesChange={setExamFiles} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png"/>
-          <FileUploadMulti label="정답지" req files={answerFiles} onFilesChange={setAnswerFiles} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png"/>
+          <div style={S.secLabel}>차수별 파일 업로드</div>
+          <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
+            💡 <b>1차, 2차, 3차...</b> 각 차수별로 시험지·정답지를 따로 올려주세요. 학생이 OMR 제출 시 <b>몇 차 시험인지 선택</b>할 수 있어요.
+            <br/>차수에 올리지 않은 회차는 자동으로 생략됩니다 (파일 0개 차수는 저장 안 됨).
+          </div>
+          {rounds.map((rd,ri)=>(
+            <div key={ri} style={{padding:"10px 12px",marginBottom:10,border:`2px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <input style={{...S.inp,width:80,fontWeight:700}} value={rd.label} onChange={e=>updateRound(ri,"label",e.target.value)} placeholder="1차"/>
+                <div style={{fontSize:12,color:T.textMuted,flex:1}}>시험 (예: 1차, 재시, 보강)</div>
+                {rounds.length>1&&(<button onClick={()=>removeRound(ri)} style={{padding:"4px 10px",fontSize:11,background:T.dangerLight,color:T.danger,border:"none",borderRadius:6,cursor:"pointer",fontWeight:700}}>✕ 삭제</button>)}
+              </div>
+              <FileUploadMulti label={`${rd.label} 시험지`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+              <FileUploadMulti label={`${rd.label} 정답지`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+            </div>
+          ))}
+          <button onClick={addRound} style={{width:"100%",padding:"10px",marginBottom:8,background:T.white,border:`1.5px dashed ${T.goldDark}`,borderRadius:8,cursor:"pointer",fontWeight:700,color:T.goldDark,fontFamily:"inherit"}}>+ 차수 추가</button>
           <div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginTop:8}}>
             <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>💡 이렇게 처리됩니다</div>
-            <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 파일이 구글 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 분석 완료 후 학생 앱에서 채점이 가능해집니다.</div>
+            <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 각 차수별로 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 학생 앱에서 시험 선택 시 <b>차수</b>도 함께 표시됩니다.</div>
           </div>
         </div>
 
