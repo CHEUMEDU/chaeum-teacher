@@ -212,20 +212,53 @@ export default function App(){
   // 대시보드 조회
   // 프록시 다운로드 — Apps Script가 base64로 파일을 서빙 → blob으로 변환해서 저장
   // 다른 구글 계정(권한 없는 선생님)도 다운 가능
+  // 파일을 base64로 받아서 Blob URL로 변환하는 공통 함수
+  const fetchFileBlob=async(fileId)=>{
+    const res=await fetch(`${SHEETS_URL}?action=download_file&id=${encodeURIComponent(fileId)}`);
+    const d=await res.json();
+    if(d.result!=="ok")throw new Error(d.message||"파일 접근 실패");
+    const bin=atob(d.data);const u8=new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
+    const blob=new Blob([u8],{type:d.mimeType||"application/octet-stream"});
+    return{blob,mimeType:d.mimeType||"",name:d.name||""};
+  };
+
+  // 다운로드 (구글 계정 없이도 가능 — Apps Script 프록시)
   const proxyDownload=async(fileId,fileName)=>{
     try{
-      const res=await fetch(`${SHEETS_URL}?action=download_file&id=${encodeURIComponent(fileId)}`);
-      const d=await res.json();
-      if(d.result!=="ok")throw new Error(d.message||"다운 실패");
-      // base64 → Uint8Array → Blob
-      const bin=atob(d.data);const u8=new Uint8Array(bin.length);
-      for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
-      const blob=new Blob([u8],{type:d.mimeType||"application/octet-stream"});
+      const{blob,name}=await fetchFileBlob(fileId);
       const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");a.href=url;a.download=fileName||d.name||"download";
+      const a=document.createElement("a");a.href=url;a.download=fileName||name||"download";
       document.body.appendChild(a);a.click();document.body.removeChild(a);
       setTimeout(()=>URL.revokeObjectURL(url),1000);
     }catch(err){alert("다운로드 실패: "+(err.message||err));}
+  };
+
+  // 미리보기 (구글 계정 없이도 가능 — Blob URL로 새 탭 열기)
+  const proxyPreview=async(fileId,fileName)=>{
+    try{
+      const{blob,mimeType}=await fetchFileBlob(fileId);
+      // PDF·이미지는 브라우저에서 바로 표시
+      const previewable=["application/pdf","image/png","image/jpeg","image/gif","image/webp"];
+      const url=URL.createObjectURL(blob);
+      if(previewable.includes(mimeType)){
+        const w=window.open("","_blank");
+        if(w){
+          if(mimeType==="application/pdf"){
+            w.document.write(`<html><body style="margin:0"><iframe src="${url}" style="width:100%;height:100vh;border:none"></iframe></body></html>`);
+          } else {
+            w.document.write(`<html><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="${url}" style="max-width:100%;max-height:100vh;object-fit:contain"></body></html>`);
+          }
+          setTimeout(()=>URL.revokeObjectURL(url),60000);
+        }
+      } else {
+        // PDF·이미지 아닌 파일(HWP, DOCX 등)은 다운로드로 대체
+        const a=document.createElement("a");a.href=url;a.download=fileName||"download";
+        document.body.appendChild(a);a.click();document.body.removeChild(a);
+        setTimeout(()=>URL.revokeObjectURL(url),1000);
+        alert("이 파일 형식은 미리보기가 지원되지 않아 다운로드됩니다.\n(PDF·이미지 형식만 미리보기 가능)");
+      }
+    }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
 
   const loadDashboard=(dateOverride)=>{
@@ -479,8 +512,8 @@ export default function App(){
                                     <div style={{fontSize:11,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fl.name}</div>
                                     <div style={{fontSize:9,color:T.textMuted}}>{fl.kind==="answer"?"정답지":"시험지"} · {fl.size?Math.round(fl.size/1024)+"KB":""}</div>
                                   </div>
-                                  <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,textDecoration:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
-                                  <a href={fl.viewUrl} target="_blank" rel="noreferrer" style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:5,textDecoration:"none"}}>👁 보기</a>
+                                  <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,border:"none",cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
+                                  <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
                                 </div>))}
                               </div>
                             </div>)}
