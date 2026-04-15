@@ -97,6 +97,26 @@ export default function App(){
   const todayIsoStr=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
   const[dashDate,setDashDate]=useState(todayIsoStr());
 
+  // 선생님 목록 (드롭다운용)
+  const[teacherList,setTeacherList]=useState([]);
+  useEffect(()=>{fetch(`${SHEETS_URL}?action=list_teachers`).then(r=>r.json()).then(d=>{if(d.result==="ok")setTeacherList(d.teachers||[]);}).catch(()=>{});},[]);
+
+  // 스케줄 관리
+  const[schedule,setSchedule]=useState([]);
+  const[schLoading,setSchLoading]=useState(false);
+  const[schForm,setSchForm]=useState({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});
+  const loadSchedule=()=>{setSchLoading(true);fetch(`${SHEETS_URL}?action=list_schedule`).then(r=>r.json()).then(d=>{if(d.result==="ok")setSchedule(d.schedule||[]);setSchLoading(false);}).catch(()=>setSchLoading(false));};
+  const saveSchedule=async()=>{
+    const f=schForm;
+    if(!f.day||!f.subject||!f.grade||!f.teacher)return alert("요일/과목/학년/선생님은 필수입니다.");
+    const params=new URLSearchParams({action:"save_schedule",rowIndex:String(f.rowIndex||0),day:f.day,subject:f.subject,grade:f.grade,level:f.level||"",examType:f.examType||"",teacher:f.teacher,time:f.time||"",memo:f.memo||"",active:f.active?"true":"false"});
+    const res=await fetch(`${SHEETS_URL}?${params.toString()}`);const d=await res.json();
+    if(d.result==="ok"){setSchForm({rowIndex:0,day:f.day,subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});loadSchedule();}
+    else alert("저장 실패: "+(d.message||""));
+  };
+  const deleteScheduleRow=async(rowIndex)=>{if(!confirm("삭제하시겠습니까?"))return;const res=await fetch(`${SHEETS_URL}?action=delete_schedule&rowIndex=${rowIndex}`);const d=await res.json();if(d.result==="ok")loadSchedule();};
+  useEffect(()=>{if(tab==="schedule")loadSchedule();},[tab]);
+
   const dateStr=examDate.replace(/-/g,".")+" "+examTime;
   const totalStudents=classes.reduce((s,c)=>s+(parseInt(c.count)||0),0);
 
@@ -214,7 +234,11 @@ export default function App(){
     fetch(`${SHEETS_URL}?action=teacher_dashboard&date=${encodeURIComponent(d)}`)
       .then(r=>r.json()).then(d=>{if(d.result==="ok"){setDashData(d);}else{setDashErr(d.message||"조회 실패");}setDashLoading(false);})
       .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
+    // 스케줄 상태도 동시에 조회
+    fetch(`${SHEETS_URL}?action=schedule_status&date=${encodeURIComponent(d)}`)
+      .then(r=>r.json()).then(d=>{if(d.result==="ok")setSchStatus(d);else setSchStatus(null);}).catch(()=>setSchStatus(null));
   };
+  const[schStatus,setSchStatus]=useState(null);
   useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab,dashDate]);
 
   const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
@@ -228,8 +252,9 @@ export default function App(){
 
       {/* ═══ 상단 탭 (home 에서만 표시) ═══ */}
       {screen==="home"&&(<div style={{display:"flex",gap:6,padding:"10px 14px 0"}}>
-        <button onClick={()=>setTab("register")} style={{flex:1,padding:"10px",fontSize:13,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="register"?T.goldDark:T.white,color:tab==="register"?T.white:T.textSub,boxShadow:tab==="register"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📋 시험 등록</button>
-        <button onClick={()=>setTab("dashboard")} style={{flex:1,padding:"10px",fontSize:13,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="dashboard"?T.goldDark:T.white,color:tab==="dashboard"?T.white:T.textSub,boxShadow:tab==="dashboard"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📊 오늘의 현황</button>
+        <button onClick={()=>setTab("register")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="register"?T.goldDark:T.white,color:tab==="register"?T.white:T.textSub,boxShadow:tab==="register"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📋 시험 등록</button>
+        <button onClick={()=>setTab("dashboard")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="dashboard"?T.goldDark:T.white,color:tab==="dashboard"?T.white:T.textSub,boxShadow:tab==="dashboard"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📊 오늘의 현황</button>
+        <button onClick={()=>setTab("schedule")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="schedule"?T.goldDark:T.white,color:tab==="schedule"?T.white:T.textSub,boxShadow:tab==="schedule"?"none":`inset 0 0 0 1.5px ${T.border}`}}>🗓️ 스케줄</button>
       </div>)}
 
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
@@ -240,8 +265,22 @@ export default function App(){
         <div style={S.card}>
           <div style={S.secLabel}>선생님 정보</div>
           <div style={{marginBottom:0}}>
-            <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span><span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:6}}>(다음부터 자동 입력)</span></div>
-            <input style={S.inp} placeholder="예: 김선생" value={teacher} onChange={e=>setTeacher(e.target.value)}/>
+            <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span><span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:6}}>(선생님목록에서 선택 · 다음부터 자동)</span></div>
+            {teacherList.length>0?(
+              <select style={S.inp} value={teacher} onChange={e=>setTeacher(e.target.value)}>
+                <option value="">-- 선생님 선택 --</option>
+                {["국어","영어","수학","과학","사회"].map(sub=>{
+                  const subTeachers=teacherList.filter(t=>t.subject===sub);
+                  if(subTeachers.length===0)return null;
+                  return(<optgroup key={sub} label={sub+"과"}>{subTeachers.map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>);
+                })}
+                {teacherList.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).length>0&&(
+                  <optgroup label="기타">{teacherList.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>
+                )}
+              </select>
+            ):(
+              <input style={S.inp} placeholder="예: 김선생 (목록 로딩 중…)" value={teacher} onChange={e=>setTeacher(e.target.value)}/>
+            )}
           </div>
         </div>
 
@@ -306,6 +345,32 @@ export default function App(){
             <button onClick={()=>loadDashboard()} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}}>🔄 새로고침</button>
           </div>
         </div>
+        {/* 스케줄 vs 실제 업로드 비교 */}
+        {schStatus&&schStatus.schedule&&schStatus.schedule.length>0&&(()=>{
+          const cnt={done:0,waiting:0,none:0,extra:0};
+          schStatus.schedule.forEach(s=>{
+            if(s.status==="✅ 완료")cnt.done++;
+            else if(s.status==="⏳ 처리대기")cnt.waiting++;
+            else if(s.status==="📤 파일없음")cnt.none++;
+            else if(s.status==="➕ 스케줄 외")cnt.extra++;
+          });
+          return(<div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <div style={{fontSize:13,fontWeight:700,color:T.text}}>📋 스케줄 vs 실제 업로드 ({schStatus.day}요일)</div>
+              <div style={{fontSize:11,color:T.textMuted}}>완료 {cnt.done} · 대기 {cnt.waiting} · 누락 {cnt.none}{cnt.extra?` · 추가 ${cnt.extra}`:""}</div>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+              {schStatus.schedule.map((s,i)=>{
+                const bg=s.status==="✅ 완료"?"#e8f7ec":s.status==="⏳ 처리대기"?"#fff8e1":s.status==="📤 파일없음"?"#ffebee":"#f3e5f5";
+                return(<div key={i} style={{padding:"7px 9px",fontSize:11,background:bg,borderRadius:6,lineHeight:1.4}}>
+                  <div style={{fontWeight:700}}>{s.status}</div>
+                  <div style={{color:T.textSub}}>{s.subject} {s.grade} {s.level} {s.examType?"· "+s.examType:""}</div>
+                  <div style={{color:T.textMuted,fontSize:10}}>👤 {s.teacher} {s.time?"· "+s.time:""}</div>
+                </div>);
+              })}
+            </div>
+          </div>);
+        })()}
         {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
         {dashErr&&<div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{dashErr}</div>}
         {dashData&&!dashLoading&&(()=>{
@@ -431,6 +496,107 @@ export default function App(){
           </>);
         })()}
       </div>);})()}
+
+      {/* ═══ 스케줄 관리 탭 ═══ */}
+      {screen==="home"&&tab==="schedule"&&(<div style={S.wrap} className="fade-up">
+        <div style={{textAlign:"center",padding:"20px 0 12px"}}>
+          <div style={{fontSize:36,marginBottom:4}}>🗓️</div>
+          <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 스케줄 관리</h1>
+          <p style={{fontSize:13,color:T.textMuted}}>요일별 반복 시험을 등록 · 매일 20시 #시험지준비 채널 리마인드</p>
+        </div>
+
+        {/* 등록 폼 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>{schForm.rowIndex?"스케줄 수정":"새 스케줄 등록"}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+            <div>
+              <div style={S.label}>요일 *</div>
+              <select style={S.inp} value={schForm.day} onChange={e=>setSchForm({...schForm,day:e.target.value})}>
+                {["월","화","수","목","금","토","일"].map(d=>(<option key={d} value={d}>{d}</option>))}
+              </select>
+            </div>
+            <div>
+              <div style={S.label}>과목 *</div>
+              <select style={S.inp} value={schForm.subject} onChange={e=>setSchForm({...schForm,subject:e.target.value})}>
+                <option value="">-- 선택 --</option>
+                {["국어","영어","수학","과학","사회"].map(s=>(<option key={s} value={s}>{s}</option>))}
+              </select>
+            </div>
+            <div>
+              <div style={S.label}>학년 *</div>
+              <select style={S.inp} value={schForm.grade} onChange={e=>setSchForm({...schForm,grade:e.target.value})}>
+                <option value="">-- 선택 --</option>
+                {["초5","초6","중1","중2","중3","고1","고2","고3"].map(g=>(<option key={g} value={g}>{g}</option>))}
+              </select>
+            </div>
+            <div>
+              <div style={S.label}>레벨</div>
+              <input style={S.inp} placeholder="예: A반" value={schForm.level} onChange={e=>setSchForm({...schForm,level:e.target.value})}/>
+            </div>
+            <div>
+              <div style={S.label}>시험 종류</div>
+              <input style={S.inp} placeholder="예: 단원평가" value={schForm.examType} onChange={e=>setSchForm({...schForm,examType:e.target.value})}/>
+            </div>
+            <div>
+              <div style={S.label}>선생님 *</div>
+              <select style={S.inp} value={schForm.teacher} onChange={e=>setSchForm({...schForm,teacher:e.target.value})}>
+                <option value="">-- 선택 --</option>
+                {teacherList.filter(t=>!schForm.subject||t.subject===schForm.subject).map(t=>(<option key={t.name} value={t.name}>{t.name} ({t.subject})</option>))}
+              </select>
+            </div>
+            <div>
+              <div style={S.label}>시험 시간</div>
+              <input type="time" style={S.inp} value={schForm.time} onChange={e=>setSchForm({...schForm,time:e.target.value})}/>
+            </div>
+            <div>
+              <div style={S.label}>활성</div>
+              <select style={S.inp} value={schForm.active?"true":"false"} onChange={e=>setSchForm({...schForm,active:e.target.value==="true"})}>
+                <option value="true">활성 (리마인드 발송)</option>
+                <option value="false">비활성</option>
+              </select>
+            </div>
+          </div>
+          <div style={{marginBottom:10}}>
+            <div style={S.label}>비고</div>
+            <input style={S.inp} placeholder="메모" value={schForm.memo} onChange={e=>setSchForm({...schForm,memo:e.target.value})}/>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button style={{...S.btnG,flex:1}} onClick={saveSchedule}>{schForm.rowIndex?"수정 저장":"+ 등록"}</button>
+            {schForm.rowIndex?(<button style={{padding:"12px 18px",borderRadius:10,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer",fontWeight:700}} onClick={()=>setSchForm({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true})}>취소</button>):null}
+          </div>
+        </div>
+
+        {/* 스케줄 목록 (요일별 그룹) */}
+        <div style={S.card}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+            <div style={S.secLabel}>등록된 스케줄 ({schedule.length}개)</div>
+            <button onClick={loadSchedule} style={{padding:"6px 12px",fontSize:12,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer"}}>🔄 새로고침</button>
+          </div>
+          {schLoading?(<div style={{padding:20,textAlign:"center",color:T.textMuted}}>불러오는 중…</div>):
+            schedule.length===0?(<div style={{padding:20,textAlign:"center",color:T.textMuted,fontSize:13}}>등록된 스케줄이 없습니다.</div>):(
+              ["월","화","수","목","금","토","일"].map(day=>{
+                const list=schedule.filter(s=>s.day===day);
+                if(list.length===0)return null;
+                return(<div key={day} style={{marginBottom:14}}>
+                  <div style={{fontSize:14,fontWeight:800,color:T.goldDark,marginBottom:6,paddingBottom:4,borderBottom:`1.5px solid ${T.goldLight}`}}>{day}요일 ({list.length}건)</div>
+                  {list.map(s=>(<div key={s.rowIndex} style={{padding:10,marginBottom:6,background:s.active?T.white:"#f5f5f5",border:`1px solid ${T.border}`,borderRadius:8,opacity:s.active?1:0.6}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                      <div style={{flex:1,fontSize:13,lineHeight:1.5}}>
+                        <div style={{fontWeight:700,color:T.text}}>{s.subject} {s.grade} {s.level} · {s.examType}</div>
+                        <div style={{color:T.textSub,fontSize:12}}>👤 {s.teacher} · 🕐 {s.time||"미정"} {s.memo?" · "+s.memo:""} {!s.active?" · ⏸ 비활성":""}</div>
+                      </div>
+                      <div style={{display:"flex",gap:4}}>
+                        <button onClick={()=>setSchForm({rowIndex:s.rowIndex,day:s.day,subject:s.subject,grade:s.grade,level:s.level||"",examType:s.examType||"",teacher:s.teacher,time:s.time||"",memo:s.memo||"",active:s.active})} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,cursor:"pointer"}}>수정</button>
+                        <button onClick={()=>deleteScheduleRow(s.rowIndex)} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>삭제</button>
+                      </div>
+                    </div>
+                  </div>))}
+                </div>);
+              })
+            )
+          }
+        </div>
+      </div>)}
 
       {/* ═══ 모드 선택 ═══ */}
       {screen==="modeSelect"&&(<div style={S.wrap} className="fade-up">
