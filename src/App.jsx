@@ -379,7 +379,7 @@ export default function App(){
           </div>
         </div>
         {/* 스케줄 vs 실제 업로드 비교 */}
-        {schStatus&&schStatus.schedule&&schStatus.schedule.length>0&&(()=>{
+        {schStatus&&schStatus.hasSchedules&&schStatus.schedule&&schStatus.schedule.length>0&&(()=>{
           const cnt={done:0,waiting:0,none:0,extra:0};
           schStatus.schedule.forEach(s=>{
             if(s.status==="✅ 완료")cnt.done++;
@@ -421,6 +421,15 @@ export default function App(){
               const keys=["영어","국어","수학","과학","사회"];
               const sources=[ex.examType,ex.className,ex.examName].filter(Boolean).join(" ");
               for(const k of keys){if(sources.indexOf(k)>=0)return k;}
+              // 선생님 이름 기반 추론 (선생님목록에서 조회)
+              if(ex.teacher&&teacherList&&teacherList.length){
+                const t=teacherList.find(x=>(x.name||x["이름"])===ex.teacher);
+                if(t){
+                  const ts=String(t.subject||t["과목"]||"");
+                  const mm=ts.match(/(영어|국어|수학|과학|사회)/);
+                  if(mm)return mm[1];
+                }
+              }
               return ex.subject||"기타";
             };
             const s=guessSubj(ex);const g=ex.grade||"기타";const t=ex.teacher||"미지정";
