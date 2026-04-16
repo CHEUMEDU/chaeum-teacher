@@ -53,6 +53,146 @@ function FileUploadMulti({label,req,files,onFilesChange,accept}){
 
 function fileToBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});}
 
+/* ═══ 일괄 프린트 탭 ═══ */
+function PrintTab({sheetsUrl, T, S}){
+  const [jobs, setJobs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [date, setDate] = useState(()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;});
+  const load = useCallback(async()=>{
+    setLoading(true);
+    try{
+      const r = await fetch(`${sheetsUrl}?action=list_print_jobs&date=${encodeURIComponent(date)}`);
+      const j = await r.json();
+      setJobs(j.jobs || []);
+    }catch(e){ setJobs([]); }
+    setLoading(false);
+  }, [date, sheetsUrl]);
+  useEffect(()=>{ load(); }, [load]);
+
+  const dlFile = async(id, name)=>{
+    try{
+      const r = await fetch(`${sheetsUrl}?action=download_file&id=${encodeURIComponent(id)}`);
+      const j = await r.json();
+      if(j.result !== "ok"){ alert("다운로드 실패: "+(j.message||"")); return; }
+      const bin = atob(j.data);
+      const bytes = new Uint8Array(bin.length);
+      for(let i=0;i<bin.length;i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], {type: j.mimeType||"application/octet-stream"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = name; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    }catch(e){ alert("다운로드 오류: "+e); }
+  };
+  const dlAll = async(job)=>{ for(const f of job.files){ await dlFile(f.id, f.name); await new Promise(r=>setTimeout(r,300)); } };
+  const dlAllJobs = async()=>{ for(const job of jobs){ await dlAll(job); } };
+
+  const totalCopies = jobs.reduce((s,j)=>s+(j.count||0)*(j.files.length||0), 0);
+  const totalFiles = jobs.reduce((s,j)=>s+(j.files.length||0), 0);
+
+  return (<div style={S.wrap} className="fade-up">
+    <div style={{textAlign:"center",padding:"20px 0 12px"}}>
+      <div style={{fontSize:36,marginBottom:4}}>🖨️</div>
+      <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>일괄 프린트</h1>
+      <p style={{fontSize:13,color:T.textMuted}}>오늘 프린트할 시험지를 한 번에 다운받으세요</p>
+    </div>
+    <div style={S.card}>
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+        <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...S.inp, width:"auto", flex:1}}/>
+        <button onClick={load} style={{...S.btnO, padding:"10px 14px"}}>🔄 새로고침</button>
+      </div>
+      <div style={{fontSize:13,color:T.textSub,marginBottom:6}}>
+        📋 시험 {jobs.length}건 · 파일 {totalFiles}개 · 예상 출력 <b style={{color:T.goldDark}}>{totalCopies}매</b>
+      </div>
+      {jobs.length>0 && <button onClick={dlAllJobs} style={{...S.btnG, width:"100%", background:T.blue}}>📥 전체 다운로드 ({totalFiles}개 파일)</button>}
+    </div>
+    {loading ? <div style={{textAlign:"center",padding:30,color:T.textMuted}}>로딩 중…</div> :
+     jobs.length === 0 ? <div style={{textAlign:"center",padding:30,color:T.textMuted}}>오늘 프린트할 시험지가 없습니다.</div> :
+     jobs.map((job, i) => (
+      <div key={i} style={{...S.card, marginBottom:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",marginBottom:8}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:15,fontWeight:700,color:T.text}}>{job.subject} {job.grade} {job.level} · {job.examType}{job.round?` (${job.round})`:""}</div>
+            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>👤 {job.teacher} · 예상 <b style={{color:T.goldDark}}>{job.count}명</b> · 파일 {job.files.length}개 → <b>{job.count * job.files.length}매</b></div>
+          </div>
+          <button onClick={()=>dlAll(job)} style={{padding:"6px 12px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer"}}>📥 전체</button>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {job.files.map((f, fi) => (
+            <div key={fi} style={{display:"flex",justifyContent:"space-between",padding:"6px 10px",background:T.bg,borderRadius:6,fontSize:12}}>
+              <span style={{color:T.textSub,flex:1,overflow:"hidden",textOverflow:"ellipsis"}}>📄 {f.name}</span>
+              <button onClick={()=>dlFile(f.id, f.name)} style={{padding:"2px 8px",fontSize:11,border:`1px solid ${T.border}`,background:T.white,borderRadius:4,cursor:"pointer"}}>⬇</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    ))}
+  </div>);
+}
+
+/* ═══ 오답 통계 탭 ═══ */
+function StatsTab({sheetsUrl, T, S}){
+  const [stats, setStats] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [date, setDate] = useState("");
+  const [subject, setSubject] = useState("");
+  const [grade, setGrade] = useState("");
+  const load = useCallback(async()=>{
+    setLoading(true);
+    try{
+      const params = new URLSearchParams({action:"wrong_stats"});
+      if(date) params.set("date", date);
+      if(subject) params.set("subject", subject);
+      if(grade) params.set("grade", grade);
+      const r = await fetch(`${sheetsUrl}?${params.toString()}`);
+      const j = await r.json();
+      setStats(j.stats || []);
+    }catch(e){ setStats([]); }
+    setLoading(false);
+  }, [date, subject, grade, sheetsUrl]);
+  useEffect(()=>{ load(); }, [load]);
+
+  return (<div style={S.wrap} className="fade-up">
+    <div style={{textAlign:"center",padding:"20px 0 12px"}}>
+      <div style={{fontSize:36,marginBottom:4}}>📈</div>
+      <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>반별 오답 통계</h1>
+      <p style={{fontSize:13,color:T.textMuted}}>시험별 평균점수 · 어려운 문항 Top 5</p>
+    </div>
+    <div style={S.card}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+        <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={S.inp} placeholder="날짜"/>
+        <select value={subject} onChange={e=>setSubject(e.target.value)} style={S.inp}>
+          <option value="">전체 과목</option><option>영어</option><option>국어</option><option>수학</option>
+        </select>
+        <select value={grade} onChange={e=>setGrade(e.target.value)} style={S.inp}>
+          <option value="">전체 학년</option>
+          {["초3","초4","초5","초6","중1","중2","중3","고1","고2","고3"].map(g=><option key={g}>{g}</option>)}
+        </select>
+        <button onClick={load} style={S.btnG}>🔍 조회</button>
+      </div>
+    </div>
+    {loading ? <div style={{textAlign:"center",padding:30,color:T.textMuted}}>로딩 중…</div> :
+     stats.length === 0 ? <div style={{textAlign:"center",padding:30,color:T.textMuted}}>데이터 없음</div> :
+     stats.map((s, i) => (
+      <div key={i} style={{...S.card, marginBottom:10}}>
+        <div style={{fontSize:14,fontWeight:700,color:T.text,marginBottom:4}}>{s.subject} {s.grade} {s.level} · {s.examType}</div>
+        <div style={{fontSize:12,color:T.textSub,marginBottom:8}}>응시 <b>{s.total}명</b> · 평균 <b style={{color:s.avg>=70?T.accent:s.avg>=50?T.goldDark:T.danger}}>{s.avg}점</b></div>
+        {s.hardest && s.hardest.length>0 && <div>
+          <div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>어려운 문항 Top {s.hardest.length}</div>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            {s.hardest.map((h, hi) => (
+              <div key={hi} style={{display:"flex",justifyContent:"space-between",padding:"6px 10px",background:h.pct>=70?T.dangerLight:T.bg,borderRadius:6,fontSize:12}}>
+                <span style={{fontWeight:600}}>{h.q}번</span>
+                <span style={{color:T.textSub}}>틀림 {h.wrong}명 ({h.pct}%)</span>
+              </div>
+            ))}
+          </div>
+        </div>}
+      </div>
+    ))}
+  </div>);
+}
+
 export default function App(){
   // 상단 탭 (등록 / 오늘의 현황)
   const[tab,setTab]=useState("register");
@@ -213,6 +353,29 @@ export default function App(){
     if(active.length===0)return alert("최소 1개 차수에 시험지·정답지를 업로드하세요.");
     const missingAns=active.find(r=>r.answerFiles.length===0);
     if(missingAns)return alert(`${missingAns.label} 시험에 정답지가 없습니다.\n정답지를 올려주세요 (Claude 분석 필수).`);
+
+    // D. 입력 검증 — 혼합인데 주관식 번호 미지정
+    if(subjMode==="mixed" && !subjRanges.trim()){
+      return alert("⚠️ '객관식+주관식 혼합'을 선택하셨는데 주관식 번호가 비어있습니다.\n예: 21-30, 41-45\n\n번호를 입력하지 않으시려면 '전체 객관식' 또는 '전체 주관식'을 선택해주세요.");
+    }
+    // D. 입력 검증 — 주관식 번호가 범위를 벗어남 (문항수 가늠 불가하니 경고만)
+    if(subjMode==="mixed" && subjRanges){
+      const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
+      if(maxNum>200){
+        if(!confirm(`주관식 번호에 ${maxNum}번이 포함되어 있습니다. 문항수를 초과한 것 아닌가요?\n그래도 진행하시겠습니까?`))return;
+      }
+    }
+    // D. 파일명 휴리스틱 — 답지에 "시험지/문제" 키워드
+    for(const rd of active){
+      const suspAns=rd.answerFiles.find(f=>/(시험지|문제지|problem|question|quiz)/i.test(f.name)&&!/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
+      if(suspAns){
+        if(!confirm(`⚠️ ${rd.label} 정답지로 올린 파일 "${suspAns.name}"이 시험지처럼 보입니다.\n\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;
+      }
+      const suspExam=rd.examFiles.find(f=>/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
+      if(suspExam){
+        if(!confirm(`⚠️ ${rd.label} 시험지로 올린 파일 "${suspExam.name}"이 답지처럼 보입니다.\n\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;
+      }
+    }
     setSaving(true);setError("");
     try{
       for(const rd of active){
@@ -305,7 +468,15 @@ export default function App(){
         <button onClick={()=>setTab("register")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="register"?T.goldDark:T.white,color:tab==="register"?T.white:T.textSub,boxShadow:tab==="register"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📋 시험 등록</button>
         <button onClick={()=>setTab("dashboard")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="dashboard"?T.goldDark:T.white,color:tab==="dashboard"?T.white:T.textSub,boxShadow:tab==="dashboard"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📊 오늘의 현황</button>
         <button onClick={()=>setTab("schedule")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="schedule"?T.goldDark:T.white,color:tab==="schedule"?T.white:T.textSub,boxShadow:tab==="schedule"?"none":`inset 0 0 0 1.5px ${T.border}`}}>🗓️ 스케줄</button>
+        <button onClick={()=>setTab("print")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="print"?T.goldDark:T.white,color:tab==="print"?T.white:T.textSub,boxShadow:tab==="print"?"none":`inset 0 0 0 1.5px ${T.border}`}}>🖨️ 일괄 프린트</button>
+        <button onClick={()=>setTab("stats")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="stats"?T.goldDark:T.white,color:tab==="stats"?T.white:T.textSub,boxShadow:tab==="stats"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📈 오답 통계</button>
       </div>)}
+
+      {/* ═══ 일괄 프린트 탭 ═══ */}
+      {screen==="home"&&tab==="print"&&(<PrintTab sheetsUrl={SHEETS_URL} T={T} S={S}/>)}
+
+      {/* ═══ 오답 통계 탭 ═══ */}
+      {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S}/>)}
 
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
       {screen==="home"&&tab==="register"&&(<div style={S.wrap} className="fade-up">
