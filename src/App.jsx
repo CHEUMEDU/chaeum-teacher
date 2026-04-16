@@ -245,28 +245,47 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     setSending(false);
   };
 
-  // 미리보기 로드 (3세트 대응)
+  // 미리보기 로드 (Drive 파일 + 시트 정답데이터 두 경로 지원)
   const loadPreview=async(rowIndex)=>{
     setPrevLoading(true);setPrevRow(rowIndex);setSelectedSet(0);
     try{
       const r=await fetch(`${sheetsUrl}?action=get_exam_gen_detail&rowIndex=${rowIndex}`);
       const d=await r.json();
       if(d.result==="ok"&&d.detail){
-        // 디버그: 파일 읽기 에러 확인
-        if(d.detail.questionsError){
-          alert("⚠️ 문제 파일 읽기 실패:\n"+d.detail.questionsError+"\n\nresultFileId: "+(d.detail.resultFileId||"없음"));
+        let sets=[];
+        const det=d.detail;
+
+        // 경로 1: Drive 파일에서 전체 문제 로드 (questions 필드)
+        if(det.questions){
+          const raw=det.questions;
+          if(raw.sets&&Array.isArray(raw.sets)){
+            sets=raw.sets;
+          }else if(raw.questions&&Array.isArray(raw.questions)){
+            sets=[raw];
+          }
         }
-        // 3세트 구조: detail.questions = {sets:[{questions:[...]}, ...]} 또는 기존 단일 {questions:[...]}
-        const raw=d.detail.questions||{};
-        let sets;
-        if(raw.sets&&Array.isArray(raw.sets)){
-          sets=raw.sets; // 새 3세트 구조
-        }else if(raw.questions&&Array.isArray(raw.questions)){
-          sets=[raw]; // 기존 단일 구조 → 1세트로 래핑
-        }else{
-          sets=[];
+
+        // 경로 2: 시트에 저장된 정답데이터 (answerData 필드) — Drive 실패 시 fallback
+        if(sets.length===0&&det.answerData){
+          const ad=det.answerData;
+          if(ad.sets&&Array.isArray(ad.sets)){
+            // answerData.sets = [{answers:[1,3,...], types:["mc",...], style:"..."}, ...]
+            sets=ad.sets.map((s,i)=>{
+              const qs=(s.answers||[]).map((ans,qi)=>({
+                number:qi+1,
+                difficulty:qi<det.questionCount*0.3?"easy":qi<det.questionCount*0.7?"medium":"hard",
+                type:(s.types||[])[qi]||"mc",
+                question:`문제 ${qi+1}`,
+                choices:s.types&&s.types[qi]==="mc"?["①","②","③","④","⑤"]:[],
+                answer:ans,
+                explanation:""
+              }));
+              return{style:s.style||`스타일 ${["A","B","C"][i]}`,questions:qs};
+            });
+          }
         }
-        setPreview({...d.detail, sets, _debug:{hasQuestions:!!d.detail.questions,rawKeys:Object.keys(raw),setsCount:sets.length,fileId:d.detail.resultFileId||"없음",error:d.detail.questionsError||"없음"}});
+
+        setPreview({...det, sets, _source:det.questionsSource||"none", _error:det.questionsError||""});
         setStep(4);
       }else{alert("상세 조회 실패: "+(d.message||""));}
     }catch(e){alert("조회 오류: "+e);}
@@ -699,19 +718,17 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         <div><div style={{fontSize:11,color:T.textMuted}}>선생님</div><div style={{fontSize:14,fontWeight:700,color:T.text}}>{preview.teacher}</div></div>
       </div>
 
-      {/* 디버그 정보 (문제 로딩 실패 시) */}
-      {qs.length===0&&preview._debug&&<div style={{padding:12,borderRadius:8,background:"#FFF3E0",border:"1px solid #FFB74D",fontSize:12,color:"#E65100",marginBottom:12}}>
-        <div style={{fontWeight:700,marginBottom:4}}>⚠️ 문제 로딩 디버그 정보</div>
-        <div>파일ID: {preview._debug.fileId}</div>
-        <div>questions 존재: {preview._debug.hasQuestions?"✅":"❌"}</div>
-        <div>raw keys: {preview._debug.rawKeys.join(", ")||"없음"}</div>
-        <div>세트 수: {preview._debug.setsCount}</div>
-        <div>에러: {preview._debug.error}</div>
+      {/* 데이터 소스 표시 */}
+      {preview._source==="sheet"&&<div style={{padding:"6px 12px",borderRadius:8,background:"#E3F2FD",fontSize:11,color:"#1565C0",marginBottom:8,textAlign:"center"}}>
+        📋 시트 정답데이터에서 로드됨 (간략 미리보기)
+      </div>}
+      {preview._error&&<div style={{padding:"8px 12px",borderRadius:8,background:"#FFF3E0",border:"1px solid #FFB74D",fontSize:11,color:"#E65100",marginBottom:8}}>
+        ⚠️ {preview._error}
       </div>}
 
       {/* 난이도별 문제 */}
-      {qs.length===0&&!(preview._debug&&preview._debug.hasQuestions)?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>
-        {preview._debug?.error!=="없음"?"⚠️ 문제 파일을 읽을 수 없습니다. Apps Script를 최신 버전으로 배포해주세요.":"이 세트에 문제가 없습니다."}
+      {qs.length===0?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>
+        {preview._error?"⚠️ 문제 데이터를 불러올 수 없습니다.\nApps Script를 최신 버전(v7)으로 배포해주세요.":"이 세트에 문제가 없습니다."}
       </div>:
       ["easy","medium","hard"].map(diff=>{
         const items=grouped[diff];
