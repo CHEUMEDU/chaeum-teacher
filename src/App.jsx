@@ -252,6 +252,10 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       const r=await fetch(`${sheetsUrl}?action=get_exam_gen_detail&rowIndex=${rowIndex}`);
       const d=await r.json();
       if(d.result==="ok"&&d.detail){
+        // 디버그: 파일 읽기 에러 확인
+        if(d.detail.questionsError){
+          alert("⚠️ 문제 파일 읽기 실패:\n"+d.detail.questionsError+"\n\nresultFileId: "+(d.detail.resultFileId||"없음"));
+        }
         // 3세트 구조: detail.questions = {sets:[{questions:[...]}, ...]} 또는 기존 단일 {questions:[...]}
         const raw=d.detail.questions||{};
         let sets;
@@ -262,7 +266,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         }else{
           sets=[];
         }
-        setPreview({...d.detail, sets});
+        setPreview({...d.detail, sets, _debug:{hasQuestions:!!d.detail.questions,rawKeys:Object.keys(raw),setsCount:sets.length,fileId:d.detail.resultFileId||"없음",error:d.detail.questionsError||"없음"}});
         setStep(4);
       }else{alert("상세 조회 실패: "+(d.message||""));}
     }catch(e){alert("조회 오류: "+e);}
@@ -695,8 +699,20 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         <div><div style={{fontSize:11,color:T.textMuted}}>선생님</div><div style={{fontSize:14,fontWeight:700,color:T.text}}>{preview.teacher}</div></div>
       </div>
 
+      {/* 디버그 정보 (문제 로딩 실패 시) */}
+      {qs.length===0&&preview._debug&&<div style={{padding:12,borderRadius:8,background:"#FFF3E0",border:"1px solid #FFB74D",fontSize:12,color:"#E65100",marginBottom:12}}>
+        <div style={{fontWeight:700,marginBottom:4}}>⚠️ 문제 로딩 디버그 정보</div>
+        <div>파일ID: {preview._debug.fileId}</div>
+        <div>questions 존재: {preview._debug.hasQuestions?"✅":"❌"}</div>
+        <div>raw keys: {preview._debug.rawKeys.join(", ")||"없음"}</div>
+        <div>세트 수: {preview._debug.setsCount}</div>
+        <div>에러: {preview._debug.error}</div>
+      </div>}
+
       {/* 난이도별 문제 */}
-      {qs.length===0?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>이 세트에 문제가 없습니다.</div>:
+      {qs.length===0&&!(preview._debug&&preview._debug.hasQuestions)?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>
+        {preview._debug?.error!=="없음"?"⚠️ 문제 파일을 읽을 수 없습니다. Apps Script를 최신 버전으로 배포해주세요.":"이 세트에 문제가 없습니다."}
+      </div>:
       ["easy","medium","hard"].map(diff=>{
         const items=grouped[diff];
         if(items.length===0)return null;
