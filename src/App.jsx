@@ -144,7 +144,13 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[diffEasy,setDiffEasy]=useState(30);
   const[diffMed,setDiffMed]=useState(50);
   const[diffHard,setDiffHard]=useState(20);
-  const[targetClass,setTargetClass]=useState(""); // "영어 중2 SB반" 형태
+  // 반 선택 (시험등록과 동일 방식)
+  const[genSubject,setGenSubject]=useState("");
+  const[genGrade,setGenGrade]=useState("");
+  const[genLevel,setGenLevel]=useState("");
+  const[genLevelCustom,setGenLevelCustom]=useState("");
+  const[genLevelCat,setGenLevelCat]=useState("level");
+  const[genClasses,setGenClasses]=useState([]); // [{subject,grade,level,name}]
   const[targetTeacher,setTargetTeacher]=useState("");
   const[memo,setMemo]=useState("");
   const[sending,setSending]=useState(false);
@@ -152,10 +158,23 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   // 히스토리 (생성 요청 목록)
   const[history,setHistory]=useState([]);
   const[histLoading,setHistLoading]=useState(false);
-  // 미리보기
-  const[preview,setPreview]=useState(null); // {detail, questions}
+  // 미리보기 (3세트: A/B/C)
+  const[preview,setPreview]=useState(null); // {detail, sets:[{questions},..]}
   const[prevLoading,setPrevLoading]=useState(false);
-  const[prevRow,setPrevRow]=useState(null); // 현재 보고 있는 rowIndex
+  const[prevRow,setPrevRow]=useState(null);
+  const[selectedSet,setSelectedSet]=useState(0); // 0=A, 1=B, 2=C
+
+  // 반 추가 핸들러
+  const addGenClass=()=>{
+    if(!genSubject)return alert("과목을 선택하세요.");
+    if(!genGrade)return alert("학년을 선택하세요.");
+    const lv=genLevelCat==="etc"?genLevelCustom:genLevel;
+    if(!lv)return alert("레벨/학교를 선택하세요.");
+    const name=`${genSubject} ${genGrade} ${lv}반`;
+    if(genClasses.some(c=>c.name===name))return alert("이미 추가된 반입니다.");
+    setGenClasses(p=>[...p,{subject:genSubject,grade:genGrade,level:lv,name}]);
+    setGenLevel("");setGenLevelCustom("");
+  };
 
   // ── 교재 목록 (확장 가능) ──
   const TEXTBOOKS=[
@@ -194,13 +213,14 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     if(!textbook)return alert("교재를 선택하세요.");
     if(rangeType==="chapter"&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
     if(rangeType==="page"&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
-    if(!targetTeacher)return alert("선생님 이름을 입력하세요.");
-    if(!targetClass)return alert("대상 반을 입력하세요.");
+    if(!targetTeacher)return alert("선생님 이름을 선택하세요.");
+    if(genClasses.length===0)return alert("대상 반을 1개 이상 추가하세요.");
     setSending(true);
     try{
       const rangeDesc=rangeType==="chapter"
         ?chapters.map(i=>selBook.chapters[i]).join(", ")
         :`p.${pageFrom}~${pageTo}`;
+      const targetClass=genClasses.map(c=>c.name).join(", ");
       const body={
         action:"request_exam_gen",
         textbook:selBook.name,
@@ -223,24 +243,49 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     setSending(false);
   };
 
-  // 미리보기 로드
+  // 미리보기 로드 (3세트 대응)
   const loadPreview=async(rowIndex)=>{
-    setPrevLoading(true);setPrevRow(rowIndex);
+    setPrevLoading(true);setPrevRow(rowIndex);setSelectedSet(0);
     try{
       const r=await fetch(`${sheetsUrl}?action=get_exam_gen_detail&rowIndex=${rowIndex}`);
       const d=await r.json();
       if(d.result==="ok"&&d.detail){
-        setPreview(d.detail);
-        setStep(4); // 4 = 미리보기 화면
+        // 3세트 구조: detail.questions = {sets:[{questions:[...]}, ...]} 또는 기존 단일 {questions:[...]}
+        const raw=d.detail.questions||{};
+        let sets;
+        if(raw.sets&&Array.isArray(raw.sets)){
+          sets=raw.sets; // 새 3세트 구조
+        }else if(raw.questions&&Array.isArray(raw.questions)){
+          sets=[raw]; // 기존 단일 구조 → 1세트로 래핑
+        }else{
+          sets=[];
+        }
+        setPreview({...d.detail, sets});
+        setStep(4);
       }else{alert("상세 조회 실패: "+(d.message||""));}
     }catch(e){alert("조회 오류: "+e);}
     setPrevLoading(false);
   };
 
-  // OMR 시험 등록 (생성된 문제를 정답목록에 저장)
+  // 문제 다시 내기 (재생성 요청)
+  const requestRegenerate=async(rowIndex)=>{
+    if(!confirm("이 시험 문제를 새로 만들까요?\n(기존 문제는 사라지고 약 10분 후 새 문제가 생성됩니다)"))return;
+    setSending(true);
+    try{
+      await fetch(`${sheetsUrl}?action=update_exam_gen_status&rowIndex=${rowIndex}&status=대기`);
+      alert("재생성 요청 완료! 약 10분 후 새 문제가 만들어집니다.");
+      setStep(1);setPreview(null);loadHistory();
+    }catch(e){alert("요청 실패: "+e);}
+    setSending(false);
+  };
+
+  // OMR 시험 등록 (선택한 세트의 문제를 정답목록에 저장)
   const registerExam=async()=>{
-    if(!preview||!preview.questions||!preview.questions.questions)return alert("문제 데이터가 없습니다.");
-    const qs=preview.questions.questions;
+    if(!preview||!preview.sets||preview.sets.length===0)return alert("문제 데이터가 없습니다.");
+    const chosenSet=preview.sets[selectedSet];
+    if(!chosenSet)return alert("세트를 선택하세요.");
+    const qs=chosenSet.questions||[];
+    if(qs.length===0)return alert("문제가 없습니다.");
     const answers=qs.map(q=>q.type==="mc"?q.answer:String(q.answer||""));
     const types=qs.map(q=>q.type==="mc"?"obj":"sub");
     setSending(true);
@@ -261,7 +306,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           className:preview.targetClass||"",
           date:new Date().toISOString().split("T")[0].replace(/-/g,".")
         })});
-      alert("시험이 등록되었습니다! 학생들이 선택할 수 있어요.");
+      alert(`세트 ${["A","B","C"][selectedSet]}로 시험이 등록되었습니다! 학생들이 선택할 수 있어요.`);
       setStep(1);setPreview(null);loadHistory();
     }catch(e){alert("등록 실패: "+e);}
     setSending(false);
@@ -403,12 +448,49 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     {/* 대상 반 + 선생님 */}
     {textbook&&<div style={S.card}>
       <div style={S.secLabel}>대상 정보</div>
-      <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span></div>
-      <input style={{...S.inp,marginBottom:12}} placeholder="예: 김선생" value={targetTeacher}
-        onChange={e=>setTargetTeacher(e.target.value)}/>
-      <div style={S.label}>대상 반 <span style={{color:T.danger}}>*</span></div>
-      <input style={{...S.inp,marginBottom:12}} placeholder="예: 영어 중2 SB반" value={targetClass}
-        onChange={e=>setTargetClass(e.target.value)}/>
+
+      {/* 선생님 드롭다운 (시험등록과 동일) */}
+      <div style={{marginBottom:14}}>
+        <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span></div>
+        {_tl&&_tl.length>0?(
+          <select style={S.inp} value={targetTeacher} onChange={e=>setTargetTeacher(e.target.value)}>
+            <option value="">-- 선생님 선택 --</option>
+            {["국어","영어","수학","과학","사회"].map(sub=>{
+              const subT=_tl.filter(t=>t.subject===sub);
+              if(subT.length===0)return null;
+              return(<optgroup key={sub} label={sub+"과"}>{subT.map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>);
+            })}
+            {_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).length>0&&(
+              <optgroup label="기타">{_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>
+            )}
+          </select>
+        ):(<input style={S.inp} placeholder="예: 김선생 (목록 로딩 중…)" value={targetTeacher} onChange={e=>setTargetTeacher(e.target.value)}/>)}
+      </div>
+
+      {/* 반 추가 (시험등록과 동일 방식) */}
+      <div style={{marginBottom:14}}>
+        <div style={S.label}>과목 <span style={{color:T.danger}}>*</span></div>
+        <div style={S.cw}>{SUBJECTS.map(o=>{const a=genSubject===o;return(<button key={o} onClick={()=>setGenSubject(genSubject===o?"":o)} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500}}>{o}</button>);})}</div>
+      </div>
+      <div style={{marginBottom:14}}>
+        <div style={S.label}>학년 <span style={{color:T.danger}}>*</span></div>
+        <div style={S.cw}>{GRADES.map(o=>{const a=genGrade===o;return(<button key={o} onClick={()=>setGenGrade(genGrade===o?"":o)} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500}}>{o}</button>);})}</div>
+      </div>
+      <div style={{marginBottom:14}}>
+        <div style={S.label}>레벨 / 학교 <span style={{color:T.danger}}>*</span></div>
+        <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=genLevelCat===c.key;return(<button key={c.key} onClick={()=>{setGenLevelCat(c.key);setGenLevel("");setGenLevelCustom("");}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
+        {genLevelCat!=="etc"?(<div style={S.cw}>{(LV_CATS.find(c=>c.key===genLevelCat)?.opts||[]).map(o=>{const a=genLevel===o;return(<button key={o} onClick={()=>setGenLevel(genLevel===o?"":o)} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{o}</button>);})}</div>
+        ):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={genLevelCustom} onChange={e=>{setGenLevelCustom(e.target.value);setGenLevel(e.target.value);}}/>)}
+      </div>
+      {genSubject&&genGrade&&(genLevel||genLevelCustom)&&(<div style={S.addRow}>
+        <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{genSubject} {genGrade} {genLevelCat==="etc"?genLevelCustom:genLevel}반</div>
+        <button onClick={addGenClass} style={S.addBtn}>+ 반 추가</button>
+      </div>)}
+      {genClasses.length>0&&(<div style={{marginTop:12,marginBottom:14}}>
+        <div style={{fontSize:12,fontWeight:600,color:T.textMuted,marginBottom:6}}>추가된 반 ({genClasses.length}개)</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{genClasses.map((c,i)=>(<div key={i} style={S.tag}><span>{c.name}</span><button onClick={()=>setGenClasses(p=>p.filter((_,j)=>j!==i))} style={S.tagX}>×</button></div>))}</div>
+      </div>)}
+
       <div style={S.label}>메모 (선택)</div>
       <input style={S.inp} placeholder="추가 요청사항 (예: 서술형 포함)" value={memo}
         onChange={e=>setMemo(e.target.value)}/>
@@ -420,8 +502,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         if(!textbook)return alert("교재를 선택하세요.");
         if(rangeType==="chapter"&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
         if(rangeType==="page"&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
-        if(!targetTeacher)return alert("선생님 이름을 입력하세요.");
-        if(!targetClass)return alert("대상 반을 입력하세요.");
+        if(!targetTeacher)return alert("선생님 이름을 선택하세요.");
+        if(genClasses.length===0)return alert("대상 반을 1개 이상 추가하세요.");
         setStep(2);
       }}>
       다음: 생성 요청 확인 →
@@ -521,9 +603,13 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     </button>
   </div>);
 
-  // ── Step 4: 미리보기 (생성된 문제 확인) ──
+  // ── Step 4: 미리보기 (3세트 탭 전환 + 재생성) ──
   if(step===4&&preview){
-    const qs=preview.questions?.questions||[];
+    const sets=preview.sets||[];
+    const setLabels=["A","B","C"];
+    const setColors=["#1E88E5","#43A047","#FB8C00"];
+    const curSet=sets[selectedSet];
+    const qs=curSet?.questions||[];
     const diffColors={easy:"#4CAF50",medium:"#FF9800",hard:"#F44336"};
     const diffLabels={easy:"★☆☆ 쉬움",medium:"★★☆ 보통",hard:"★★★ 어려움"};
     const grouped={easy:[],medium:[],hard:[]};
@@ -536,6 +622,30 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         <p style={{fontSize:13,color:T.textMuted}}>{preview.textbook} · {preview.rangeDesc}</p>
       </div>
 
+      {/* 3세트 탭 */}
+      {sets.length>1&&<div style={{display:"flex",gap:6,marginBottom:16}}>
+        {sets.map((s,i)=>{
+          const active=selectedSet===i;
+          const label=`세트 ${setLabels[i]}`;
+          const desc=s.style||`스타일 ${i+1}`;
+          return(<button key={i} onClick={()=>setSelectedSet(i)} style={{
+            flex:1,padding:"12px 8px",borderRadius:12,
+            border:`2px solid ${active?setColors[i]:T.border}`,
+            background:active?setColors[i]+"15":T.white,
+            cursor:"pointer",fontFamily:"inherit",textAlign:"center",transition:"all .15s"
+          }}>
+            <div style={{fontSize:14,fontWeight:active?800:600,color:active?setColors[i]:T.textSub}}>{label}</div>
+            <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{desc}</div>
+            <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{(s.questions||[]).length}문제</div>
+          </button>);
+        })}
+      </div>}
+
+      {/* 선택된 세트 표시 */}
+      {sets.length>1&&<div style={{padding:"8px 14px",borderRadius:10,background:setColors[selectedSet]+"15",border:`1.5px solid ${setColors[selectedSet]}`,fontSize:13,fontWeight:700,color:setColors[selectedSet],textAlign:"center",marginBottom:12}}>
+        현재 보고 있는 시험지: 세트 {setLabels[selectedSet]}
+      </div>}
+
       {/* 요약 카드 */}
       <div style={{...S.card,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center"}}>
         <div><div style={{fontSize:11,color:T.textMuted}}>문제 수</div><div style={{fontSize:18,fontWeight:800,color:T.text}}>{qs.length}</div></div>
@@ -544,7 +654,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       </div>
 
       {/* 난이도별 문제 */}
-      {["easy","medium","hard"].map(diff=>{
+      {qs.length===0?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>이 세트에 문제가 없습니다.</div>:
+      ["easy","medium","hard"].map(diff=>{
         const items=grouped[diff];
         if(items.length===0)return null;
         return(<div key={diff} style={{marginBottom:16}}>
@@ -579,10 +690,16 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       })}
 
       {/* 하단 액션 */}
-      <div style={{position:"sticky",bottom:0,background:T.white,padding:"12px 0",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>
-        <button onClick={()=>{setStep(1);setPreview(null);}} style={{...S.btnO,flex:1}}>← 돌아가기</button>
-        <button onClick={registerExam} disabled={sending} style={{...S.btnG,flex:2,opacity:sending?0.5:1}}>
-          {sending?"등록 중…":"✅ 이 문제로 시험 등록"}
+      <div style={{position:"sticky",bottom:0,background:T.white,padding:"12px 0",borderTop:`1px solid ${T.border}`}}>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <button onClick={()=>{setStep(1);setPreview(null);}} style={{...S.btnO,flex:1,padding:"10px"}}>← 돌아가기</button>
+          <button onClick={()=>requestRegenerate(prevRow)} disabled={sending}
+            style={{flex:1,padding:"10px",fontSize:13,fontWeight:600,borderRadius:12,border:`1.5px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}}>
+            🔄 문제 다시 내기
+          </button>
+        </div>
+        <button onClick={registerExam} disabled={sending} style={{...S.btnG,opacity:sending?0.5:1}}>
+          {sending?"등록 중…":`✅ 세트 ${setLabels[selectedSet]}로 시험 등록`}
         </button>
       </div>
     </div>);
@@ -920,10 +1037,14 @@ export default function App(){
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
 
   return(
-    <div style={S.app}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:${T.bg}}input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-shadow:0 0 0 3px ${T.goldLight}!important}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes spin{to{transform:rotate(360deg)}}.fade-up{animation:fadeUp .3s ease-out}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}`}</style>
+    <div style={S.app} className="app-shell">
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:${T.bg}}input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-shadow:0 0 0 3px ${T.goldLight}!important}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes spin{to{transform:rotate(360deg)}}.fade-up{animation:fadeUp .3s ease-out}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}
+/* ── 반응형: PC에서 넓게 ── */
+@media(min-width:768px){.app-shell{max-width:960px!important}.hdr-inner{max-width:960px!important}.sub-bar-fix{max-width:960px!important}}
+@media(min-width:1200px){.app-shell{max-width:1200px!important}.hdr-inner{max-width:1200px!important}.sub-bar-fix{max-width:1200px!important}}
+`}</style>
 
-      <header style={S.hdr}><div style={S.hdrIn}><div style={S.logoR}><div style={S.logoM}>채움</div><div><div style={S.hdrT}>채움학원</div><div style={S.hdrS}>시험 등록 (선생님용)</div></div></div>{teacher&&<div style={S.hdrB}>👤 {teacher}</div>}</div></header>
+      <header style={S.hdr}><div style={S.hdrIn} className="hdr-inner"><div style={S.logoR}><div style={S.logoM}>채움</div><div><div style={S.hdrT}>채움학원</div><div style={S.hdrS}>시험 등록 (선생님용)</div></div></div>{teacher&&<div style={S.hdrB}>👤 {teacher}</div>}</div></header>
 
       {/* ═══ 상단 탭 (home 에서만 표시) ═══ */}
       {screen==="home"&&(<div style={{display:"flex",gap:6,padding:"10px 14px 0"}}>
@@ -1523,6 +1644,7 @@ const S={
   app:{fontFamily:"'Noto Sans KR',-apple-system,sans-serif",background:T.bg,minHeight:"100vh",maxWidth:480,margin:"0 auto",paddingBottom:20},
   hdr:{background:T.white,borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,zIndex:100},
   hdrIn:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",maxWidth:480,margin:"0 auto"},
+  // NOTE: maxWidth는 CSS 클래스(.app-shell, .hdr-inner)로 반응형 오버라이드됨
   logoR:{display:"flex",alignItems:"center",gap:10},logoM:{width:36,height:36,borderRadius:10,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,color:T.white,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13,letterSpacing:-1},
   hdrT:{fontSize:15,fontWeight:800,color:T.text,letterSpacing:-.3},hdrS:{fontSize:10,color:T.textMuted,fontWeight:500,marginTop:-1},
   hdrB:{fontSize:10,fontWeight:600,color:T.goldDark,background:T.goldLight,padding:"4px 10px",borderRadius:20,whiteSpace:"nowrap"},
@@ -1552,7 +1674,7 @@ const S={
   qNum:{flex:"0 0 28px",height:28,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700},
   cBtn:{flex:1,height:36,minWidth:0,borderRadius:9,border:"1.5px solid",fontSize:14,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"},
   sInp:{flex:1,padding:"8px 12px",fontSize:14,borderRadius:9,border:`1.5px solid ${T.border}`,fontFamily:"inherit",background:T.bg},
-  subBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:T.white,borderTop:`1px solid ${T.border}`,padding:"10px 16px",paddingBottom:"max(10px,env(safe-area-inset-bottom))",display:"flex",alignItems:"center",gap:10,zIndex:200},
+  subBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:T.white,borderTop:`1px solid ${T.border}`,padding:"10px 16px",paddingBottom:"max(10px,env(safe-area-inset-bottom))",display:"flex",alignItems:"center",gap:10,zIndex:200}, /* sub-bar-fix 클래스로 PC 반응형 */
   subBtn:{padding:"11px 24px",fontSize:15,fontWeight:700,color:T.white,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,border:"none",borderRadius:10,cursor:"pointer",fontFamily:"inherit"},
   overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20},
   modal:{background:T.white,borderRadius:18,padding:"40px 20px",maxWidth:320,width:"100%",textAlign:"center"},
