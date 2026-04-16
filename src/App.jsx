@@ -130,6 +130,468 @@ function PrintTab({sheetsUrl, T, S}){
   </div>);
 }
 
+/* ═══ 📚 문제 생성기 탭 ═══ */
+function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
+  // ── 상태 ──
+  const[step,setStep]=useState(1); // 1:설정, 2:확인, 3:결과
+  const[textbook,setTextbook]=useState("");
+  const[rangeType,setRangeType]=useState("chapter"); // chapter | page
+  const[chapters,setChapters]=useState([]); // 선택된 챕터 인덱스 배열
+  const[pageFrom,setPageFrom]=useState("");
+  const[pageTo,setPageTo]=useState("");
+  const[testType,setTestType]=useState("grammar"); // grammar | vocab
+  const[questionCount,setQuestionCount]=useState(20);
+  const[diffEasy,setDiffEasy]=useState(30);
+  const[diffMed,setDiffMed]=useState(50);
+  const[diffHard,setDiffHard]=useState(20);
+  const[targetClass,setTargetClass]=useState(""); // "영어 중2 SB반" 형태
+  const[targetTeacher,setTargetTeacher]=useState("");
+  const[memo,setMemo]=useState("");
+  const[sending,setSending]=useState(false);
+  const[sentOk,setSentOk]=useState(false);
+  // 히스토리 (생성 요청 목록)
+  const[history,setHistory]=useState([]);
+  const[histLoading,setHistLoading]=useState(false);
+  // 미리보기
+  const[preview,setPreview]=useState(null); // {detail, questions}
+  const[prevLoading,setPrevLoading]=useState(false);
+  const[prevRow,setPrevRow]=useState(null); // 현재 보고 있는 rowIndex
+
+  // ── 교재 목록 (확장 가능) ──
+  const TEXTBOOKS=[
+    {id:"chaeum_grammar3",name:"채움 구문형 3",chapters:[
+      "Chapter 1. 문장의 형식","Chapter 2. 시제","Chapter 3. 조동사",
+      "Chapter 4. 수동태","Chapter 5. 부정사","Chapter 6. 동명사",
+      "Chapter 7. 분사","Chapter 8. 관계사","Chapter 9. 접속사",
+      "Chapter 10. 비교구문","Chapter 11. 가정법","Chapter 12. 특수구문",
+    ], totalPages:237},
+  ];
+  const selBook=TEXTBOOKS.find(b=>b.id===textbook);
+
+  // 챕터 토글
+  const toggleCh=(idx)=>setChapters(p=>p.includes(idx)?p.filter(i=>i!==idx):[...p,idx].sort((a,b)=>a-b));
+
+  // 난이도 슬라이더 핸들러 (합계 100% 유지)
+  const adjustDiff=(type,val)=>{
+    val=Math.max(0,Math.min(100,val));
+    if(type==="easy"){
+      const remain=100-val;
+      const ratio=diffMed+diffHard>0?diffMed/(diffMed+diffHard):0.5;
+      setDiffEasy(val);setDiffMed(Math.round(remain*ratio));setDiffHard(remain-Math.round(remain*ratio));
+    }else if(type==="med"){
+      const remain=100-val;
+      const ratio=diffEasy+diffHard>0?diffEasy/(diffEasy+diffHard):0.5;
+      setDiffMed(val);setDiffEasy(Math.round(remain*ratio));setDiffHard(remain-Math.round(remain*ratio));
+    }else{
+      const remain=100-val;
+      const ratio=diffEasy+diffMed>0?diffEasy/(diffEasy+diffMed):0.5;
+      setDiffHard(val);setDiffEasy(Math.round(remain*ratio));setDiffMed(remain-Math.round(remain*ratio));
+    }
+  };
+
+  // 생성 요청
+  const submit=async()=>{
+    if(!textbook)return alert("교재를 선택하세요.");
+    if(rangeType==="chapter"&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
+    if(rangeType==="page"&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
+    if(!targetTeacher)return alert("선생님 이름을 입력하세요.");
+    if(!targetClass)return alert("대상 반을 입력하세요.");
+    setSending(true);
+    try{
+      const rangeDesc=rangeType==="chapter"
+        ?chapters.map(i=>selBook.chapters[i]).join(", ")
+        :`p.${pageFrom}~${pageTo}`;
+      const body={
+        action:"request_exam_gen",
+        textbook:selBook.name,
+        textbookId:textbook,
+        rangeType,
+        rangeDesc,
+        chapters:rangeType==="chapter"?chapters.map(i=>selBook.chapters[i]):[],
+        pageFrom:rangeType==="page"?pageFrom:"",
+        pageTo:rangeType==="page"?pageTo:"",
+        testType,
+        questionCount,
+        difficulty:{easy:diffEasy,medium:diffMed,hard:diffHard},
+        targetClass,
+        teacher:targetTeacher,
+        memo,
+      };
+      await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      setSentOk(true);setStep(3);
+    }catch(e){alert("요청 실패: "+e);}
+    setSending(false);
+  };
+
+  // 미리보기 로드
+  const loadPreview=async(rowIndex)=>{
+    setPrevLoading(true);setPrevRow(rowIndex);
+    try{
+      const r=await fetch(`${sheetsUrl}?action=get_exam_gen_detail&rowIndex=${rowIndex}`);
+      const d=await r.json();
+      if(d.result==="ok"&&d.detail){
+        setPreview(d.detail);
+        setStep(4); // 4 = 미리보기 화면
+      }else{alert("상세 조회 실패: "+(d.message||""));}
+    }catch(e){alert("조회 오류: "+e);}
+    setPrevLoading(false);
+  };
+
+  // OMR 시험 등록 (생성된 문제를 정답목록에 저장)
+  const registerExam=async()=>{
+    if(!preview||!preview.questions||!preview.questions.questions)return alert("문제 데이터가 없습니다.");
+    const qs=preview.questions.questions;
+    const answers=qs.map(q=>q.type==="mc"?q.answer:String(q.answer||""));
+    const types=qs.map(q=>q.type==="mc"?"obj":"sub");
+    setSending(true);
+    try{
+      await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          action:"save_answer_key",
+          subject:"영어",
+          grade:"",
+          level:"",
+          examType:"문제생성기",
+          round:"",
+          totalQuestions:qs.length,
+          answers:answers,
+          types:types,
+          teacher:preview.teacher||"",
+          studentCount:0,
+          className:preview.targetClass||"",
+          date:new Date().toISOString().split("T")[0].replace(/-/g,".")
+        })});
+      alert("시험이 등록되었습니다! 학생들이 선택할 수 있어요.");
+      setStep(1);setPreview(null);loadHistory();
+    }catch(e){alert("등록 실패: "+e);}
+    setSending(false);
+  };
+
+  // 히스토리 로드
+  const loadHistory=useCallback(async()=>{
+    setHistLoading(true);
+    try{
+      const r=await fetch(`${sheetsUrl}?action=list_exam_gen`);
+      const d=await r.json();
+      setHistory(d.requests||[]);
+    }catch(e){setHistory([]);}
+    setHistLoading(false);
+  },[sheetsUrl]);
+  useEffect(()=>{loadHistory();},[loadHistory]);
+
+  // 난이도 바 컴포넌트
+  const DiffBar=()=>{
+    const eQ=Math.round(questionCount*diffEasy/100);
+    const mQ=Math.round(questionCount*diffMed/100);
+    const hQ=questionCount-eQ-mQ;
+    return(<div style={{marginTop:8}}>
+      <div style={{display:"flex",height:28,borderRadius:8,overflow:"hidden",border:`1px solid ${T.border}`}}>
+        <div style={{width:`${diffEasy}%`,background:"#81C784",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:diffEasy>8?30:0,transition:"width .2s"}}>{diffEasy>8?`쉬움 ${eQ}`:""}</div>
+        <div style={{width:`${diffMed}%`,background:"#FFB74D",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:diffMed>8?30:0,transition:"width .2s"}}>{diffMed>8?`보통 ${mQ}`:""}</div>
+        <div style={{width:`${diffHard}%`,background:"#E57373",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:diffHard>8?30:0,transition:"width .2s"}}>{diffHard>8?`어려움 ${hQ}`:""}</div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:10}}>
+        {[{label:"★☆☆ 쉬움",color:"#4CAF50",val:diffEasy,set:v=>adjustDiff("easy",v)},
+          {label:"★★☆ 보통",color:"#FF9800",val:diffMed,set:v=>adjustDiff("med",v)},
+          {label:"★★★ 어려움",color:"#F44336",val:diffHard,set:v=>adjustDiff("hard",v)}
+        ].map((d,i)=>(<div key={i} style={{textAlign:"center"}}>
+          <div style={{fontSize:11,fontWeight:600,color:d.color,marginBottom:4}}>{d.label}</div>
+          <input type="range" min={0} max={100} step={5} value={d.val}
+            onChange={e=>d.set(parseInt(e.target.value))}
+            style={{width:"100%",accentColor:d.color}}/>
+          <div style={{fontSize:13,fontWeight:700,color:d.color}}>{d.val}% ({Math.round(questionCount*d.val/100)}문제)</div>
+        </div>))}
+      </div>
+    </div>);
+  };
+
+  // ── Step 1: 설정 화면 ──
+  if(step===1) return(<div style={S.wrap} className="fade-up">
+    <div style={{textAlign:"center",padding:"20px 0 12px"}}>
+      <div style={{fontSize:36,marginBottom:4}}>📚</div>
+      <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>문제 생성기</h1>
+      <p style={{fontSize:13,color:T.textMuted}}>교재에서 자동으로 시험 문제를 만듭니다</p>
+    </div>
+
+    {/* 교재 선택 */}
+    <div style={S.card}>
+      <div style={S.secLabel}>교재 선택</div>
+      <select style={S.inp} value={textbook} onChange={e=>{setTextbook(e.target.value);setChapters([]);}}>
+        <option value="">-- 교재를 선택하세요 --</option>
+        {TEXTBOOKS.map(b=><option key={b.id} value={b.id}>{b.name} ({b.totalPages}쪽)</option>)}
+      </select>
+      {TEXTBOOKS.length===1&&<div style={{fontSize:11,color:T.textMuted,marginTop:6}}>현재 등록된 교재: 1권 (추가 등록은 관리자에게 문의)</div>}
+    </div>
+
+    {/* 범위 설정 */}
+    {textbook&&selBook&&<div style={S.card}>
+      <div style={S.secLabel}>범위 설정</div>
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        {[{k:"chapter",label:"📖 챕터로 선택"},{k:"page",label:"📄 페이지로 선택"}].map(r=>(
+          <button key={r.k} onClick={()=>setRangeType(r.k)} style={{flex:1,padding:"10px",fontSize:13,fontWeight:rangeType===r.k?700:500,borderRadius:10,border:`1.5px solid ${rangeType===r.k?T.goldDark:T.border}`,background:rangeType===r.k?T.goldDark:T.white,color:rangeType===r.k?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{r.label}</button>
+        ))}
+      </div>
+
+      {rangeType==="chapter"?(<div>
+        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>챕터를 선택하세요 (여러 개 가능)</div>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {selBook.chapters.map((ch,i)=>{
+            const sel=chapters.includes(i);
+            return(<button key={i} onClick={()=>toggleCh(i)} style={{
+              padding:"10px 14px",fontSize:13,fontWeight:sel?700:500,borderRadius:10,
+              border:`1.5px solid ${sel?T.goldDark:T.border}`,background:sel?T.goldLight:T.white,
+              color:sel?T.goldDeep:T.textSub,cursor:"pointer",fontFamily:"inherit",textAlign:"left",
+              transition:"all .12s"
+            }}>{sel?"✅ ":"　"}{ch}</button>);
+          })}
+        </div>
+        {chapters.length>0&&<div style={{marginTop:8,fontSize:12,fontWeight:600,color:T.goldDark}}>
+          선택: {chapters.length}개 챕터
+        </div>}
+      </div>):(<div>
+        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>페이지 범위를 입력하세요 (1~{selBook.totalPages})</div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <input style={{...S.inp,maxWidth:100,textAlign:"center"}} placeholder="시작" value={pageFrom}
+            onChange={e=>setPageFrom(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric"/>
+          <span style={{fontSize:14,color:T.textMuted,fontWeight:600}}>~</span>
+          <input style={{...S.inp,maxWidth:100,textAlign:"center"}} placeholder="끝" value={pageTo}
+            onChange={e=>setPageTo(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric"/>
+          <span style={{fontSize:12,color:T.textMuted}}>쪽</span>
+        </div>
+      </div>)}
+    </div>}
+
+    {/* 유형 설정 */}
+    {textbook&&<div style={S.card}>
+      <div style={S.secLabel}>시험 유형</div>
+      <div style={{display:"flex",gap:6}}>
+        {[{k:"grammar",icon:"📝",label:"문법/독해",desc:"객관식+주관식 혼합"},
+          {k:"vocab",icon:"🔤",label:"단어 테스트",desc:"단답형 (주관식)"}
+        ].map(t=>{
+          const sel=testType===t.k;
+          return(<button key={t.k} onClick={()=>setTestType(t.k)} style={{
+            flex:1,padding:"14px 10px",borderRadius:12,
+            border:`1.5px solid ${sel?T.goldDark:T.border}`,background:sel?T.goldLight:T.white,
+            cursor:"pointer",fontFamily:"inherit",textAlign:"center",transition:"all .12s"
+          }}>
+            <div style={{fontSize:24,marginBottom:4}}>{t.icon}</div>
+            <div style={{fontSize:13,fontWeight:sel?700:600,color:sel?T.goldDeep:T.text}}>{t.label}</div>
+            <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{t.desc}</div>
+          </button>);
+        })}
+      </div>
+    </div>}
+
+    {/* 문제 수 + 난이도 */}
+    {textbook&&<div style={S.card}>
+      <div style={S.secLabel}>문제 수 · 난이도</div>
+      <div style={S.label}>문제 수</div>
+      <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+        {[10,15,20,25,30,35,40].map(n=>{
+          const sel=questionCount===n;
+          return(<button key={n} onClick={()=>setQuestionCount(n)} style={{
+            padding:"8px 14px",borderRadius:20,border:`1.5px solid ${sel?T.goldDark:T.border}`,
+            background:sel?T.goldDark:T.white,color:sel?T.white:T.textSub,
+            fontWeight:sel?700:500,fontSize:14,cursor:"pointer",fontFamily:"inherit"
+          }}>{n}문제</button>);
+        })}
+      </div>
+      <div style={S.label}>난이도 배분</div>
+      <DiffBar/>
+    </div>}
+
+    {/* 대상 반 + 선생님 */}
+    {textbook&&<div style={S.card}>
+      <div style={S.secLabel}>대상 정보</div>
+      <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span></div>
+      <input style={{...S.inp,marginBottom:12}} placeholder="예: 김선생" value={targetTeacher}
+        onChange={e=>setTargetTeacher(e.target.value)}/>
+      <div style={S.label}>대상 반 <span style={{color:T.danger}}>*</span></div>
+      <input style={{...S.inp,marginBottom:12}} placeholder="예: 영어 중2 SB반" value={targetClass}
+        onChange={e=>setTargetClass(e.target.value)}/>
+      <div style={S.label}>메모 (선택)</div>
+      <input style={S.inp} placeholder="추가 요청사항 (예: 서술형 포함)" value={memo}
+        onChange={e=>setMemo(e.target.value)}/>
+    </div>}
+
+    {/* 확인 버튼 */}
+    {textbook&&<button style={{...S.btnG,opacity:sending?0.5:1}} disabled={sending}
+      onClick={()=>{
+        if(!textbook)return alert("교재를 선택하세요.");
+        if(rangeType==="chapter"&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
+        if(rangeType==="page"&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
+        if(!targetTeacher)return alert("선생님 이름을 입력하세요.");
+        if(!targetClass)return alert("대상 반을 입력하세요.");
+        setStep(2);
+      }}>
+      다음: 생성 요청 확인 →
+    </button>}
+
+    {/* 히스토리 */}
+    <div style={{marginTop:24}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{fontSize:14,fontWeight:700,color:T.text}}>📋 생성 요청 내역</div>
+        <button onClick={loadHistory} style={{fontSize:11,color:T.goldDark,fontWeight:600,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>🔄 새로고침</button>
+      </div>
+      {histLoading?<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>로딩 중…</div>:
+       history.length===0?<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>아직 생성 요청이 없습니다</div>:
+       history.map((h,i)=>{
+         const statusColor=h.status==="완료"?T.accent:h.status==="생성중"?"#FF9800":h.status==="실패"?T.danger:T.textMuted;
+         const statusBg=h.status==="완료"?T.accentLight:h.status==="생성중"?"#FFF3E0":h.status==="실패"?T.dangerLight:T.bg;
+         return(<div key={i} style={{...S.card,marginBottom:8}}>
+           <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",marginBottom:6}}>
+             <div style={{flex:1}}>
+               <div style={{fontSize:14,fontWeight:700,color:T.text}}>{h.textbook}</div>
+               <div style={{fontSize:12,color:T.textSub,marginTop:2}}>{h.rangeDesc} · {h.testType==="vocab"?"단어":"문법/독해"} · {h.questionCount}문제</div>
+               <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>👤 {h.teacher} · {h.targetClass} · {h.requestedAt||""}</div>
+             </div>
+             <span style={{padding:"4px 10px",borderRadius:20,background:statusBg,color:statusColor,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{h.status||"대기"}</span>
+           </div>
+           {h.status==="완료"&&<div style={{display:"flex",gap:6,marginTop:6}}>
+             <button onClick={()=>loadPreview(h.rowIndex)} disabled={prevLoading&&prevRow===h.rowIndex}
+               style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>
+               {prevLoading&&prevRow===h.rowIndex?"로딩…":"👁️ 미리보기"}
+             </button>
+             <button onClick={()=>loadPreview(h.rowIndex)}
+               style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>✅ 시험 등록</button>
+           </div>}
+           {h.status==="생성중"&&<div style={{padding:"6px 10px",borderRadius:8,background:"#FFF3E0",fontSize:12,color:"#E65100",fontWeight:600,textAlign:"center",marginTop:6}}>
+             ⏳ Claude가 문제를 만들고 있어요… (약 10분)
+           </div>}
+         </div>);
+       })}
+    </div>
+  </div>);
+
+  // ── Step 2: 확인 화면 ──
+  if(step===2){
+    const rangeDesc=rangeType==="chapter"
+      ?chapters.map(i=>selBook.chapters[i]).join("\n")
+      :`p.${pageFrom} ~ p.${pageTo}`;
+    const eQ=Math.round(questionCount*diffEasy/100);
+    const mQ=Math.round(questionCount*diffMed/100);
+    const hQ=questionCount-eQ-mQ;
+    return(<div style={S.wrap} className="fade-up">
+      <div style={{textAlign:"center",padding:"20px 0 12px"}}>
+        <div style={{fontSize:36,marginBottom:4}}>📋</div>
+        <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>생성 요청 확인</h1>
+        <p style={{fontSize:13,color:T.textMuted}}>아래 내용으로 문제를 생성합니다</p>
+      </div>
+      <div style={S.card}>
+        <div style={S.resRow}><span>📚 교재</span><span style={{fontWeight:600}}>{selBook?.name}</span></div>
+        <div style={S.resRow}><span>📖 범위</span><span style={{fontWeight:600,textAlign:"right",maxWidth:"60%",whiteSpace:"pre-line",fontSize:12}}>{rangeDesc}</span></div>
+        <div style={S.resRow}><span>📝 유형</span><span style={{fontWeight:600}}>{testType==="vocab"?"단어 테스트 (단답형)":"문법/독해 (혼합)"}</span></div>
+        <div style={S.resRow}><span>🔢 문제 수</span><span style={{fontWeight:600}}>{questionCount}문제</span></div>
+        <div style={S.resRow}><span>📊 난이도</span><span style={{fontWeight:600,fontSize:12}}>쉬움 {eQ} · 보통 {mQ} · 어려움 {hQ}</span></div>
+        <div style={S.resRow}><span>👤 선생님</span><span style={{fontWeight:600}}>{targetTeacher}</span></div>
+        <div style={S.resRow}><span>🏫 대상 반</span><span style={{fontWeight:600}}>{targetClass}</span></div>
+        {memo&&<div style={S.resRow}><span>💬 메모</span><span style={{fontWeight:600,fontSize:12}}>{memo}</span></div>}
+      </div>
+      <div style={{padding:"12px 14px",borderRadius:10,background:"#FFF8E1",fontSize:13,color:"#F57F17",fontWeight:600,textAlign:"center",marginBottom:16}}>
+        ⏱️ 생성에 약 10분 소요됩니다. Slack으로 완료 알림을 보내드려요!
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>setStep(1)} style={{...S.btnO,flex:1}}>← 수정</button>
+        <button onClick={submit} disabled={sending} style={{...S.btnG,flex:2,opacity:sending?0.5:1}}>
+          {sending?"요청 중…":"🚀 생성 요청!"}
+        </button>
+      </div>
+    </div>);
+  }
+
+  // ── Step 3: 완료 ──
+  if(step===3) return(<div style={S.wrap} className="fade-up">
+    <div style={{textAlign:"center",padding:"40px 0 20px"}}>
+      <div style={{fontSize:56,marginBottom:12}}>🎉</div>
+      <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:8}}>생성 요청 완료!</h1>
+      <p style={{fontSize:14,color:T.textSub,lineHeight:1.6}}>
+        Claude가 교재를 분석해서 문제를 만들고 있어요.<br/>
+        약 <b>10분 후</b> Slack으로 알림이 갑니다.
+      </p>
+      <div style={{marginTop:16,padding:"14px",borderRadius:12,background:"#E8F5E9",fontSize:13,color:T.accent,fontWeight:600}}>
+        💡 기다리는 동안 다른 일을 하셔도 됩니다!<br/>
+        완료되면 앱에서 문제를 확인하고 등록할 수 있어요.
+      </div>
+    </div>
+    <button onClick={()=>{setStep(1);setSentOk(false);loadHistory();}} style={S.btnG}>
+      📚 새로운 문제 생성하기
+    </button>
+    <button onClick={()=>{setStep(1);setSentOk(false);loadHistory();}} style={{...S.btnO,width:"100%",marginTop:8}}>
+      📋 생성 내역 확인
+    </button>
+  </div>);
+
+  // ── Step 4: 미리보기 (생성된 문제 확인) ──
+  if(step===4&&preview){
+    const qs=preview.questions?.questions||[];
+    const diffColors={easy:"#4CAF50",medium:"#FF9800",hard:"#F44336"};
+    const diffLabels={easy:"★☆☆ 쉬움",medium:"★★☆ 보통",hard:"★★★ 어려움"};
+    const grouped={easy:[],medium:[],hard:[]};
+    qs.forEach(q=>{if(grouped[q.difficulty])grouped[q.difficulty].push(q);else grouped.medium.push(q);});
+
+    return(<div style={S.wrap} className="fade-up">
+      <div style={{textAlign:"center",padding:"20px 0 12px"}}>
+        <div style={{fontSize:36,marginBottom:4}}>👁️</div>
+        <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>문제 미리보기</h1>
+        <p style={{fontSize:13,color:T.textMuted}}>{preview.textbook} · {preview.rangeDesc}</p>
+      </div>
+
+      {/* 요약 카드 */}
+      <div style={{...S.card,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center"}}>
+        <div><div style={{fontSize:11,color:T.textMuted}}>문제 수</div><div style={{fontSize:18,fontWeight:800,color:T.text}}>{qs.length}</div></div>
+        <div><div style={{fontSize:11,color:T.textMuted}}>유형</div><div style={{fontSize:18,fontWeight:800,color:T.text}}>{preview.testType==="vocab"?"단어":"문법"}</div></div>
+        <div><div style={{fontSize:11,color:T.textMuted}}>선생님</div><div style={{fontSize:14,fontWeight:700,color:T.text}}>{preview.teacher}</div></div>
+      </div>
+
+      {/* 난이도별 문제 */}
+      {["easy","medium","hard"].map(diff=>{
+        const items=grouped[diff];
+        if(items.length===0)return null;
+        return(<div key={diff} style={{marginBottom:16}}>
+          <div style={{fontSize:14,fontWeight:700,color:diffColors[diff],marginBottom:8,padding:"6px 12px",background:diff==="easy"?"#E8F5E9":diff==="medium"?"#FFF3E0":"#FFEBEE",borderRadius:8,display:"inline-block"}}>
+            {diffLabels[diff]} ({items.length}문제)
+          </div>
+          {items.map((q,qi)=>(<div key={qi} style={{...S.card,marginBottom:8,borderLeft:`4px solid ${diffColors[diff]}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",marginBottom:6}}>
+              <span style={{fontSize:12,fontWeight:700,color:T.white,background:diffColors[diff],padding:"2px 8px",borderRadius:10}}>{q.number}번</span>
+              <span style={{fontSize:11,color:T.textMuted,padding:"2px 8px",borderRadius:10,background:T.bg}}>{q.type==="mc"?"객관식":"주관식"}</span>
+            </div>
+            <div style={{fontSize:14,color:T.text,lineHeight:1.6,whiteSpace:"pre-wrap",marginBottom:8}}>{q.question}</div>
+            {q.choices&&q.choices.length>0&&(<div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:8}}>
+              {q.choices.map((c,ci)=>{
+                const isAns=(ci+1)===q.answer;
+                return(<div key={ci} style={{padding:"8px 12px",borderRadius:8,fontSize:13,
+                  background:isAns?"#E8F5E9":T.bg,
+                  border:`1px solid ${isAns?"#4CAF50":T.border}`,
+                  color:isAns?T.accent:T.text,
+                  fontWeight:isAns?700:400
+                }}>{isAns&&"✅ "}{c}</div>);
+              })}
+            </div>)}
+            {q.type==="sub"&&(<div style={{padding:"8px 12px",borderRadius:8,background:"#E8F5E9",border:`1px solid #4CAF50`,fontSize:13,color:T.accent,fontWeight:600}}>
+              💡 정답: {q.answer}
+            </div>)}
+            {q.explanation&&(<div style={{marginTop:6,padding:"8px 12px",borderRadius:8,background:"#F3E5F5",fontSize:12,color:"#7B1FA2",lineHeight:1.5}}>
+              📖 {q.explanation}
+            </div>)}
+          </div>))}
+        </div>);
+      })}
+
+      {/* 하단 액션 */}
+      <div style={{position:"sticky",bottom:0,background:T.white,padding:"12px 0",borderTop:`1px solid ${T.border}`,display:"flex",gap:8}}>
+        <button onClick={()=>{setStep(1);setPreview(null);}} style={{...S.btnO,flex:1}}>← 돌아가기</button>
+        <button onClick={registerExam} disabled={sending} style={{...S.btnG,flex:2,opacity:sending?0.5:1}}>
+          {sending?"등록 중…":"✅ 이 문제로 시험 등록"}
+        </button>
+      </div>
+    </div>);
+  }
+
+  // fallback
+  return null;
+}
+
 /* ═══ 오답 통계 탭 ═══ */
 function StatsTab({sheetsUrl, T, S}){
   const [stats, setStats] = useState([]);
@@ -470,6 +932,7 @@ export default function App(){
         <button onClick={()=>setTab("schedule")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="schedule"?T.goldDark:T.white,color:tab==="schedule"?T.white:T.textSub,boxShadow:tab==="schedule"?"none":`inset 0 0 0 1.5px ${T.border}`}}>🗓️ 스케줄</button>
         <button onClick={()=>setTab("print")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="print"?T.goldDark:T.white,color:tab==="print"?T.white:T.textSub,boxShadow:tab==="print"?"none":`inset 0 0 0 1.5px ${T.border}`}}>🖨️ 일괄 프린트</button>
         <button onClick={()=>setTab("stats")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="stats"?T.goldDark:T.white,color:tab==="stats"?T.white:T.textSub,boxShadow:tab==="stats"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📈 오답 통계</button>
+        <button onClick={()=>setTab("generator")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="generator"?T.goldDark:T.white,color:tab==="generator"?T.white:T.textSub,boxShadow:tab==="generator"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📚 문제 생성</button>
       </div>)}
 
       {/* ═══ 일괄 프린트 탭 ═══ */}
@@ -477,6 +940,9 @@ export default function App(){
 
       {/* ═══ 오답 통계 탭 ═══ */}
       {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S}/>)}
+
+      {/* ═══ 문제 생성기 탭 ═══ */}
+      {screen==="home"&&tab==="generator"&&(<GeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
 
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
       {screen==="home"&&tab==="register"&&(<div style={S.wrap} className="fade-up">
