@@ -152,6 +152,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[genLevelCat,setGenLevelCat]=useState("level");
   const[genClasses,setGenClasses]=useState([]); // [{subject,grade,level,name}]
   const[targetTeacher,setTargetTeacher]=useState("");
+  const[mcRatio,setMcRatio]=useState(100); // 객관식 비율 (0~100), 기본 100%
+  const[customQCount,setCustomQCount]=useState(""); // 직접입력 문제수
   const[memo,setMemo]=useState("");
   const[sending,setSending]=useState(false);
   const[sentOk,setSentOk]=useState(false);
@@ -220,7 +222,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       const rangeDesc=rangeType==="chapter"
         ?chapters.map(i=>selBook.chapters[i]).join(", ")
         :`p.${pageFrom}~${pageTo}`;
-      const targetClass=genClasses.map(c=>c.name).join(", ");
       const body={
         action:"request_exam_gen",
         textbook:selBook.name,
@@ -233,7 +234,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         testType,
         questionCount,
         difficulty:{easy:diffEasy,medium:diffMed,hard:diffHard},
-        targetClass,
+        mcRatio,
+        targetClass:genClasses.map(c=>c.name).join(", "),
         teacher:targetTeacher,
         memo,
       };
@@ -427,20 +429,58 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       </div>
     </div>}
 
-    {/* 문제 수 + 난이도 */}
+    {/* 문제 수 + 난이도 + 객관식/서술형 */}
     {textbook&&<div style={S.card}>
       <div style={S.secLabel}>문제 수 · 난이도</div>
       <div style={S.label}>문제 수</div>
-      <div style={{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}}>
+      <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
         {[10,15,20,25,30,35,40].map(n=>{
-          const sel=questionCount===n;
-          return(<button key={n} onClick={()=>setQuestionCount(n)} style={{
+          const sel=questionCount===n&&!customQCount;
+          return(<button key={n} onClick={()=>{setQuestionCount(n);setCustomQCount("");}} style={{
             padding:"8px 14px",borderRadius:20,border:`1.5px solid ${sel?T.goldDark:T.border}`,
             background:sel?T.goldDark:T.white,color:sel?T.white:T.textSub,
             fontWeight:sel?700:500,fontSize:14,cursor:"pointer",fontFamily:"inherit"
           }}>{n}문제</button>);
         })}
+        {(()=>{const sel=!!customQCount;return(<button onClick={()=>{if(!customQCount)setCustomQCount(String(questionCount));}} style={{
+          padding:"8px 14px",borderRadius:20,border:`1.5px solid ${sel?T.goldDark:T.border}`,
+          background:sel?T.goldDark:T.white,color:sel?T.white:T.textSub,
+          fontWeight:sel?700:500,fontSize:14,cursor:"pointer",fontFamily:"inherit"
+        }}>✏️ 직접입력</button>);})()}
       </div>
+      {customQCount!==undefined&&customQCount!==""&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:16}}>
+        <input style={{...S.inp,maxWidth:100,textAlign:"center",fontSize:16,fontWeight:700}} value={customQCount} inputMode="numeric"
+          onChange={e=>{const v=e.target.value.replace(/[^0-9]/g,"");setCustomQCount(v);if(v&&parseInt(v)>0)setQuestionCount(parseInt(v));}}
+          placeholder="문제수"/>
+        <span style={{fontSize:13,color:T.textMuted,fontWeight:600}}>문제</span>
+        {parseInt(customQCount)>50&&<span style={{fontSize:11,color:T.danger}}>⚠️ 50문제 이상은 생성 시간이 오래 걸릴 수 있어요</span>}
+      </div>}
+
+      <div style={S.label}>객관식 / 서술형 비율</div>
+      <div style={{marginBottom:16}}>
+        <div style={{display:"flex",height:28,borderRadius:8,overflow:"hidden",border:`1px solid ${T.border}`,marginBottom:8}}>
+          <div style={{width:`${mcRatio}%`,background:"#1E88E5",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:mcRatio>10?40:0,transition:"width .2s"}}>{mcRatio>10?`객관식 ${Math.round(questionCount*mcRatio/100)}`:""}</div>
+          <div style={{width:`${100-mcRatio}%`,background:"#AB47BC",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:(100-mcRatio)>10?40:0,transition:"width .2s"}}>{(100-mcRatio)>10?`서술형 ${questionCount-Math.round(questionCount*mcRatio/100)}`:""}</div>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+          {[{v:100,label:"전체 객관식"},{v:80,label:"객관식 80%"},{v:60,label:"객관식 60%"},{v:50,label:"반반"},{v:0,label:"전체 서술형"}].map(o=>{
+            const sel=mcRatio===o.v;
+            return(<button key={o.v} onClick={()=>setMcRatio(o.v)} style={{
+              padding:"6px 12px",borderRadius:16,border:`1.5px solid ${sel?"#1E88E5":T.border}`,
+              background:sel?"#1E88E5":T.white,color:sel?T.white:T.textSub,
+              fontWeight:sel?700:500,fontSize:12,cursor:"pointer",fontFamily:"inherit"
+            }}>{o.label}</button>);
+          })}
+        </div>
+        <input type="range" min={0} max={100} step={10} value={mcRatio}
+          onChange={e=>setMcRatio(parseInt(e.target.value))}
+          style={{width:"100%",accentColor:"#1E88E5"}}/>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.textMuted,marginTop:4}}>
+          <span>객관식 {mcRatio}% ({Math.round(questionCount*mcRatio/100)}문제)</span>
+          <span>서술형 {100-mcRatio}% ({questionCount-Math.round(questionCount*mcRatio/100)}문제)</span>
+        </div>
+      </div>
+
       <div style={S.label}>난이도 배분</div>
       <DiffBar/>
     </div>}
@@ -524,7 +564,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
            <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",marginBottom:6}}>
              <div style={{flex:1}}>
                <div style={{fontSize:14,fontWeight:700,color:T.text}}>{h.textbook}</div>
-               <div style={{fontSize:12,color:T.textSub,marginTop:2}}>{h.rangeDesc} · {h.testType==="vocab"?"단어":"문법/독해"} · {h.questionCount}문제</div>
+               <div style={{fontSize:12,color:T.textSub,marginTop:2}}>{h.rangeDesc} · {h.testType==="vocab"?"단어":"문법/독해"} · {h.questionCount}문제{h.mcRatio!=null&&h.mcRatio<100?` · 객${h.mcRatio}%`:""}</div>
                <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>👤 {h.teacher} · {h.targetClass} · {h.requestedAt||""}</div>
              </div>
              <span style={{padding:"4px 10px",borderRadius:20,background:statusBg,color:statusColor,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{h.status||"대기"}</span>
@@ -547,8 +587,9 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
 
   // ── Step 2: 확인 화면 ──
   if(step===2){
+    if(!selBook){setStep(1);return null;}
     const rangeDesc=rangeType==="chapter"
-      ?chapters.map(i=>selBook.chapters[i]).join("\n")
+      ?chapters.map(i=>(selBook.chapters||[])[i]||`챕터${i+1}`).join("\n")
       :`p.${pageFrom} ~ p.${pageTo}`;
     const eQ=Math.round(questionCount*diffEasy/100);
     const mQ=Math.round(questionCount*diffMed/100);
@@ -565,8 +606,9 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         <div style={S.resRow}><span>📝 유형</span><span style={{fontWeight:600}}>{testType==="vocab"?"단어 테스트 (단답형)":"문법/독해 (혼합)"}</span></div>
         <div style={S.resRow}><span>🔢 문제 수</span><span style={{fontWeight:600}}>{questionCount}문제</span></div>
         <div style={S.resRow}><span>📊 난이도</span><span style={{fontWeight:600,fontSize:12}}>쉬움 {eQ} · 보통 {mQ} · 어려움 {hQ}</span></div>
+        <div style={S.resRow}><span>📝 출제형태</span><span style={{fontWeight:600,fontSize:12}}>객관식 {mcRatio}% ({Math.round(questionCount*mcRatio/100)}문제) · 서술형 {100-mcRatio}% ({questionCount-Math.round(questionCount*mcRatio/100)}문제)</span></div>
         <div style={S.resRow}><span>👤 선생님</span><span style={{fontWeight:600}}>{targetTeacher}</span></div>
-        <div style={S.resRow}><span>🏫 대상 반</span><span style={{fontWeight:600}}>{targetClass}</span></div>
+        <div style={S.resRow}><span>🏫 대상 반</span><span style={{fontWeight:600}}>{genClasses.map(c=>c.name).join(", ")}</span></div>
         {memo&&<div style={S.resRow}><span>💬 메모</span><span style={{fontWeight:600,fontSize:12}}>{memo}</span></div>}
       </div>
       <div style={{padding:"12px 14px",borderRadius:10,background:"#FFF8E1",fontSize:13,color:"#F57F17",fontWeight:600,textAlign:"center",marginBottom:16}}>
