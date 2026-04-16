@@ -157,6 +157,11 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[memo,setMemo]=useState("");
   const[sending,setSending]=useState(false);
   const[sentOk,setSentOk]=useState(false);
+  // 교재 목록 (서버에서 동적 로딩)
+  const[textbookList,setTextbookList]=useState([]);
+  const[tbLoading,setTbLoading]=useState(false);
+  const[tbError,setTbError]=useState("");
+  const[uploading,setUploading]=useState(false);
   // 히스토리 (생성 요청 목록)
   const[history,setHistory]=useState([]);
   const[histLoading,setHistLoading]=useState(false);
@@ -178,15 +183,49 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     setGenLevel("");setGenLevelCustom("");
   };
 
-  // ── 교재 목록 (확장 가능) ──
-  const TEXTBOOKS=[
-    {id:"chaeum_grammar3",name:"채움 구문형 3",chapters:[
-      "Chapter 1. 문장의 형식","Chapter 2. 시제","Chapter 3. 조동사",
-      "Chapter 4. 수동태","Chapter 5. 부정사","Chapter 6. 동명사",
-      "Chapter 7. 분사","Chapter 8. 관계사","Chapter 9. 접속사",
-      "Chapter 10. 비교구문","Chapter 11. 가정법","Chapter 12. 특수구문",
-    ], totalPages:237},
-  ];
+  // ── 교재 목록 (서버에서 동적 로딩) ──
+  const loadTextbooks=useCallback(()=>{
+    setTbLoading(true);setTbError("");
+    fetch(sheetsUrl+"?action=list_textbooks")
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.result==="ok"&&Array.isArray(d.textbooks)){
+          setTextbookList(d.textbooks);
+        }else{
+          setTbError(d.message||"교재 목록 로딩 실패");
+        }
+      })
+      .catch(e=>setTbError("네트워크 오류: "+String(e)))
+      .finally(()=>setTbLoading(false));
+  },[sheetsUrl]);
+
+  useEffect(()=>{loadTextbooks();},[loadTextbooks]);
+
+  // 교재 업로드 핸들러
+  const handleUploadTextbook=(e)=>{
+    const file=e.target.files&&e.target.files[0];
+    if(!file)return;
+    if(!file.name.toLowerCase().endsWith(".pdf")){alert("PDF 파일만 업로드할 수 있습니다.");return;}
+    if(file.size>50*1024*1024){alert("파일이 너무 큽니다 (최대 50MB).");return;}
+    setUploading(true);
+    const reader=new FileReader();
+    reader.onload=()=>{
+      const base64=reader.result.split(",")[1];
+      fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({action:"upload_textbook",fileName:file.name,fileData:base64,name:file.name.replace(/\.pdf$/i,"").replace(/_/g," ")})
+      }).then(r=>r.json()).then(d=>{
+        if(d.result==="ok"){
+          alert("교재가 등록되었습니다: "+d.textbook.name);
+          loadTextbooks();
+        }else{alert("업로드 실패: "+(d.message||"알 수 없는 오류"));}
+      }).catch(err=>alert("업로드 오류: "+String(err)))
+        .finally(()=>setUploading(false));
+    };
+    reader.readAsDataURL(file);
+    e.target.value=""; // reset input
+  };
+
+  const TEXTBOOKS=textbookList;
   const selBook=TEXTBOOKS.find(b=>b.id===textbook);
 
   // 챕터 토글
@@ -213,22 +252,25 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   // 생성 요청
   const submit=async()=>{
     if(!textbook)return alert("교재를 선택하세요.");
-    if(rangeType==="chapter"&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
-    if(rangeType==="page"&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
+    const hasChapters=selBook&&selBook.chapters&&selBook.chapters.length>0;
+    if(rangeType==="chapter"&&hasChapters&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
+    if((rangeType==="page"||!hasChapters)&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
     if(!targetTeacher)return alert("선생님 이름을 선택하세요.");
     if(genClasses.length===0)return alert("대상 반을 1개 이상 추가하세요.");
     setSending(true);
     try{
-      const rangeDesc=rangeType==="chapter"
-        ?chapters.map(i=>selBook.chapters[i]).join(", ")
+      const effectiveRange=hasChapters?rangeType:"page";
+      const rangeDesc=effectiveRange==="chapter"
+        ?(selBook.chapters||[]).filter((_,i)=>chapters.includes(i)).join(", ")
         :`p.${pageFrom}~${pageTo}`;
       const body={
         action:"request_exam_gen",
         textbook:selBook.name,
         textbookId:textbook,
+        textbookFileId:selBook.fileId||"",
         rangeType,
         rangeDesc,
-        chapters:rangeType==="chapter"?chapters.map(i=>selBook.chapters[i]):[],
+        chapters:rangeType==="chapter"?(selBook.chapters||[]).filter((_,i)=>chapters.includes(i)):[],
         pageFrom:rangeType==="page"?pageFrom:"",
         pageTo:rangeType==="page"?pageTo:"",
         testType,
@@ -386,23 +428,46 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     {/* 교재 선택 */}
     <div style={S.card}>
       <div style={S.secLabel}>교재 선택</div>
-      <select style={S.inp} value={textbook} onChange={e=>{setTextbook(e.target.value);setChapters([]);}}>
-        <option value="">-- 교재를 선택하세요 --</option>
-        {TEXTBOOKS.map(b=><option key={b.id} value={b.id}>{b.name} ({b.totalPages}쪽)</option>)}
-      </select>
-      {TEXTBOOKS.length===1&&<div style={{fontSize:11,color:T.textMuted,marginTop:6}}>현재 등록된 교재: 1권 (추가 등록은 관리자에게 문의)</div>}
+      {tbLoading?(<div style={{fontSize:13,color:T.textMuted,padding:"12px 0"}}>교재 목록 불러오는 중...</div>)
+      :tbError?(<div style={{fontSize:13,color:T.danger,padding:"12px 0"}}>{tbError} <button onClick={loadTextbooks} style={{fontSize:12,color:T.blue,border:"none",background:"none",cursor:"pointer",textDecoration:"underline"}}>다시 시도</button></div>)
+      :(<>
+        <select style={S.inp} value={textbook} onChange={e=>{
+          const val=e.target.value;setTextbook(val);setChapters([]);
+          const bk=TEXTBOOKS.find(b=>b.id===val);
+          if(bk&&(!bk.chapters||bk.chapters.length===0))setRangeType("page");
+        }}>
+          <option value="">-- 교재를 선택하세요 ({TEXTBOOKS.length}권) --</option>
+          {TEXTBOOKS.map(b=><option key={b.id} value={b.id}>{b.name}{b.totalPages?` (${b.totalPages}쪽)`:""}</option>)}
+        </select>
+        {TEXTBOOKS.length===0&&<div style={{fontSize:12,color:T.textMuted,marginTop:6}}>등록된 교재가 없습니다. 아래에서 PDF를 업로드하거나, Google Drive의 "채움학원 시험자료/교재" 폴더에 PDF를 넣어주세요.</div>}
+      </>)}
+
+      {/* 교재 추가 영역 */}
+      <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${T.borderLight}`}}>
+        <div style={{fontSize:12,fontWeight:600,color:T.textSub,marginBottom:8}}>교재 추가하기</div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <label style={{display:"inline-flex",alignItems:"center",gap:6,padding:"8px 14px",fontSize:13,fontWeight:600,borderRadius:10,border:`1.5px solid ${T.goldDark}`,background:T.goldLight,color:T.goldDark,cursor:uploading?"wait":"pointer"}}>
+            {uploading?"업로드 중...":"📤 PDF 업로드"}
+            <input type="file" accept=".pdf" onChange={handleUploadTextbook} disabled={uploading} style={{display:"none"}} />
+          </label>
+          <span style={{fontSize:11,color:T.textMuted}}>또는 Google Drive "채움학원 시험자료/교재" 폴더에 직접 넣으면 자동 감지됩니다</span>
+        </div>
+        {TEXTBOOKS.length>0&&!tbLoading&&<button onClick={loadTextbooks} style={{marginTop:8,fontSize:11,color:T.blue,border:"none",background:"none",cursor:"pointer",textDecoration:"underline",padding:0}}>🔄 교재 목록 새로고침</button>}
+      </div>
     </div>
 
     {/* 범위 설정 */}
     {textbook&&selBook&&<div style={S.card}>
       <div style={S.secLabel}>범위 설정</div>
+      {selBook.chapters&&selBook.chapters.length>0?(
       <div style={{display:"flex",gap:6,marginBottom:12}}>
         {[{k:"chapter",label:"📖 챕터로 선택"},{k:"page",label:"📄 페이지로 선택"}].map(r=>(
           <button key={r.k} onClick={()=>setRangeType(r.k)} style={{flex:1,padding:"10px",fontSize:13,fontWeight:rangeType===r.k?700:500,borderRadius:10,border:`1.5px solid ${rangeType===r.k?T.goldDark:T.border}`,background:rangeType===r.k?T.goldDark:T.white,color:rangeType===r.k?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{r.label}</button>
         ))}
       </div>
+      ):(<div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>이 교재는 페이지 범위로만 선택할 수 있습니다 (챕터 정보 미등록)</div>)}
 
-      {rangeType==="chapter"?(<div>
+      {rangeType==="chapter"&&selBook.chapters&&selBook.chapters.length>0?(<div>
         <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>챕터를 선택하세요 (여러 개 가능)</div>
         <div style={{display:"flex",flexDirection:"column",gap:4}}>
           {selBook.chapters.map((ch,i)=>{
@@ -419,7 +484,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           선택: {chapters.length}개 챕터
         </div>}
       </div>):(<div>
-        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>페이지 범위를 입력하세요 (1~{selBook.totalPages})</div>
+        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>페이지 범위를 입력하세요{selBook.totalPages?` (1~${selBook.totalPages})`:""}</div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           <input style={{...S.inp,maxWidth:100,textAlign:"center"}} placeholder="시작" value={pageFrom}
             onChange={e=>setPageFrom(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric"/>
@@ -563,8 +628,9 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     {textbook&&<button style={{...S.btnG,opacity:sending?0.5:1}} disabled={sending}
       onClick={()=>{
         if(!textbook)return alert("교재를 선택하세요.");
-        if(rangeType==="chapter"&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
-        if(rangeType==="page"&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
+        const _hasChap=selBook&&selBook.chapters&&selBook.chapters.length>0;
+        if(rangeType==="chapter"&&_hasChap&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
+        if((rangeType==="page"||!_hasChap)&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
         if(!targetTeacher)return alert("선생님 이름을 선택하세요.");
         if(genClasses.length===0)return alert("대상 반을 1개 이상 추가하세요.");
         setStep(2);
