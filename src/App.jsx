@@ -346,6 +346,17 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     setSending(false);
   };
 
+  // 생성 요청 삭제
+  const deleteExamGen=async(rowIndex)=>{
+    if(!confirm("이 생성 요청을 삭제하시겠습니까?\n(삭제 후 복구할 수 없습니다)"))return;
+    try{
+      const r=await fetch(`${sheetsUrl}?action=delete_exam_gen&rowIndex=${rowIndex}`);
+      const d=await r.json();
+      if(d.result==="ok"){loadHistory();}
+      else{alert("삭제 실패: "+(d.message||""));}
+    }catch(e){alert("삭제 오류: "+e);}
+  };
+
   // OMR 시험 등록 (선택한 세트의 문제를 정답목록에 저장)
   const registerExam=async()=>{
     if(!preview||!preview.sets||preview.sets.length===0)return alert("문제 데이터가 없습니다.");
@@ -661,7 +672,11 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
                <div style={{fontSize:12,color:T.textSub,marginTop:2}}>{h.rangeDesc} · {h.testType==="vocab"?"단어":"문법/독해"} · {h.questionCount}문제{h.mcRatio!=null&&h.mcRatio<100?` · 객${h.mcRatio}%`:""}</div>
                <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>👤 {h.teacher} · {h.targetClass} · {h.requestedAt||""}</div>
              </div>
-             <span style={{padding:"4px 10px",borderRadius:20,background:statusBg,color:statusColor,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{h.status||"대기"}</span>
+             <div style={{display:"flex",alignItems:"center",gap:6}}>
+               <span style={{padding:"4px 10px",borderRadius:20,background:statusBg,color:statusColor,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{h.status||"대기"}</span>
+               <button onClick={(ev)=>{ev.stopPropagation();deleteExamGen(h.rowIndex);}}
+                 title="삭제" style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,color:T.textMuted,fontSize:14,lineHeight:"22px",textAlign:"center",cursor:"pointer",padding:0,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
+             </div>
            </div>
            {h.status==="완료"&&<div style={{display:"flex",gap:6,marginTop:6}}>
              <button onClick={()=>loadPreview(h.rowIndex)} disabled={prevLoading&&prevRow===h.rowIndex}
