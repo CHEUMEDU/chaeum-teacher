@@ -357,14 +357,19 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     const types=qs.map(q=>q.type==="mc"?"obj":"sub");
     setSending(true);
     try{
+      // targetClass에서 과목/학년/레벨 추출 (예: "영어 중3 A반" → subject="영어", grade="중3", level="A")
+      const tcParts=(preview.targetClass||"").split(/\s+/);
+      const regSubject=tcParts[0]||"영어";
+      const regGrade=tcParts[1]||"";
+      const regLevel=(tcParts[2]||"").replace(/반$/,"");
       await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           action:"save_answer_key",
-          subject:"영어",
-          grade:"",
-          level:"",
+          subject:regSubject,
+          grade:regGrade,
+          level:regLevel,
           examType:"문제생성기",
-          round:"",
+          round:`세트${["A","B","C"][selectedSet]}`,
           totalQuestions:qs.length,
           answers:answers,
           types:types,
@@ -1053,14 +1058,16 @@ export default function App(){
       // 1) 정답 데이터 시트 저장 (반별)
       for(const cls of classes){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers:answersSer,types,teacher,studentCount:cls.count,date:dateStr})});
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers:answersSer,types,teacher,studentCount:cls.count,date:dateStr,className:cls.name})});
       }
-      // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 실장님 프린트용
+      // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 반별 개별 업로드
       if(examFiles.length>0||answerFiles.length>0){
         const aData=await Promise.all(answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
-        await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"upload_exam",classes:classes.map(c=>({subject:c.subject,grade:c.grade,level:c.level,count:c.count})),classNames:classes.map(c=>c.name).join(", "),examType,date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:totalStudents,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
+        for(const cls of classes){
+          await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
+        }
       }
       setDone(true);setScreen("done");
     }catch(e){setError("저장 실패. 다시 시도해주세요.");}
@@ -1101,8 +1108,11 @@ export default function App(){
       for(const rd of active){
         const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
-        await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"upload_exam",classes:classes.map(c=>({subject:c.subject,grade:c.grade,level:c.level,count:c.count})),classNames:classes.map(c=>c.name).join(", "),examType,round:rd.label,date:dateStr,memo,teacher,studentCount:totalStudents,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+        // 반별 개별 업로드 (복수 학교 지원)
+        for(const cls of classes){
+          await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,round:rd.label,date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+        }
       }
       setDone(true);setScreen("done");
     }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
