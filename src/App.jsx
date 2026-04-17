@@ -481,7 +481,20 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           <button key={r.k} onClick={()=>setRangeType(r.k)} style={{flex:1,padding:"10px",fontSize:13,fontWeight:rangeType===r.k?700:500,borderRadius:10,border:`1.5px solid ${rangeType===r.k?T.goldDark:T.border}`,background:rangeType===r.k?T.goldDark:T.white,color:rangeType===r.k?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{r.label}</button>
         ))}
       </div>
-      ):(<div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>이 교재는 페이지 범위로만 선택할 수 있습니다 (챕터 정보 미등록)</div>)}
+      ):(<div style={{marginBottom:8}}>
+        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>이 교재는 아직 챕터 정보가 없습니다. 아래 버튼으로 챕터를 분석하거나 페이지 범위로 선택하세요.</div>
+        <button onClick={async()=>{
+          if(!selBook)return;
+          const chStr=prompt("챕터 목록을 입력하세요.\n각 챕터를 || 로 구분 (예: Chapter1.동사(p.4)||Chapter2.명사(p.6))\n\n또는 Claude Cowork에서 교재 분석 후 자동 등록됩니다.");
+          if(!chStr||!chStr.trim())return;
+          try{
+            const r=await fetch(`${sheetsUrl}?action=update_textbook_chapters&textbookId=${encodeURIComponent(selBook.id)}&chapters=${encodeURIComponent(chStr.trim())}`);
+            const d=await r.json();
+            if(d.result==="ok"){alert("챕터 등록 완료! 목록을 새로고침합니다.");loadTextbooks();}
+            else alert("챕터 등록 실패: "+(d.message||""));
+          }catch(e){alert("오류: "+e);}
+        }} style={{padding:"8px 14px",fontSize:12,fontWeight:600,borderRadius:10,border:`1.5px solid ${T.goldDark}`,background:T.goldLight,color:T.goldDark,cursor:"pointer",fontFamily:"inherit",marginBottom:8}}>📖 챕터 직접 등록하기</button>
+      </div>)}
 
       {rangeType==="chapter"&&selBook.chapters&&selBook.chapters.length>0?(<div>
         <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>챕터를 선택하세요 (여러 개 가능)</div>
@@ -960,6 +973,7 @@ export default function App(){
   // 직접입력 모드
   const[totalQ,setTotalQ]=useState(50);const[customQ,setCustomQ]=useState("");
   const qc=customQ?parseInt(customQ)||50:totalQ;
+  const[startNum,setStartNum]=useState(1); // ★ 시작번호 (1이 아닌 경우 OMR에 180(1) 표시)
   const[answers,setAnswers]=useState([]);
   const[types,setTypes]=useState([]);
   const[subAns,setSubAns]=useState({});
@@ -1082,7 +1096,7 @@ export default function App(){
       // 1) 정답 데이터 시트 저장 (반별)
       for(const cls of classes){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers:answersSer,types,teacher,studentCount:cls.count,date:dateStr,className:cls.name})});
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers:answersSer,types,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum})});
       }
       // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 반별 개별 업로드
       if(examFiles.length>0||answerFiles.length>0){
@@ -1228,7 +1242,7 @@ export default function App(){
   const[schStatus,setSchStatus]=useState(null);
   useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab,dashDate]);
 
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"1차",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"1차",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
 
   return(
@@ -1679,6 +1693,16 @@ export default function App(){
           <div style={S.cw}>
             {[30,50,72,100,200,300].map(n=>(<button key={n} onClick={()=>{setTotalQ(n);setCustomQ("");}} style={{...S.ch,background:!customQ&&totalQ===n?T.goldDark:T.white,color:!customQ&&totalQ===n?T.white:T.textSub,borderColor:!customQ&&totalQ===n?T.goldDark:T.border,fontWeight:!customQ&&totalQ===n?700:500}}>{n}</button>))}
             <input style={S.chInp} placeholder="직접" value={customQ} onChange={e=>setCustomQ(e.target.value.replace(/[^0-9]/g,""))} onFocus={()=>setTotalQ(0)}/>
+          </div>
+        </div>
+
+        {/* 시작번호 설정 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>시작 번호 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(시험지 첫 번호가 1이 아닌 경우)</span></div>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <input type="number" min="1" value={startNum} onChange={e=>setStartNum(Math.max(1,parseInt(e.target.value)||1))} style={{...S.chInp,width:100,textAlign:"center",fontSize:16,fontWeight:700}} placeholder="1"/>
+            <span style={{fontSize:12,color:T.textSub}}>번부터 시작</span>
+            {startNum>1&&<span style={{fontSize:11,color:T.accent,fontWeight:600}}>→ OMR에 {startNum}(1), {startNum+1}(2)... 표시</span>}
           </div>
         </div>
 
