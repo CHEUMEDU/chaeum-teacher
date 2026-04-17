@@ -952,14 +952,21 @@ export default function App(){
   // 파일업로드 모드
   const[examFiles,setExamFiles]=useState([]);
   const[answerFiles,setAnswerFiles]=useState([]);
-  // ★ 차수별 업로드 (1차/2차 기본)
+  // ★ 같은 시험지 / 다른 시험지 선택 (반이 2개 이상일 때)
+  const[sameExam,setSameExam]=useState(true); // true=전체 같은 시험, false=반별 다른 시험
+  // ★ 공통 차수별 업로드 (같은 시험지일 때)
   const[rounds,setRounds]=useState([
     {label:"1차",examFiles:[],answerFiles:[]},
-    {label:"2차",examFiles:[],answerFiles:[]},
   ]);
   const addRound=()=>setRounds(p=>[...p,{label:`${p.length+1}차`,examFiles:[],answerFiles:[]}]);
   const removeRound=(i)=>setRounds(p=>p.length<=1?p:p.filter((_,idx)=>idx!==i));
   const updateRound=(i,key,val)=>setRounds(p=>{const n=[...p];n[i]={...n[i],[key]:val};return n;});
+  // ★ 반별 차수 관리 (다른 시험지일 때) — {반이름: [{label, examFiles, answerFiles}]}
+  const[classRounds,setClassRounds]=useState({});
+  const initClassRounds=(clsList)=>{const m={};clsList.forEach(c=>{if(!m[c.name])m[c.name]=[{label:"1차",examFiles:[],answerFiles:[]}];});setClassRounds(m);};
+  const addClassRound=(clsName)=>setClassRounds(p=>({...p,[clsName]:[...(p[clsName]||[]),{label:`${(p[clsName]||[]).length+1}차`,examFiles:[],answerFiles:[]}]}));
+  const removeClassRound=(clsName,i)=>setClassRounds(p=>{const arr=(p[clsName]||[]);if(arr.length<=1)return p;return{...p,[clsName]:arr.filter((_,idx)=>idx!==i)};});
+  const updateClassRound=(clsName,i,key,val)=>setClassRounds(p=>{const arr=[...(p[clsName]||[])];arr[i]={...arr[i],[key]:val};return{...p,[clsName]:arr};});
   const[memo,setMemo]=useState("");
   // 주관식 힌트 (업로드 모드)
   const[subjMode,setSubjMode]=useState("none"); // none | mixed | all
@@ -1010,7 +1017,9 @@ export default function App(){
     // ★ 예상 인원 필수 — 실장님 프린트 매수 산출에 필요
     const cnt=parseInt(tcount)||0;
     if(!cnt||cnt<=0)return alert("예상 인원을 입력하세요.\n(실장님이 시험지를 몇 장 프린트해야 할지 계산하기 위해 필수입니다.)");
-    setClasses(p=>[...p,{subject:ts,grade:tg,level:lv,name,count:cnt}]);
+    const newClasses=[...classes,{subject:ts,grade:tg,level:lv,name,count:cnt}];
+    setClasses(newClasses);
+    setClassRounds(p=>({...p,[name]:[{label:"1차",examFiles:[],answerFiles:[]}]}));
     setTl("");setTcl("");setTcount("");
   };
 
@@ -1076,47 +1085,67 @@ export default function App(){
 
   // 파일업로드 저장 (차수별)
   const saveUpload=async()=>{
-    const active=rounds.filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
-    if(active.length===0)return alert("최소 1개 차수에 시험지·정답지를 업로드하세요.");
-    const missingAns=active.find(r=>r.answerFiles.length===0);
-    if(missingAns)return alert(`${missingAns.label} 시험에 정답지가 없습니다.\n정답지를 올려주세요 (Claude 분석 필수).`);
-
-    // D. 입력 검증 — 혼합인데 주관식 번호 미지정
-    if(subjMode==="mixed" && !subjRanges.trim()){
-      return alert("⚠️ '객관식+주관식 혼합'을 선택하셨는데 주관식 번호가 비어있습니다.\n예: 21-30, 41-45\n\n번호를 입력하지 않으시려면 '전체 객관식' 또는 '전체 주관식'을 선택해주세요.");
-    }
-    // D. 입력 검증 — 주관식 번호가 범위를 벗어남 (문항수 가늠 불가하니 경고만)
-    if(subjMode==="mixed" && subjRanges){
-      const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
-      if(maxNum>200){
-        if(!confirm(`주관식 번호에 ${maxNum}번이 포함되어 있습니다. 문항수를 초과한 것 아닌가요?\n그래도 진행하시겠습니까?`))return;
+    // 같은 시험지 모드 vs 반별 다른 시험지 모드
+    if(sameExam||classes.length<=1){
+      // ── 같은 시험지: 기존 rounds 사용 ──
+      const active=rounds.filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
+      if(active.length===0)return alert("최소 1개 차수에 시험지·정답지를 업로드하세요.");
+      const missingAns=active.find(r=>r.answerFiles.length===0);
+      if(missingAns)return alert(`${missingAns.label} 시험에 정답지가 없습니다.\n정답지를 올려주세요 (Claude 분석 필수).`);
+      // 주관식 번호 범위 경고
+      if(subjMode==="mixed" && subjRanges){
+        const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
+        if(maxNum>200){if(!confirm(`주관식 번호에 ${maxNum}번이 포함되어 있습니다. 문항수를 초과한 것 아닌가요?\n그래도 진행하시겠습니까?`))return;}
       }
-    }
-    // D. 파일명 휴리스틱 — 답지에 "시험지/문제" 키워드
-    for(const rd of active){
-      const suspAns=rd.answerFiles.find(f=>/(시험지|문제지|problem|question|quiz)/i.test(f.name)&&!/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
-      if(suspAns){
-        if(!confirm(`⚠️ ${rd.label} 정답지로 올린 파일 "${suspAns.name}"이 시험지처럼 보입니다.\n\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;
-      }
-      const suspExam=rd.examFiles.find(f=>/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
-      if(suspExam){
-        if(!confirm(`⚠️ ${rd.label} 시험지로 올린 파일 "${suspExam.name}"이 답지처럼 보입니다.\n\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;
-      }
-    }
-    setSaving(true);setError("");
-    try{
+      // 파일명 휴리스틱
       for(const rd of active){
-        const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
-        const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
-        // 반별 개별 업로드 (복수 학교 지원)
-        for(const cls of classes){
-          await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,round:rd.label,date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
-        }
+        const suspAns=rd.answerFiles.find(f=>/(시험지|문제지|problem|question|quiz)/i.test(f.name)&&!/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
+        if(suspAns){if(!confirm(`⚠️ ${rd.label} 정답지로 올린 파일 "${suspAns.name}"이 시험지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
+        const suspExam=rd.examFiles.find(f=>/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
+        if(suspExam){if(!confirm(`⚠️ ${rd.label} 시험지로 올린 파일 "${suspExam.name}"이 답지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
       }
-      setDone(true);setScreen("done");
-    }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
-    setSaving(false);
+      setSaving(true);setError("");
+      try{
+        for(const rd of active){
+          const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+          const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+          for(const cls of classes){
+            await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,round:rd.label,date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+          }
+        }
+        setDone(true);setScreen("done");
+      }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
+      setSaving(false);
+    }else{
+      // ── 반별 다른 시험지: classRounds 사용 ──
+      // 각 반에 최소 1개 차수 파일 확인
+      for(const cls of classes){
+        const cRds=classRounds[cls.name]||[];
+        const active=cRds.filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
+        if(active.length===0)return alert(`"${cls.name}" 반에 최소 1개 차수를 업로드하세요.`);
+        const missingAns=active.find(r=>r.answerFiles.length===0);
+        if(missingAns)return alert(`"${cls.name}" ${missingAns.label}에 정답지가 없습니다.`);
+      }
+      if(subjMode==="mixed" && subjRanges){
+        const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
+        if(maxNum>200){if(!confirm(`주관식 번호에 ${maxNum}번이 포함되어 있습니다. 문항수를 초과한 것 아닌가요?\n그래도 진행하시겠습니까?`))return;}
+      }
+      setSaving(true);setError("");
+      try{
+        for(const cls of classes){
+          const cRds=(classRounds[cls.name]||[]).filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
+          for(const rd of cRds){
+            const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+            const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+            await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,round:rd.label,date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+          }
+        }
+        setDone(true);setScreen("done");
+      }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
+      setSaving(false);
+    }
   };
 
   // 대시보드 조회
@@ -1184,15 +1213,13 @@ export default function App(){
   const[schStatus,setSchStatus]=useState(null);
   useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab,dashDate]);
 
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"1차",examFiles:[],answerFiles:[]},{label:"2차",examFiles:[],answerFiles:[]}]);setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"1차",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
 
   return(
     <div style={S.app} className="app-shell">
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:${T.bg}}input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-shadow:0 0 0 3px ${T.goldLight}!important}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes spin{to{transform:rotate(360deg)}}.fade-up{animation:fadeUp .3s ease-out}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}
-/* ── 반응형: PC에서 넓게 ── */
-@media(min-width:768px){.app-shell{max-width:960px!important}.hdr-inner{max-width:960px!important}.sub-bar-fix{max-width:960px!important}}
-@media(min-width:1200px){.app-shell{max-width:1200px!important}.hdr-inner{max-width:1200px!important}.sub-bar-fix{max-width:1200px!important}}
+/* ── 반응형: 모바일 스타일 유지 (좌우폭 480px 고정) ── */
 `}</style>
 
       <header style={S.hdr}><div style={S.hdrIn} className="hdr-inner"><div style={S.logoR}><div style={S.logoM}>채움</div><div><div style={S.hdrT}>채움학원</div><div style={S.hdrS}>시험 등록 (선생님용)</div></div></div>{teacher&&<div style={S.hdrB}>👤 {teacher}</div>}</div></header>
@@ -1692,23 +1719,66 @@ export default function App(){
       {/* ═══ 파일 업로드 ═══ */}
       {screen==="upload"&&!done&&(<div style={S.wrap} className="fade-up">
         <div style={S.card}>
-          <div style={S.secLabel}>차수별 파일 업로드</div>
-          <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
-            💡 <b>1차, 2차, 3차...</b> 각 차수별로 시험지·정답지를 따로 올려주세요. 학생이 OMR 제출 시 <b>몇 차 시험인지 선택</b>할 수 있어요.
-            <br/>차수에 올리지 않은 회차는 자동으로 생략됩니다 (파일 0개 차수는 저장 안 됨).
-          </div>
-          {rounds.map((rd,ri)=>(
-            <div key={ri} style={{padding:"10px 12px",marginBottom:10,border:`2px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                <input style={{...S.inp,width:80,fontWeight:700}} value={rd.label} onChange={e=>updateRound(ri,"label",e.target.value)} placeholder="1차"/>
-                <div style={{fontSize:12,color:T.textMuted,flex:1}}>시험 (예: 1차, 재시, 보강)</div>
-                {rounds.length>1&&(<button onClick={()=>removeRound(ri)} style={{padding:"4px 10px",fontSize:11,background:T.dangerLight,color:T.danger,border:"none",borderRadius:6,cursor:"pointer",fontWeight:700}}>✕ 삭제</button>)}
-              </div>
-              <FileUploadMulti label={`${rd.label} 시험지`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
-              <FileUploadMulti label={`${rd.label} 정답지`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+          <div style={S.secLabel}>파일 업로드</div>
+
+          {/* ★ 반이 2개 이상일 때: 같은/다른 시험지 선택 */}
+          {classes.length>=2&&(<div style={{marginBottom:14}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:8}}>시험지 구분</div>
+            <div style={{display:"flex",gap:8}}>
+              {[{v:true,label:"같은 시험지",desc:"모든 반 동일"},{v:false,label:"반별 다른 시험지",desc:"반마다 따로 업로드"}].map(o=>{const a=sameExam===o.v;return(
+                <button key={String(o.v)} onClick={()=>setSameExam(o.v)} style={{flex:1,padding:"10px",borderRadius:10,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldLight:T.white,cursor:"pointer",fontFamily:"inherit",textAlign:"center"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:a?T.goldDeep:T.text}}>{o.label}</div>
+                  <div style={{fontSize:10,color:T.textMuted,marginTop:2}}>{o.desc}</div>
+                </button>
+              );})}
             </div>
-          ))}
-          <button onClick={addRound} style={{width:"100%",padding:"10px",marginBottom:8,background:T.white,border:`1.5px dashed ${T.goldDark}`,borderRadius:8,cursor:"pointer",fontWeight:700,color:T.goldDark,fontFamily:"inherit"}}>+ 차수 추가</button>
+          </div>)}
+
+          {/* ── 같은 시험지 모드 (또는 반 1개) ── */}
+          {(sameExam||classes.length<=1)&&(<>
+            <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
+              💡 차수별로 시험지·정답지를 올려주세요. 파일 없는 차수는 자동 생략됩니다.
+            </div>
+            {rounds.map((rd,ri)=>(
+              <div key={ri} style={{padding:"10px 12px",marginBottom:10,border:`2px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <input style={{...S.inp,width:80,fontWeight:700}} value={rd.label} onChange={e=>updateRound(ri,"label",e.target.value)} placeholder="1차"/>
+                  <div style={{fontSize:12,color:T.textMuted,flex:1}}>시험 (예: 1차, 재시, 보강)</div>
+                  {rounds.length>1&&(<button onClick={()=>removeRound(ri)} style={{padding:"4px 10px",fontSize:11,background:T.dangerLight,color:T.danger,border:"none",borderRadius:6,cursor:"pointer",fontWeight:700}}>✕ 삭제</button>)}
+                </div>
+                <FileUploadMulti label={`${rd.label} 시험지`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                <FileUploadMulti label={`${rd.label} 정답지`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+              </div>
+            ))}
+            <button onClick={addRound} style={{width:"100%",padding:"10px",marginBottom:8,background:T.white,border:`1.5px dashed ${T.goldDark}`,borderRadius:8,cursor:"pointer",fontWeight:700,color:T.goldDark,fontFamily:"inherit"}}>+ 차수 추가</button>
+          </>)}
+
+          {/* ── 반별 다른 시험지 모드 ── */}
+          {!sameExam&&classes.length>=2&&(<>
+            <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
+              💡 각 반별로 시험지·정답지를 따로 올려주세요.
+            </div>
+            {classes.map((cls,ci)=>(
+              <div key={ci} style={{marginBottom:14,border:`2px solid ${T.blue}40`,borderRadius:12,overflow:"hidden"}}>
+                <div style={{padding:"10px 14px",background:T.blueLight,fontWeight:700,fontSize:13,color:T.blue}}>{cls.name}</div>
+                <div style={{padding:"10px 12px"}}>
+                  {(classRounds[cls.name]||[]).map((rd,ri)=>(
+                    <div key={ri} style={{padding:"10px 12px",marginBottom:8,border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                        <input style={{...S.inp,width:80,fontWeight:700}} value={rd.label} onChange={e=>updateClassRound(cls.name,ri,"label",e.target.value)} placeholder="1차"/>
+                        <div style={{fontSize:12,color:T.textMuted,flex:1}}>{cls.name} {rd.label}</div>
+                        {(classRounds[cls.name]||[]).length>1&&(<button onClick={()=>removeClassRound(cls.name,ri)} style={{padding:"4px 10px",fontSize:11,background:T.dangerLight,color:T.danger,border:"none",borderRadius:6,cursor:"pointer",fontWeight:700}}>✕ 삭제</button>)}
+                      </div>
+                      <FileUploadMulti label={`시험지`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                      <FileUploadMulti label={`정답지`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                    </div>
+                  ))}
+                  <button onClick={()=>addClassRound(cls.name)} style={{width:"100%",padding:"8px",background:T.white,border:`1.5px dashed ${T.blue}`,borderRadius:8,cursor:"pointer",fontWeight:700,color:T.blue,fontFamily:"inherit",fontSize:12}}>+ {cls.name} 차수 추가</button>
+                </div>
+              </div>
+            ))}
+          </>)}
+
           <div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginTop:8}}>
             <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>💡 이렇게 처리됩니다</div>
             <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 각 차수별로 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 학생 앱에서 시험 선택 시 <b>차수</b>도 함께 표시됩니다.</div>
