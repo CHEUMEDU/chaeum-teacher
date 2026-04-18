@@ -395,6 +395,16 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     setSending(false);
   };
 
+  // ★ 학생앱 자동 등록 (완료된 시험을 정답목록에 등록)
+  const autoRegisterForStudents=async(rowIndex)=>{
+    try{
+      const r=await fetch(`${sheetsUrl}?action=auto_register_exam_gen&rowIndex=${rowIndex}`);
+      const d=await r.json();
+      if(d.result==="ok"){alert("✅ 학생앱에 등록 완료! 학생들이 시험을 찾을 수 있어요.");}
+      else{alert("등록 실패: "+(d.message||""));}
+    }catch(e){alert("등록 오류: "+e);}
+  };
+
   // 생성 요청 삭제
   const deleteExamGen=async(rowIndex)=>{
     if(!confirm("이 생성 요청을 삭제하시겠습니까?\n(삭제 후 복구할 수 없습니다)"))return;
@@ -413,8 +423,13 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     if(!chosenSet)return alert("세트를 선택하세요.");
     const qs=chosenSet.questions||[];
     if(qs.length===0)return alert("문제가 없습니다.");
-    const answers=qs.map(q=>q.type==="mc"?q.answer:String(q.answer||""));
-    const types=qs.map(q=>q.type==="mc"?"obj":"sub");
+    // ★ 정답을 객체 형태로 변환 (1-based 키) — 학생앱 채점 호환
+    const answersObj={};const typesObj={};
+    qs.forEach((q,i)=>{
+      const qNum=String(q.number||(i+1));
+      answersObj[qNum]=q.type==="mc"?q.answer:String(q.answer||"");
+      typesObj[qNum]=q.type==="mc"?"obj":"sub";
+    });
     setSending(true);
     try{
       // targetClass에서 과목/학년/레벨 추출 (예: "영어 중3 A반" → subject="영어", grade="중3", level="A")
@@ -431,8 +446,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           examType:"문제생성기",
           round:`세트${["A","B","C"][selectedSet]}`,
           totalQuestions:qs.length,
-          answers:answers,
-          types:types,
+          answers:answersObj,
+          types:typesObj,
           teacher:preview.teacher||"",
           studentCount:0,
           className:preview.targetClass||"",
@@ -745,8 +760,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
                style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>
                {prevLoading&&prevRow===h.rowIndex?"로딩…":"👁️ 미리보기"}
              </button>
-             <button onClick={()=>loadPreview(h.rowIndex)}
-               style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>✅ 시험 등록</button>
+             <button onClick={()=>autoRegisterForStudents(h.rowIndex)}
+               style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.accent,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>📱 학생앱 등록</button>
            </div>}
            {h.status==="생성중"&&<div style={{padding:"6px 10px",borderRadius:8,background:"#FFF3E0",fontSize:12,color:"#E65100",fontWeight:600,textAlign:"center",marginTop:6}}>
              ⏳ Claude가 문제를 만들고 있어요… (약 10분)
