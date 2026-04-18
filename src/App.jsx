@@ -299,35 +299,68 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
 
         // 경로 1: Drive 파일에서 전체 문제 로드 (questions 필드)
         if(det.questions){
-          const raw=det.questions;
-          if(raw.sets&&Array.isArray(raw.sets)){
+          let raw=det.questions;
+          // 이중 인코딩 처리
+          if(typeof raw==="string"){try{raw=JSON.parse(raw);}catch(e){}}
+          if(raw&&raw.sets&&Array.isArray(raw.sets)){
             sets=raw.sets;
-          }else if(raw.questions&&Array.isArray(raw.questions)){
+          }else if(raw&&raw.sets&&typeof raw.sets==="object"&&!Array.isArray(raw.sets)){
+            sets=Object.values(raw.sets);
+          }else if(raw&&raw.questions&&Array.isArray(raw.questions)){
             sets=[raw];
+          }else if(Array.isArray(raw)){
+            sets=raw;
           }
         }
 
         // 경로 2: 시트에 저장된 정답데이터 (answerData 필드) — Drive 실패 시 fallback
         if(sets.length===0&&det.answerData){
-          const ad=det.answerData;
+          let ad=det.answerData;
+          // 이중 인코딩 처리: 문자열이면 한번 더 파싱
+          if(typeof ad==="string"){try{ad=JSON.parse(ad);}catch(e){}}
+
+          const makeQs=(answers,types,qCount)=>(answers||[]).map((ans,qi)=>({
+            number:qi+1,
+            difficulty:qi<(qCount||20)*0.3?"easy":qi<(qCount||20)*0.7?"medium":"hard",
+            type:(types||[])[qi]==="sub"?"sub":"mc",
+            question:`문제 ${qi+1}`,
+            choices:(types||[])[qi]==="sub"?[]:["①","②","③","④","⑤"],
+            answer:ans,
+            explanation:""
+          }));
+
+          // 포맷 1: {sets: [{answers:[], types:[], style:""}, ...]} — 배열
           if(ad.sets&&Array.isArray(ad.sets)){
-            // answerData.sets = [{answers:[1,3,...], types:["mc",...], style:"..."}, ...]
-            sets=ad.sets.map((s,i)=>{
-              const qs=(s.answers||[]).map((ans,qi)=>({
-                number:qi+1,
-                difficulty:qi<det.questionCount*0.3?"easy":qi<det.questionCount*0.7?"medium":"hard",
-                type:(s.types||[])[qi]||"mc",
-                question:`문제 ${qi+1}`,
-                choices:s.types&&s.types[qi]==="mc"?["①","②","③","④","⑤"]:[],
-                answer:ans,
-                explanation:""
-              }));
-              return{style:s.style||`스타일 ${["A","B","C"][i]}`,questions:qs};
+            sets=ad.sets.map((s,i)=>({
+              style:s.style||`스타일 ${["A","B","C"][i]}`,
+              questions:makeQs(s.answers,s.types,det.questionCount)
+            }));
+          }
+          // 포맷 2: {sets: {A:{answers,types}, B:{...}, ...}} — 객체
+          else if(ad.sets&&typeof ad.sets==="object"&&!Array.isArray(ad.sets)){
+            sets=Object.keys(ad.sets).map((key,i)=>{
+              const s=ad.sets[key];
+              return{style:s.style||key,questions:makeQs(s.answers,s.types,det.questionCount)};
             });
+          }
+          // 포맷 3: 루트가 배열 [{answers,types,style}, ...]
+          else if(Array.isArray(ad)){
+            sets=ad.map((s,i)=>({
+              style:s.style||`스타일 ${["A","B","C"][i]}`,
+              questions:makeQs(s.answers,s.types,det.questionCount)
+            }));
+          }
+          // 포맷 4: flat — {answers:[], types:[]} 단일 세트
+          else if(ad.answers&&Array.isArray(ad.answers)){
+            sets=[{style:"A",questions:makeQs(ad.answers,ad.types,det.questionCount)}];
+          }
+          // 포맷 5: questions 배열 직접 포함 — {questions:[{number,answer,...},...]}
+          else if(ad.questions&&Array.isArray(ad.questions)){
+            sets=[{style:"A",questions:ad.questions}];
           }
         }
 
-        setPreview({...det, sets, _source:det.questionsSource||"none", _error:det.questionsError||""});
+        setPreview({...det, sets, _source:det.questionsSource||"none", _error:det.questionsError||"", answerDataInfo:det.answerDataInfo||null, answerDataRaw:det.answerDataRaw||""});
         setStep(4);
       }else{alert("상세 조회 실패: "+(d.message||""));}
     }catch(e){alert("조회 오류: "+e);}
@@ -824,10 +857,17 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       {preview._error&&<div style={{padding:"8px 12px",borderRadius:8,background:"#FFF3E0",border:"1px solid #FFB74D",fontSize:11,color:"#E65100",marginBottom:8}}>
         ⚠️ {preview._error}
       </div>}
+      {/* 디버그: answerData 구조 정보 (문제 0개일 때만 표시) */}
+      {qs.length===0&&preview.answerDataInfo&&<div style={{padding:"6px 12px",borderRadius:8,background:"#F3E5F5",fontSize:10,color:"#6A1B9A",marginBottom:8}}>
+        🔍 answerData 구조: type={preview.answerDataInfo.type}, isArray={String(preview.answerDataInfo.isArray)}, keys=[{(preview.answerDataInfo.keys||[]).join(",")}], sets={preview.answerDataInfo.setsType}
+      </div>}
+      {qs.length===0&&preview.answerDataRaw&&<div style={{padding:"6px 12px",borderRadius:8,background:"#FCE4EC",fontSize:10,color:"#880E4F",marginBottom:8,wordBreak:"break-all"}}>
+        📄 원본 데이터(200자): {preview.answerDataRaw}
+      </div>}
 
       {/* 난이도별 문제 */}
       {qs.length===0?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>
-        {preview._error?"⚠️ 문제 데이터를 불러올 수 없습니다.\nApps Script를 최신 버전(v7)으로 배포해주세요.":"이 세트에 문제가 없습니다."}
+        {preview._error?"⚠️ 문제 데이터를 불러올 수 없습니다.\nApps Script를 최신 버전(v10)으로 배포해주세요.":"이 세트에 문제가 없습니다."}
       </div>:
       ["easy","medium","hard"].map(diff=>{
         const items=grouped[diff];
