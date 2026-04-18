@@ -297,19 +297,26 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         let sets=[];
         const det=d.detail;
 
+        // type 정규화: "multiple_choice" → "mc"
+        const normT=(t)=>t==="multiple_choice"||t==="mc"||t==="obj"?"mc":"sub";
+        const normSet=(s,i)=>({
+          style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,
+          questions:(s.questions||[]).map(q=>({...q,type:normT(q.type||"mc")}))
+        });
+
         // 경로 1: Drive 파일에서 전체 문제 로드 (questions 필드)
         if(det.questions){
           let raw=det.questions;
           // 이중 인코딩 처리
           if(typeof raw==="string"){try{raw=JSON.parse(raw);}catch(e){}}
           if(raw&&raw.sets&&Array.isArray(raw.sets)){
-            sets=raw.sets;
+            sets=raw.sets.map(normSet);
           }else if(raw&&raw.sets&&typeof raw.sets==="object"&&!Array.isArray(raw.sets)){
-            sets=Object.values(raw.sets);
+            sets=Object.values(raw.sets).map(normSet);
           }else if(raw&&raw.questions&&Array.isArray(raw.questions)){
-            sets=[raw];
+            sets=[normSet(raw,0)];
           }else if(Array.isArray(raw)){
-            sets=raw;
+            sets=raw.map(normSet);
           }
         }
 
@@ -329,26 +336,35 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
             explanation:""
           }));
 
-          // 포맷 1: {sets: [{answers:[], types:[], style:""}, ...]} — 배열
+          // type 정규화: "multiple_choice" → "mc", "subjective" → "sub"
+          const normType=(t)=>t==="multiple_choice"||t==="mc"||t==="obj"?"mc":"sub";
+
+          // sets 배열에서 questions 객체를 가져오는 공통 함수
+          const extractSets=(setsArr)=>setsArr.map((s,i)=>{
+            // 포맷 A: {questions:[{number,answer,type,question,choices,...}]} — 스케줄 태스크가 보내는 형식
+            if(s.questions&&Array.isArray(s.questions)&&s.questions.length>0){
+              return{style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,questions:s.questions.map(q=>({
+                ...q,type:normType(q.type||"mc")
+              }))};
+            }
+            // 포맷 B: {answers:[], types:[]} — 간략 정답 데이터
+            if(s.answers&&Array.isArray(s.answers)){
+              return{style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,questions:makeQs(s.answers,s.types,det.questionCount)};
+            }
+            return{style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,questions:[]};
+          });
+
+          // 포맷 1: {sets: [...]} — 배열
           if(ad.sets&&Array.isArray(ad.sets)){
-            sets=ad.sets.map((s,i)=>({
-              style:s.style||`스타일 ${["A","B","C"][i]}`,
-              questions:makeQs(s.answers,s.types,det.questionCount)
-            }));
+            sets=extractSets(ad.sets);
           }
-          // 포맷 2: {sets: {A:{answers,types}, B:{...}, ...}} — 객체
+          // 포맷 2: {sets: {A:{...}, B:{...}, ...}} — 객체
           else if(ad.sets&&typeof ad.sets==="object"&&!Array.isArray(ad.sets)){
-            sets=Object.keys(ad.sets).map((key,i)=>{
-              const s=ad.sets[key];
-              return{style:s.style||key,questions:makeQs(s.answers,s.types,det.questionCount)};
-            });
+            sets=extractSets(Object.values(ad.sets));
           }
-          // 포맷 3: 루트가 배열 [{answers,types,style}, ...]
+          // 포맷 3: 루트가 배열 [{questions,...}, ...]
           else if(Array.isArray(ad)){
-            sets=ad.map((s,i)=>({
-              style:s.style||`스타일 ${["A","B","C"][i]}`,
-              questions:makeQs(s.answers,s.types,det.questionCount)
-            }));
+            sets=extractSets(ad);
           }
           // 포맷 4: flat — {answers:[], types:[]} 단일 세트
           else if(ad.answers&&Array.isArray(ad.answers)){
@@ -356,7 +372,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           }
           // 포맷 5: questions 배열 직접 포함 — {questions:[{number,answer,...},...]}
           else if(ad.questions&&Array.isArray(ad.questions)){
-            sets=[{style:"A",questions:ad.questions}];
+            sets=[{style:"A",questions:ad.questions.map(q=>({...q,type:normType(q.type||"mc")}))}];
           }
         }
 
