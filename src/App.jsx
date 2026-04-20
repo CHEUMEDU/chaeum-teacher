@@ -1463,6 +1463,7 @@ export default function App(){
   const filled=answers.filter(a=>_isFilled(a)).length;
   // 직접입력 저장
   const saveDirect=async()=>{
+    if(saving)return; // ★ 중복 제출 방지: 이미 저장 중이면 무시
     if(filled===0)return alert("최소 1문항 이상 정답을 입력하세요.");
     setSaving(true);setError("");
     try{
@@ -1490,6 +1491,7 @@ export default function App(){
   };
   // 파일업로드 저장 (차수별)
   const saveUpload=async()=>{
+    if(saving)return; // ★ 중복 제출 방지: 이미 저장 중이면 무시
     // 같은 시험지 모드 vs 반별 다른 시험지 모드
     if(sameExam||classes.length<=1){
       // ── 같은 시험지: 기존 rounds 사용 ──
