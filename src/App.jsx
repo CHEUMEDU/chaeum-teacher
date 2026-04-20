@@ -1,10 +1,8 @@
 import { useState, useCallback, useEffect } from "react";
-
 /* ============================================================
    채움학원 — 선생님용 시험 등록 v2
    신규: 선생님 이름, 반별 인원, 오늘의 현황 대시보드
    ============================================================ */
-
 const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4s02vNmncvteesBn3875WDF3lO176nc4YzAKj7B6zOJVECQO/exec";
 const SUBJECTS=["영어","국어","수학"];
 const GRADES=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
@@ -15,10 +13,48 @@ const LV_CATS=[{key:"level",label:"레벨",opts:LV_LEVELS},{key:"middle",label:"
 const EXAM_TYPES=["단어시험","문법시험","종합시험","모의고사","수학테스트","영작시험","해석시험","DAILY TEST","WEEKLY TEST","MONTHLY TEST","기타"];
 const LS_KEY="chaeum_teacher";
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS_KEY)||"{}");}catch(e){return{};}}
-function lsSet(o){try{localStorage.setItem(LS_KEY,JSON.stringify(o));}catch(e){}}
-
+function lsSet(o){try{const cur=lsGet();localStorage.setItem(LS_KEY,JSON.stringify({...cur,...o}));}catch(e){}}
+// ============================================================
+// [공통 유틸] 정답 데이터 정규화 — 배열/객체/JSON문자열/이중인코딩 → {"1":v,...}
+// (앱스크립트 normalizeAnswerData 와 동일 로직, 클라이언트 fallback용)
+// ============================================================
+function normalizeAnswerData(raw){
+  if(raw===null||raw===undefined||raw==="")return{};
+  let v=raw;
+  for(let a=0;a<2;a++){
+    if(typeof v!=="string")break;
+    const s=v.trim();if(!s)return{};
+    try{v=JSON.parse(s);}catch(e){return{};}
+  }
+  if(v===null||v===undefined)return{};
+  const out={};
+  if(Array.isArray(v)){v.forEach((x,i)=>{out[String(i+1)]=x;});return out;}
+  if(typeof v==="object"){
+    const keys=Object.keys(v);
+    const allNum=keys.length>0&&keys.every(k=>/^\d+$/.test(k));
+    if(allNum){
+      const nums=keys.map(k=>parseInt(k,10)).sort((a,b)=>a-b);
+      const shift=(nums[0]===0)?1:0;
+      keys.forEach(k=>{out[String(parseInt(k,10)+shift)]=v[k];});
+      return out;
+    }
+    for(const k in v)out[k]=v[k];
+    return out;
+  }
+  return{"1":v};
+}
+// 이중 인코딩 JSON 문서 안전 파싱 (sets/questions 등 포함한 전체 문서)
+function parseAnswerDoc(raw){
+  if(raw===null||raw===undefined||raw==="")return null;
+  let v=raw;
+  for(let a=0;a<3;a++){
+    if(typeof v!=="string")break;
+    const s=v.trim();if(!s)return null;
+    try{v=JSON.parse(s);}catch(e){return null;}
+  }
+  return v;
+}
 const T={gold:"#D4A017",goldDark:"#B8860B",goldDeep:"#8B6914",goldLight:"#FFF3D0",goldPale:"#FFFBF0",goldMuted:"#F5E6B8",bg:"#FAFAF7",text:"#1A1A1A",textSub:"#5C5C5C",textMuted:"#999999",border:"#E8E4DA",borderLight:"#F0EDE4",accent:"#2E7D32",accentLight:"#E8F5E9",danger:"#C62828",dangerLight:"#FFEBEE",white:"#FFFFFF",blue:"#1E40AF",blueLight:"#DBEAFE"};
-
 function Chip({label,req,opts,val,onChange,custom:allowC}){
   const[c,setC]=useState(false);const[cv,setCv]=useState("");
   const h=o=>{if(o==="기타"&&allowC){setC(true);onChange("");}else{setC(false);setCv("");onChange(val===o?"":o);}};
@@ -28,7 +64,6 @@ function Chip({label,req,opts,val,onChange,custom:allowC}){
     {c&&allowC&&<input style={{...S.inp,marginTop:6}} placeholder="직접 입력" value={cv} onChange={e=>{setCv(e.target.value);onChange(e.target.value);}}/>}
   </div>);
 }
-
 function FileUploadMulti({label,req,files,onFilesChange,accept}){
   const[drag,setDrag]=useState(false);
   const add=nf=>{const arr=Array.from(nf);const ex=files.map(f=>f.name);const fil=arr.filter(f=>!ex.includes(f.name));if(fil.length>0)onFilesChange([...files,...fil]);};
@@ -50,9 +85,7 @@ function FileUploadMulti({label,req,files,onFilesChange,accept}){
     </div>}
   </div>);
 }
-
 function fileToBase64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(",")[1]);r.onerror=rej;r.readAsDataURL(file);});}
-
 /* ═══ 일괄 프린트 탭 ═══ */
 function PrintTab({sheetsUrl, T, S}){
   const [jobs, setJobs] = useState([]);
@@ -68,7 +101,6 @@ function PrintTab({sheetsUrl, T, S}){
     setLoading(false);
   }, [date, sheetsUrl]);
   useEffect(()=>{ load(); }, [load]);
-
   const dlFile = async(id, name)=>{
     try{
       const r = await fetch(`${sheetsUrl}?action=download_file&id=${encodeURIComponent(id)}`);
@@ -86,10 +118,8 @@ function PrintTab({sheetsUrl, T, S}){
   };
   const dlAll = async(job)=>{ for(const f of job.files){ await dlFile(f.id, f.name); await new Promise(r=>setTimeout(r,300)); } };
   const dlAllJobs = async()=>{ for(const job of jobs){ await dlAll(job); } };
-
   const totalCopies = jobs.reduce((s,j)=>s+(j.count||0)*(j.files.length||0), 0);
   const totalFiles = jobs.reduce((s,j)=>s+(j.files.length||0), 0);
-
   return (<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"20px 0 12px"}}>
       <div style={{fontSize:36,marginBottom:4}}>🖨️</div>
@@ -129,7 +159,6 @@ function PrintTab({sheetsUrl, T, S}){
     ))}
   </div>);
 }
-
 /* ═══ 📚 문제 생성기 탭 ═══ */
 function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   // ── 상태 ──
@@ -170,7 +199,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[prevLoading,setPrevLoading]=useState(false);
   const[prevRow,setPrevRow]=useState(null);
   const[selectedSet,setSelectedSet]=useState(0); // 0=A, 1=B, 2=C
-
   // 반 추가 핸들러
   const addGenClass=()=>{
     if(!genSubject)return alert("과목을 선택하세요.");
@@ -182,7 +210,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     setGenClasses(p=>[...p,{subject:genSubject,grade:genGrade,level:lv,name}]);
     setGenLevel("");setGenLevelCustom("");
   };
-
   // ── 교재 목록 (서버에서 동적 로딩) ──
   const loadTextbooks=useCallback(()=>{
     setTbLoading(true);setTbError("");
@@ -198,9 +225,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       .catch(e=>setTbError("네트워크 오류: "+String(e)))
       .finally(()=>setTbLoading(false));
   },[sheetsUrl]);
-
   useEffect(()=>{loadTextbooks();},[loadTextbooks]);
-
   // 교재 업로드 핸들러
   const handleUploadTextbook=(e)=>{
     const file=e.target.files&&e.target.files[0];
@@ -224,13 +249,10 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     reader.readAsDataURL(file);
     e.target.value=""; // reset input
   };
-
   const TEXTBOOKS=textbookList;
   const selBook=TEXTBOOKS.find(b=>b.id===textbook);
-
   // 챕터 토글
   const toggleCh=(idx)=>setChapters(p=>p.includes(idx)?p.filter(i=>i!==idx):[...p,idx].sort((a,b)=>a-b));
-
   // 난이도 슬라이더 핸들러 (합계 100% 유지)
   const adjustDiff=(type,val)=>{
     val=Math.max(0,Math.min(100,val));
@@ -248,7 +270,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       setDiffHard(val);setDiffEasy(Math.round(remain*ratio));setDiffMed(remain-Math.round(remain*ratio));
     }
   };
-
   // 생성 요청
   const submit=async()=>{
     if(!textbook)return alert("교재를 선택하세요.");
@@ -286,7 +307,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     }catch(e){alert("요청 실패: "+e);}
     setSending(false);
   };
-
   // 미리보기 로드 (Drive 파일 + 시트 정답데이터 두 경로 지원)
   const loadPreview=async(rowIndex)=>{
     setPrevLoading(true);setPrevRow(rowIndex);setSelectedSet(0);
@@ -296,19 +316,16 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       if(d.result==="ok"&&d.detail){
         let sets=[];
         const det=d.detail;
-
         // type 정규화: "multiple_choice" → "mc"
         const normT=(t)=>t==="multiple_choice"||t==="mc"||t==="obj"?"mc":"sub";
         const normSet=(s,i)=>({
           style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,
           questions:(s.questions||[]).map(q=>({...q,type:normT(q.type||"mc")}))
         });
-
         // 경로 1: Drive 파일에서 전체 문제 로드 (questions 필드)
         if(det.questions){
-          let raw=det.questions;
-          // 이중 인코딩 처리
-          if(typeof raw==="string"){try{raw=JSON.parse(raw);}catch(e){}}
+          // ★ parseAnswerDoc 으로 이중 인코딩 한 번에 처리
+          const raw=typeof det.questions==="string"?parseAnswerDoc(det.questions):det.questions;
           if(raw&&raw.sets&&Array.isArray(raw.sets)){
             sets=raw.sets.map(normSet);
           }else if(raw&&raw.sets&&typeof raw.sets==="object"&&!Array.isArray(raw.sets)){
@@ -319,13 +336,11 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
             sets=raw.map(normSet);
           }
         }
-
         // 경로 2: 시트에 저장된 정답데이터 (answerData 필드) — Drive 실패 시 fallback
         if(sets.length===0&&det.answerData){
-          let ad=det.answerData;
-          // 이중 인코딩 처리: 문자열이면 한번 더 파싱
-          if(typeof ad==="string"){try{ad=JSON.parse(ad);}catch(e){}}
-
+          // ★ parseAnswerDoc 으로 이중 인코딩 한 번에 처리
+          let ad=typeof det.answerData==="string"?parseAnswerDoc(det.answerData):det.answerData;
+          if(!ad)ad={};
           const makeQs=(answers,types,qCount)=>(answers||[]).map((ans,qi)=>({
             number:qi+1,
             difficulty:qi<(qCount||20)*0.3?"easy":qi<(qCount||20)*0.7?"medium":"hard",
@@ -335,10 +350,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
             answer:ans,
             explanation:""
           }));
-
           // type 정규화: "multiple_choice" → "mc", "subjective" → "sub"
           const normType=(t)=>t==="multiple_choice"||t==="mc"||t==="obj"?"mc":"sub";
-
           // sets 배열에서 questions 객체를 가져오는 공통 함수
           const extractSets=(setsArr)=>setsArr.map((s,i)=>{
             // 포맷 A: {questions:[{number,answer,type,question,choices,...}]} — 스케줄 태스크가 보내는 형식
@@ -353,7 +366,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
             }
             return{style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,questions:[]};
           });
-
           // 포맷 1: {sets: [...]} — 배열
           if(ad.sets&&Array.isArray(ad.sets)){
             sets=extractSets(ad.sets);
@@ -375,14 +387,12 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
             sets=[{style:"A",questions:ad.questions.map(q=>({...q,type:normType(q.type||"mc")}))}];
           }
         }
-
         setPreview({...det, sets, _source:det.questionsSource||"none", _error:det.questionsError||"", answerDataInfo:det.answerDataInfo||null, answerDataRaw:det.answerDataRaw||""});
         setStep(4);
       }else{alert("상세 조회 실패: "+(d.message||""));}
     }catch(e){alert("조회 오류: "+e);}
     setPrevLoading(false);
   };
-
   // 문제 다시 내기 (재생성 요청)
   const requestRegenerate=async(rowIndex)=>{
     if(!confirm("이 시험 문제를 새로 만들까요?\n(기존 문제는 사라지고 약 10분 후 새 문제가 생성됩니다)"))return;
@@ -394,7 +404,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     }catch(e){alert("요청 실패: "+e);}
     setSending(false);
   };
-
   // ★ 학생앱 자동 등록 (완료된 시험을 정답목록에 등록)
   const autoRegisterForStudents=async(rowIndex)=>{
     try{
@@ -404,7 +413,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       else{alert("등록 실패: "+(d.message||""));}
     }catch(e){alert("등록 오류: "+e);}
   };
-
   // 생성 요청 삭제
   const deleteExamGen=async(rowIndex)=>{
     if(!confirm("이 생성 요청을 삭제하시겠습니까?\n(삭제 후 복구할 수 없습니다)"))return;
@@ -415,7 +423,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       else{alert("삭제 실패: "+(d.message||""));}
     }catch(e){alert("삭제 오류: "+e);}
   };
-
   // OMR 시험 등록 (선택한 세트의 문제를 정답목록에 저장)
   const registerExam=async()=>{
     if(!preview||!preview.sets||preview.sets.length===0)return alert("문제 데이터가 없습니다.");
@@ -437,6 +444,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       const regSubject=tcParts[0]||"영어";
       const regGrade=tcParts[1]||"";
       const regLevel=(tcParts[2]||"").replace(/반$/,"");
+      // 문제생성기 경로: setType(이론편/실전편/혼합)이 있으면 우선 사용, 없으면 세트 A/B/C 라벨
+      const _pgSetType=(preview.setType||"").trim();
       await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
           action:"save_answer_key",
@@ -444,7 +453,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           grade:regGrade,
           level:regLevel,
           examType:"문제생성기",
-          round:`세트${["A","B","C"][selectedSet]}`,
+          setType:_pgSetType,
+          round:_pgSetType||`세트${["A","B","C"][selectedSet]}`,
           totalQuestions:qs.length,
           answers:answersObj,
           types:typesObj,
@@ -453,12 +463,11 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           className:preview.targetClass||"",
           date:new Date().toISOString().split("T")[0].replace(/-/g,".")
         })});
-      alert(`세트 ${["A","B","C"][selectedSet]}로 시험이 등록되었습니다! 학생들이 선택할 수 있어요.`);
+      alert(`${_pgSetType||("세트 "+["A","B","C"][selectedSet])}로 시험이 등록되었습니다! 학생들이 선택할 수 있어요.`);
       setStep(1);setPreview(null);loadHistory();
     }catch(e){alert("등록 실패: "+e);}
     setSending(false);
   };
-
   // 히스토리 로드
   const loadHistory=useCallback(async()=>{
     setHistLoading(true);
@@ -470,7 +479,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     setHistLoading(false);
   },[sheetsUrl]);
   useEffect(()=>{loadHistory();},[loadHistory]);
-
   // 난이도 바 컴포넌트
   const DiffBar=()=>{
     const eQ=Math.round(questionCount*diffEasy/100);
@@ -496,7 +504,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       </div>
     </div>);
   };
-
   // ── Step 1: 설정 화면 ──
   if(step===1) return(<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"20px 0 12px"}}>
@@ -504,7 +511,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>문제 생성기</h1>
       <p style={{fontSize:13,color:T.textMuted}}>교재에서 자동으로 시험 문제를 만듭니다</p>
     </div>
-
     {/* 교재 선택 */}
     <div style={S.card}>
       <div style={S.secLabel}>교재 선택</div>
@@ -521,7 +527,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         </select>
         {TEXTBOOKS.length===0&&<div style={{fontSize:12,color:T.textMuted,marginTop:6}}>등록된 교재가 없습니다. 아래에서 PDF를 업로드하거나, Google Drive의 "채움학원 시험자료/교재" 폴더에 PDF를 넣어주세요.</div>}
       </>)}
-
       {/* 교재 추가 영역 */}
       <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${T.borderLight}`}}>
         <div style={{fontSize:12,fontWeight:600,color:T.textSub,marginBottom:8}}>교재 추가하기</div>
@@ -535,7 +540,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         {TEXTBOOKS.length>0&&!tbLoading&&<button onClick={loadTextbooks} style={{marginTop:8,fontSize:11,color:T.blue,border:"none",background:"none",cursor:"pointer",textDecoration:"underline",padding:0}}>🔄 교재 목록 새로고침</button>}
       </div>
     </div>
-
     {/* 범위 설정 */}
     {textbook&&selBook&&<div style={S.card}>
       <div style={S.secLabel}>범위 설정</div>
@@ -559,7 +563,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           }catch(e){alert("오류: "+e);}
         }} style={{padding:"8px 14px",fontSize:12,fontWeight:600,borderRadius:10,border:`1.5px solid ${T.goldDark}`,background:T.goldLight,color:T.goldDark,cursor:"pointer",fontFamily:"inherit",marginBottom:8}}>📖 챕터 직접 등록하기</button>
       </div>)}
-
       {rangeType==="chapter"&&selBook.chapters&&selBook.chapters.length>0?(<div>
         <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>챕터를 선택하세요 (여러 개 가능)</div>
         <div style={{display:"flex",flexDirection:"column",gap:4}}>
@@ -588,7 +591,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         </div>
       </div>)}
     </div>}
-
     {/* 유형 설정 */}
     {textbook&&<div style={S.card}>
       <div style={S.secLabel}>시험 유형</div>
@@ -609,7 +611,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         })}
       </div>
     </div>}
-
     {/* 문제 수 + 난이도 + 객관식/서술형 */}
     {textbook&&<div style={S.card}>
       <div style={S.secLabel}>문제 수 · 난이도</div>
@@ -636,7 +637,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         <span style={{fontSize:13,color:T.textMuted,fontWeight:600}}>문제</span>
         {parseInt(customQCount)>50&&<span style={{fontSize:11,color:T.danger}}>⚠️ 50문제 이상은 생성 시간이 오래 걸릴 수 있어요</span>}
       </div>}
-
       <div style={S.label}>객관식 / 서술형 비율</div>
       <div style={{marginBottom:16}}>
         <div style={{display:"flex",height:28,borderRadius:8,overflow:"hidden",border:`1px solid ${T.border}`,marginBottom:8}}>
@@ -661,15 +661,12 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           <span>서술형 {100-mcRatio}% ({questionCount-Math.round(questionCount*mcRatio/100)}문제)</span>
         </div>
       </div>
-
       <div style={S.label}>난이도 배분</div>
       <DiffBar/>
     </div>}
-
     {/* 대상 반 + 선생님 */}
     {textbook&&<div style={S.card}>
       <div style={S.secLabel}>대상 정보</div>
-
       {/* 선생님 드롭다운 (시험등록과 동일) */}
       <div style={{marginBottom:14}}>
         <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span></div>
@@ -687,7 +684,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           </select>
         ):(<input style={S.inp} placeholder="예: 김선생 (목록 로딩 중…)" value={targetTeacher} onChange={e=>setTargetTeacher(e.target.value)}/>)}
       </div>
-
       {/* 반 추가 (시험등록과 동일 방식) */}
       <div style={{marginBottom:14}}>
         <div style={S.label}>과목 <span style={{color:T.danger}}>*</span></div>
@@ -711,12 +707,10 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         <div style={{fontSize:12,fontWeight:600,color:T.textMuted,marginBottom:6}}>추가된 반 ({genClasses.length}개)</div>
         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{genClasses.map((c,i)=>(<div key={i} style={S.tag}><span>{c.name}</span><button onClick={()=>setGenClasses(p=>p.filter((_,j)=>j!==i))} style={S.tagX}>×</button></div>))}</div>
       </div>)}
-
       <div style={S.label}>메모 (선택)</div>
       <input style={S.inp} placeholder="추가 요청사항 (예: 서술형 포함)" value={memo}
         onChange={e=>setMemo(e.target.value)}/>
     </div>}
-
     {/* 확인 버튼 */}
     {textbook&&<button style={{...S.btnG,opacity:sending?0.5:1}} disabled={sending}
       onClick={()=>{
@@ -730,7 +724,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       }}>
       다음: 생성 요청 확인 →
     </button>}
-
     {/* 히스토리 */}
     <div style={{marginTop:24}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -770,7 +763,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
        })}
     </div>
   </div>);
-
   // ── Step 2: 확인 화면 ──
   if(step===2){
     if(!selBook){setStep(1);return null;}
@@ -808,7 +800,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       </div>
     </div>);
   }
-
   // ── Step 3: 완료 ──
   if(step===3) return(<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"40px 0 20px"}}>
@@ -830,7 +821,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       📋 생성 내역 확인
     </button>
   </div>);
-
   // ── Step 4: 미리보기 (3세트 탭 전환 + 재생성) ──
   if(step===4&&preview){
     const sets=preview.sets||[];
@@ -842,14 +832,12 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     const diffLabels={easy:"★☆☆ 쉬움",medium:"★★☆ 보통",hard:"★★★ 어려움"};
     const grouped={easy:[],medium:[],hard:[]};
     qs.forEach(q=>{if(grouped[q.difficulty])grouped[q.difficulty].push(q);else grouped.medium.push(q);});
-
     return(<div style={S.wrap} className="fade-up">
       <div style={{textAlign:"center",padding:"20px 0 12px"}}>
         <div style={{fontSize:36,marginBottom:4}}>👁️</div>
         <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>문제 미리보기</h1>
         <p style={{fontSize:13,color:T.textMuted}}>{preview.textbook} · {preview.rangeDesc}</p>
       </div>
-
       {/* 3세트 탭 */}
       {sets.length>1&&<div style={{display:"flex",gap:6,marginBottom:16}}>
         {sets.map((s,i)=>{
@@ -868,19 +856,16 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           </button>);
         })}
       </div>}
-
       {/* 선택된 세트 표시 */}
       {sets.length>1&&<div style={{padding:"8px 14px",borderRadius:10,background:setColors[selectedSet]+"15",border:`1.5px solid ${setColors[selectedSet]}`,fontSize:13,fontWeight:700,color:setColors[selectedSet],textAlign:"center",marginBottom:12}}>
         현재 보고 있는 시험지: 세트 {setLabels[selectedSet]}
       </div>}
-
       {/* 요약 카드 */}
       <div style={{...S.card,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center"}}>
         <div><div style={{fontSize:11,color:T.textMuted}}>문제 수</div><div style={{fontSize:18,fontWeight:800,color:T.text}}>{qs.length}</div></div>
         <div><div style={{fontSize:11,color:T.textMuted}}>유형</div><div style={{fontSize:18,fontWeight:800,color:T.text}}>{preview.testType==="vocab"?"단어":"문법"}</div></div>
         <div><div style={{fontSize:11,color:T.textMuted}}>선생님</div><div style={{fontSize:14,fontWeight:700,color:T.text}}>{preview.teacher}</div></div>
       </div>
-
       {/* 데이터 소스 표시 */}
       {preview._source==="sheet"&&<div style={{padding:"6px 12px",borderRadius:8,background:"#E3F2FD",fontSize:11,color:"#1565C0",marginBottom:8,textAlign:"center"}}>
         📋 시트 정답데이터에서 로드됨 (간략 미리보기)
@@ -895,7 +880,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       {qs.length===0&&preview.answerDataRaw&&<div style={{padding:"6px 12px",borderRadius:8,background:"#FCE4EC",fontSize:10,color:"#880E4F",marginBottom:8,wordBreak:"break-all"}}>
         📄 원본 데이터(200자): {preview.answerDataRaw}
       </div>}
-
       {/* 난이도별 문제 */}
       {qs.length===0?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>
         {preview._error?"⚠️ 문제 데이터를 불러올 수 없습니다.\nApps Script를 최신 버전(v10)으로 배포해주세요.":"이 세트에 문제가 없습니다."}
@@ -933,7 +917,6 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           </div>))}
         </div>);
       })}
-
       {/* 하단 액션 */}
       <div style={{position:"sticky",bottom:0,background:T.white,padding:"12px 0",borderTop:`1px solid ${T.border}`}}>
         <div style={{display:"flex",gap:8,marginBottom:8}}>
@@ -949,11 +932,9 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       </div>
     </div>);
   }
-
   // fallback
   return null;
 }
-
 /* ═══ 오답 통계 탭 ═══ */
 function StatsTab({sheetsUrl, T, S}){
   const [stats, setStats] = useState([]);
@@ -975,7 +956,6 @@ function StatsTab({sheetsUrl, T, S}){
     setLoading(false);
   }, [date, subject, grade, sheetsUrl]);
   useEffect(()=>{ load(); }, [load]);
-
   return (<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"20px 0 12px"}}>
       <div style={{fontSize:36,marginBottom:4}}>📈</div>
@@ -1016,31 +996,385 @@ function StatsTab({sheetsUrl, T, S}){
     ))}
   </div>);
 }
+/* ═══ 시험 스케줄 탭 ═══
+   요일별 반복 시험 스케줄 관리 — 독립된 상태 · API만 사용하므로 분리.
+   App과 공유할 필요 있는 건 teacherList 뿐.
+   */
+function ScheduleTab({sheetsUrl, T, S, teacherList}){
+  const [schedule, setSchedule] = useState([]);
+  const [schLoading, setSchLoading] = useState(false);
+  const [schForm, setSchForm] = useState({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});
+  const loadSchedule = useCallback(()=>{
+    setSchLoading(true);
+    fetch(`${sheetsUrl}?action=list_schedule`)
+      .then(r=>r.json())
+      .then(d=>{ if(d.result==="ok") setSchedule(d.schedule||[]); setSchLoading(false); })
+      .catch(()=>setSchLoading(false));
+  }, [sheetsUrl]);
+  useEffect(()=>{ loadSchedule(); }, [loadSchedule]);
+  const saveSchedule = async()=>{
+    const f = schForm;
+    if(!f.day||!f.subject||!f.grade||!f.teacher) return alert("요일/과목/학년/선생님은 필수입니다.");
+    const params = new URLSearchParams({action:"save_schedule",rowIndex:String(f.rowIndex||0),day:f.day,subject:f.subject,grade:f.grade,level:f.level||"",examType:f.examType||"",teacher:f.teacher,time:f.time||"",memo:f.memo||"",active:f.active?"true":"false"});
+    const res = await fetch(`${sheetsUrl}?${params.toString()}`);
+    const d = await res.json();
+    if(d.result==="ok"){
+      setSchForm({rowIndex:0,day:f.day,subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});
+      loadSchedule();
+    } else alert("저장 실패: "+(d.message||""));
+  };
+  const deleteScheduleRow = async(rowIndex)=>{
+    if(!confirm("삭제하시겠습니까?")) return;
+    const res = await fetch(`${sheetsUrl}?action=delete_schedule&rowIndex=${rowIndex}`);
+    const d = await res.json();
+    if(d.result==="ok") loadSchedule();
+  };
+  return (<div style={S.wrap} className="fade-up">
+    <div style={{textAlign:"center",padding:"20px 0 12px"}}>
+      <div style={{fontSize:36,marginBottom:4}}>🗓️</div>
+      <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 스케줄 관리</h1>
+      <p style={{fontSize:13,color:T.textMuted}}>요일별 반복 시험을 등록 · 매일 20시 #시험지준비 채널 리마인드</p>
+    </div>
+    {/* 등록 폼 */}
+    <div style={S.card}>
+      <div style={S.secLabel}>{schForm.rowIndex?"스케줄 수정":"새 스케줄 등록"}</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+        <div>
+          <div style={S.label}>요일 *</div>
+          <select style={S.inp} value={schForm.day} onChange={e=>setSchForm({...schForm,day:e.target.value})}>
+            {["월","화","수","목","금","토","일"].map(d=>(<option key={d} value={d}>{d}</option>))}
+          </select>
+        </div>
+        <div>
+          <div style={S.label}>과목 *</div>
+          <select style={S.inp} value={schForm.subject} onChange={e=>setSchForm({...schForm,subject:e.target.value})}>
+            <option value="">-- 선택 --</option>
+            {["국어","영어","수학","과학","사회"].map(s=>(<option key={s} value={s}>{s}</option>))}
+          </select>
+        </div>
+        <div>
+          <div style={S.label}>학년 *</div>
+          <select style={S.inp} value={schForm.grade} onChange={e=>setSchForm({...schForm,grade:e.target.value})}>
+            <option value="">-- 선택 --</option>
+            {["초5","초6","중1","중2","중3","고1","고2","고3"].map(g=>(<option key={g} value={g}>{g}</option>))}
+          </select>
+        </div>
+        <div>
+          <div style={S.label}>레벨</div>
+          <input style={S.inp} placeholder="예: A반" value={schForm.level} onChange={e=>setSchForm({...schForm,level:e.target.value})}/>
+        </div>
+        <div>
+          <div style={S.label}>시험 종류</div>
+          <input style={S.inp} placeholder="예: 단원평가" value={schForm.examType} onChange={e=>setSchForm({...schForm,examType:e.target.value})}/>
+        </div>
+        <div>
+          <div style={S.label}>선생님 *</div>
+          <select style={S.inp} value={schForm.teacher} onChange={e=>setSchForm({...schForm,teacher:e.target.value})}>
+            <option value="">-- 선택 --</option>
+            {(teacherList||[]).filter(t=>!schForm.subject||t.subject===schForm.subject).map(t=>(<option key={t.name} value={t.name}>{t.name} ({t.subject})</option>))}
+          </select>
+        </div>
+        <div>
+          <div style={S.label}>시험 시간</div>
+          <input type="time" style={S.inp} value={schForm.time} onChange={e=>setSchForm({...schForm,time:e.target.value})}/>
+        </div>
+        <div>
+          <div style={S.label}>활성</div>
+          <select style={S.inp} value={schForm.active?"true":"false"} onChange={e=>setSchForm({...schForm,active:e.target.value==="true"})}>
+            <option value="true">활성 (리마인드 발송)</option>
+            <option value="false">비활성</option>
+          </select>
+        </div>
+      </div>
+      <div style={{marginBottom:10}}>
+        <div style={S.label}>비고</div>
+        <input style={S.inp} placeholder="메모" value={schForm.memo} onChange={e=>setSchForm({...schForm,memo:e.target.value})}/>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button style={{...S.btnG,flex:1}} onClick={saveSchedule}>{schForm.rowIndex?"수정 저장":"+ 등록"}</button>
+        {schForm.rowIndex?(<button style={{padding:"12px 18px",borderRadius:10,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer",fontWeight:700}} onClick={()=>setSchForm({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true})}>취소</button>):null}
+      </div>
+    </div>
+    {/* 스케줄 목록 (요일별 그룹) */}
+    <div style={S.card}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={S.secLabel}>등록된 스케줄 ({schedule.length}개)</div>
+        <button onClick={loadSchedule} style={{padding:"6px 12px",fontSize:12,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer"}}>🔄 새로고침</button>
+      </div>
+      {schLoading?(<div style={{padding:20,textAlign:"center",color:T.textMuted}}>불러오는 중…</div>):
+        schedule.length===0?(<div style={{padding:20,textAlign:"center",color:T.textMuted,fontSize:13}}>등록된 스케줄이 없습니다.</div>):(
+          ["월","화","수","목","금","토","일"].map(day=>{
+            const list=schedule.filter(s=>s.day===day);
+            if(list.length===0)return null;
+            return(<div key={day} style={{marginBottom:14}}>
+              <div style={{fontSize:14,fontWeight:800,color:T.goldDark,marginBottom:6,paddingBottom:4,borderBottom:`1.5px solid ${T.goldLight}`}}>{day}요일 ({list.length}건)</div>
+              {list.map(s=>(<div key={s.rowIndex} style={{padding:10,marginBottom:6,background:s.active?T.white:"#f5f5f5",border:`1px solid ${T.border}`,borderRadius:8,opacity:s.active?1:0.6}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                  <div style={{flex:1,fontSize:13,lineHeight:1.5}}>
+                    <div style={{fontWeight:700,color:T.text}}>{s.subject} {s.grade} {s.level} · {s.examType}</div>
+                    <div style={{color:T.textSub,fontSize:12}}>👤 {s.teacher} · 🕐 {s.time||"미정"} {s.memo?" · "+s.memo:""} {!s.active?" · ⏸ 비활성":""}</div>
+                  </div>
+                  <div style={{display:"flex",gap:4}}>
+                    <button onClick={()=>setSchForm({rowIndex:s.rowIndex,day:s.day,subject:s.subject,grade:s.grade,level:s.level||"",examType:s.examType||"",teacher:s.teacher,time:s.time||"",memo:s.memo||"",active:s.active})} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,cursor:"pointer"}}>수정</button>
+                    <button onClick={()=>deleteScheduleRow(s.rowIndex)} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>삭제</button>
+                  </div>
+                </div>
+              </div>))}
+            </div>);
+          })
+        )
+      }
+    </div>
+  </div>);
+}
+
+/* ═══ 오늘의 현황 대시보드 탭 (과목→학년→선생님 계층) ═══
+   독립된 상태(dashDate, dashData, schStatus, activeSubj, openFiles)를 내부로 캡슐화.
+   App 에서는 teacherList, 파일 프록시 함수들만 props로 전달.
+   */
+function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
+  const todayIsoStr=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
+  const [dashDate, setDashDate] = useState(todayIsoStr());
+  const [dashData, setDashData] = useState(null);
+  const [dashLoading, setDashLoading] = useState(false);
+  const [dashErr, setDashErr] = useState("");
+  const [schStatus, setSchStatus] = useState(null);
+  const [activeSubj, setActiveSubj] = useState(null);
+  const [openFiles, setOpenFiles] = useState({}); // {exam_i_j: bool}
+  const toggleFiles = (k)=>setOpenFiles(p=>({...p,[k]:!p[k]}));
+  const loadDashboard = useCallback((dateOverride)=>{
+    const d=dateOverride||dashDate;
+    setDashLoading(true); setDashErr(""); setDashData(null);
+    fetch(`${sheetsUrl}?action=teacher_dashboard&date=${encodeURIComponent(d)}`)
+      .then(r=>r.json()).then(d2=>{if(d2.result==="ok"){setDashData(d2);}else{setDashErr(d2.message||"조회 실패");}setDashLoading(false);})
+      .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
+    fetch(`${sheetsUrl}?action=schedule_status&date=${encodeURIComponent(d)}`)
+      .then(r=>r.json()).then(d3=>{if(d3.result==="ok")setSchStatus(d3);else setSchStatus(null);}).catch(()=>setSchStatus(null));
+  }, [dashDate, sheetsUrl]);
+  useEffect(()=>{ loadDashboard(); }, [loadDashboard]);
+
+  const isDashToday=dashDate===todayIsoStr();
+  const dashDateLabel=(()=>{const m=dashDate.match(/(\d{4})-(\d{2})-(\d{2})/);return m?`${parseInt(m[2])}/${parseInt(m[3])}`:"";})();
+
+  return(<div style={S.wrap} className="fade-up">
+    <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1><p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p></div>
+    {/* 날짜 선택 + 새로고침 */}
+    <div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <span style={{fontSize:12,fontWeight:700,color:T.textSub}}>📅 날짜</span>
+        <input type="date" value={dashDate} onChange={e=>setDashDate(e.target.value||todayIsoStr())} style={{padding:"6px 10px",fontSize:13,border:`1.5px solid ${T.border}`,borderRadius:8,fontFamily:"inherit",background:T.white,color:T.text}}/>
+        <button onClick={()=>setDashDate(todayIsoStr())} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:8,border:`1.5px solid ${isDashToday?T.goldDark:T.border}`,background:isDashToday?T.goldLight:T.white,color:isDashToday?T.goldDeep:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>오늘</button>
+        <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()-1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>← 이전</button>
+        <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()+1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>다음 →</button>
+        <button onClick={()=>loadDashboard()} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}}>🔄 새로고침</button>
+      </div>
+    </div>
+    {/* 스케줄 vs 실제 업로드 비교 */}
+    {schStatus&&schStatus.hasSchedules&&schStatus.schedule&&schStatus.schedule.length>0&&(()=>{
+      const cnt={done:0,waiting:0,none:0,extra:0};
+      schStatus.schedule.forEach(s=>{
+        if(s.status==="✅ 완료")cnt.done++;
+        else if(s.status==="⏳ 처리대기")cnt.waiting++;
+        else if(s.status==="📤 파일없음")cnt.none++;
+        else if(s.status==="➕ 스케줄 외")cnt.extra++;
+      });
+      return(<div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div style={{fontSize:13,fontWeight:700,color:T.text}}>📋 스케줄 vs 실제 업로드 ({schStatus.day}요일)</div>
+          <div style={{fontSize:11,color:T.textMuted}}>완료 {cnt.done} · 대기 {cnt.waiting} · 누락 {cnt.none}{cnt.extra?` · 추가 ${cnt.extra}`:""}</div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+          {schStatus.schedule.map((s,i)=>{
+            const bg=s.status==="✅ 완료"?"#e8f7ec":s.status==="⏳ 처리대기"?"#fff8e1":s.status==="📤 파일없음"?"#ffebee":"#f3e5f5";
+            return(<div key={i} style={{padding:"7px 9px",fontSize:11,background:bg,borderRadius:6,lineHeight:1.4}}>
+              <div style={{fontWeight:700}}>{s.status}</div>
+              <div style={{color:T.textSub}}>{s.subject} {s.grade} {s.level} {s.examType?"· "+s.examType:""}</div>
+              <div style={{color:T.textMuted,fontSize:10}}>👤 {s.teacher} {s.time?"· "+s.time:""}</div>
+            </div>);
+          })}
+        </div>
+      </div>);
+    })()}
+    {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
+    {dashErr&&<div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{dashErr}</div>}
+    {dashData&&!dashLoading&&(()=>{
+      const allExams=dashData.exams||[];
+      const expTot=dashData.expectedTotal||dashData.summary?.totalExpected||0;
+      const subTot=dashData.submissionTotal||dashData.summary?.totalSubmitted||0;
+      const tree={};
+      const subjOrder=["영어","수학","국어","과학","사회"];
+      const gradeOrder=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
+      allExams.forEach(ex=>{
+        const guessSubj=(ex)=>{
+          if(ex.subject&&["영어","국어","수학","과학","사회"].includes(ex.subject))return ex.subject;
+          const keys=["영어","국어","수학","과학","사회"];
+          const sources=[ex.examType,ex.className,ex.examName].filter(Boolean).join(" ");
+          for(const k of keys){if(sources.indexOf(k)>=0)return k;}
+          if(ex.teacher&&teacherList&&teacherList.length){
+            const t=teacherList.find(x=>(x.name||x["이름"])===ex.teacher);
+            if(t){
+              const ts=String(t.subject||t["과목"]||"");
+              const mm=ts.match(/(영어|국어|수학|과학|사회)/);
+              if(mm)return mm[1];
+            }
+          }
+          return ex.subject||"기타";
+        };
+        const s=guessSubj(ex);const g=ex.grade||"기타";const t=ex.teacher||"미지정";
+        if(!tree[s])tree[s]={};
+        if(!tree[s][g])tree[s][g]={};
+        if(!tree[s][g][t])tree[s][g][t]=[];
+        tree[s][g][t].push(ex);
+      });
+      const subjKeys=Object.keys(tree).sort((a,b)=>{
+        const ia=subjOrder.indexOf(a),ib=subjOrder.indexOf(b);
+        return (ia<0?99:ia)-(ib<0?99:ib);
+      });
+      return(<>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
+          <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>등록 시험</div><div style={{fontSize:22,fontWeight:800,color:T.goldDark}}>{allExams.length}</div></div>
+          <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>예상 인원</div><div style={{fontSize:22,fontWeight:800,color:T.blue}}>{expTot}</div></div>
+          <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>제출 수</div><div style={{fontSize:22,fontWeight:800,color:T.accent}}>{subTot}</div></div>
+        </div>
+        {expTot>0&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginBottom:14}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>🖨️ 실장님 프린트 참고</div>
+          <div style={{fontSize:12,color:T.textSub,lineHeight:1.6}}>오늘 총 <b style={{color:T.blue}}>{expTot}장</b>의 시험지가 필요합니다.</div>
+        </div>)}
+        {allExams.length===0?(
+          <div style={{padding:24,background:T.borderLight,borderRadius:10,color:T.textMuted,fontSize:13,textAlign:"center"}}>오늘 등록된 시험이 없습니다.</div>
+        ):(()=>{
+          const subjSummary=subjKeys.map(s=>{
+            const list=[];Object.values(tree[s]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>list.push(e))));
+            const exp=list.reduce((a,e)=>a+(e.studentCount||0),0);
+            const sub=list.reduce((a,e)=>a+(e.submitted||0),0);
+            const files=list.reduce((a,e)=>({exam:a.exam+(e.hasExamFile?1:0),ans:a.ans+(e.hasAnswerFile?1:0)}),{exam:0,ans:0});
+            return{subj:s,count:list.length,exp,sub,files};
+          });
+          const curSubj=activeSubj&&subjKeys.includes(activeSubj)?activeSubj:subjKeys[0];
+          return(<>
+            <div style={{display:"flex",gap:4,marginBottom:12,overflowX:"auto",paddingBottom:4}}>
+              {subjSummary.map(ss=>{
+                const isAct=ss.subj===curSubj;
+                const emj=ss.subj==="영어"?"🇬🇧":ss.subj==="수학"?"🔢":ss.subj==="국어"?"📖":ss.subj==="과학"?"🔬":ss.subj==="사회"?"🌏":"📚";
+                return(<button key={ss.subj} onClick={()=>setActiveSubj(ss.subj)} style={{flex:"1 0 auto",minWidth:110,padding:"8px 10px",borderRadius:10,border:isAct?`2px solid ${T.goldDark}`:`1.5px solid ${T.border}`,background:isAct?T.goldLight:T.white,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+                  <div style={{fontSize:13,fontWeight:800,color:isAct?T.goldDark:T.text,marginBottom:2}}>{emj} {ss.subj}과 · {ss.count}</div>
+                  <div style={{fontSize:10,color:T.textMuted,lineHeight:1.5}}>예상 {ss.exp}명 · 제출 {ss.sub}명<br/>📄 {ss.files.exam}/{ss.count} · 🔑 {ss.files.ans}/{ss.count}</div>
+                </button>);
+              })}
+            </div>
+          {[curSubj].map(subj=>{
+            const subjExams=[];Object.values(tree[subj]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>subjExams.push(e))));
+            const subjExp=subjExams.reduce((s,e)=>s+(e.studentCount||0),0);
+            const subjSub=subjExams.reduce((s,e)=>s+(e.submitted||0),0);
+            const subjEmoji=subj==="영어"?"🇬🇧":subj==="수학"?"🔢":subj==="국어"?"📖":subj==="과학"?"🔬":subj==="사회"?"🌏":"📚";
+            const gradeKeys=Object.keys(tree[subj]).sort((a,b)=>{
+              const ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);
+              return (ia<0?99:ia)-(ib<0?99:ib);
+            });
+            return(<div key={subj} style={{marginBottom:18,border:`2px solid ${T.goldMuted}`,borderRadius:12,overflow:"hidden",background:T.white}}>
+              <div style={{padding:"12px 14px",background:T.goldDark,color:T.white,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:16,fontWeight:800}}>{subjEmoji} {subj}과</div>
+                <div style={{fontSize:11,opacity:.9}}>시험 {subjExams.length}개 · 예상 {subjExp}명 · 제출 {subjSub}명</div>
+              </div>
+              {gradeKeys.map(gr=>{
+              const gradeTeachers=tree[subj][gr];
+              const teachers=Object.keys(gradeTeachers).sort();
+              const gradeExams=[];teachers.forEach(t=>gradeTeachers[t].forEach(e=>gradeExams.push(e)));
+              const gradeExp=gradeExams.reduce((s,e)=>s+(e.studentCount||0),0);
+              return(<div key={gr} style={{borderTop:`1px solid ${T.borderLight}`}}>
+                <div style={{padding:"8px 14px",background:T.goldPale,fontSize:13,fontWeight:700,color:T.goldDeep,display:"flex",justifyContent:"space-between"}}>
+                  <span>🎓 {gr}</span>
+                  <span style={{fontSize:11,fontWeight:500,color:T.textMuted}}>{gradeExams.length}개 · {gradeExp}명</span>
+                </div>
+                {teachers.map(tch=>{
+                  const tExams=gradeTeachers[tch].slice().sort((a,b)=>(a.examTime||"").localeCompare(b.examTime||""));
+                  return(<div key={tch} style={{padding:"6px 10px 10px"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:T.textSub,padding:"6px 4px",display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{padding:"2px 8px",borderRadius:10,background:T.blueLight,color:T.blue,fontSize:10}}>👤 {tch}</span>
+                      <span style={{color:T.textMuted,fontWeight:500}}>{tExams.length}개</span>
+                    </div>
+                    {tExams.map((ex,i)=>{
+                      const timeLabel=ex.examTime||"-";
+                      const lvLabel=ex.level?(ex.level==="전체"?"전체":ex.level+"반"):"";
+                      const title=`${ex.examType}${ex.round?" · "+ex.round:""}${lvLabel?" ("+lvLabel+")":""}`;
+                      const hasFile=ex.hasExamFile||ex.hasAnswerFile;
+                      const fileStatus=ex.hasExamFile&&ex.hasAnswerFile?{t:"시험지·정답지 업로드 완료",c:T.accent,bg:T.accentLight}
+                        :ex.hasAnswerFile?{t:"정답지만 업로드",c:T.goldDark,bg:T.goldLight}
+                        :ex.hasExamFile?{t:"시험지만 업로드",c:T.goldDark,bg:T.goldLight}
+                        :{t:"파일 없음",c:T.danger,bg:T.dangerLight};
+                      const expected=ex.studentCount||0;
+                      const submitted=ex.submitted||0;
+                      const pct=expected>0?Math.min(100,(submitted/expected)*100):0;
+                      return(<div key={i} style={{padding:"10px 12px",marginBottom:6,background:T.bg,border:`1px solid ${T.borderLight}`,borderRadius:8}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4,gap:6}}>
+                          <div style={{fontSize:13,fontWeight:700,color:T.text,flex:1}}>{title}</div>
+                          <div style={{fontSize:11,fontWeight:700,color:T.blue,whiteSpace:"nowrap"}}>🕐 {timeLabel}</div>
+                        </div>
+                        {ex.className&&<div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>{ex.className}</div>}
+                        <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10,marginBottom:6}}>
+                          <span style={S.pill}>📝 {ex.totalQuestions||0}문항</span>
+                          <span style={S.pillBlue}>👥 예상 {expected}명</span>
+                          <span style={S.pillGreen}>✅ 제출 {submitted}명</span>
+                          <span style={{padding:"2px 8px",borderRadius:10,fontWeight:600,background:fileStatus.bg,color:fileStatus.c}}>{hasFile?"📎":"⚠️"} {fileStatus.t}</span>
+                        </div>
+                        {expected>0&&(<div style={{height:5,background:T.borderLight,borderRadius:3,overflow:"hidden",marginBottom:6}}><div style={{height:"100%",width:`${pct}%`,background:submitted>=expected?T.accent:T.gold,transition:"width .3s"}}/></div>)}
+                        {(ex.files||[]).length>0&&(()=>{
+                          const fkey=`${subj}_${gr}_${tch}_${i}`;
+                          const isOpen=!!openFiles[fkey];
+                          return(<div style={{marginTop:6,paddingTop:6,borderTop:`1px dashed ${T.border}`}}>
+                          <button onClick={()=>toggleFiles(fkey)} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,fontWeight:700,color:T.textSub,background:"none",border:"none",cursor:"pointer",padding:"2px 0",fontFamily:"inherit",width:"100%",justifyContent:"space-between"}}>
+                            <span>📎 첨부 파일 {ex.files.length}개</span>
+                            <span style={{fontSize:10,color:T.goldDark}}>{isOpen?"▲ 접기":"▼ 펼치기"}</span>
+                          </button>
+                          {isOpen&&(<div style={{display:"flex",flexDirection:"column",gap:3,marginTop:4}}>
+                            {ex.files.map((fl,fi)=>(<div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:T.white,borderRadius:6,border:`1px solid ${T.borderLight}`}}>
+                              <span style={{fontSize:11}}>{fl.kind==="answer"?"🔑":"📄"}</span>
+                              <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
+                                <div style={{fontSize:11,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fl.name}</div>
+                                <div style={{fontSize:9,color:T.textMuted}}>{fl.kind==="answer"?"정답지":"시험지"} · {fl.size?Math.round(fl.size/1024)+"KB":""}</div>
+                              </div>
+                              <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,border:"none",cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
+                              <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
+                            </div>))}
+                          </div>)}
+                        </div>);
+                        })()}
+                        {ex.folderLink&&<a href={ex.folderLink} target="_blank" rel="noreferrer" style={{fontSize:10,color:T.blue,textDecoration:"none",fontWeight:600,display:"inline-block",marginTop:6}}>📁 Drive 폴더 열기 →</a>}
+                      </div>);
+                    })}
+                  </div>);
+                })}
+              </div>);
+            })}
+          </div>);
+          })}
+        </>);
+        })()}
+      </>);
+    })()}
+  </div>);
+}
 
 export default function App(){
   // 상단 탭 (등록 / 오늘의 현황)
   const[tab,setTab]=useState("register");
-  // 대시보드 과목 탭 & 첨부파일 토글
-  const[activeSubj,setActiveSubj]=useState(null);
-  const[openFiles,setOpenFiles]=useState({}); // {exam_i_j: bool}
-  const toggleFiles=(k)=>setOpenFiles(p=>({...p,[k]:!p[k]}));
+  // (대시보드 관련 상태·함수는 DashboardTab 컴포넌트 내부로 이동)
   // 화면 상태
   const[screen,setScreen]=useState("home"); // home, modeSelect, directSetup, direct, upload, done
-
   // 선생님 정보 (localStorage)
   const _ls=lsGet();
   const[teacher,setTeacher]=useState(_ls.teacher||"");
-
   // 반 추가
   const[ts,setTs]=useState("");const[tg,setTg]=useState("");const[tl,setTl]=useState("");const[tcl,setTcl]=useState("");const[tlCat,setTlCat]=useState("level");
   const[tcount,setTcount]=useState(""); // 반별 예상 인원
   const[classes,setClasses]=useState([]);
-
   // 시험 정보
-  const[examType,setExamType]=useState("");
+  const[examType,setExamType]=useState(_ls.lastExamType||""); // 직전 시험 종류 기억
   const[examDate,setExamDate]=useState(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;});
   const[examTime,setExamTime]=useState(()=>{const d=new Date();return`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;});
-
+  // ★ 시험 구분 (이론편/실전편/혼합) — 구 "1차/2차/3차" 대체
+  const[setType,setSetTypeState]=useState(_ls.lastSetType||""); // 직전 선택값 기억
+  const SET_TYPES=["이론편","실전편","혼합"];
   // 직접입력 모드
   const[totalQ,setTotalQ]=useState(50);const[customQ,setCustomQ]=useState("");
   const qc=customQ?parseInt(customQ)||50:totalQ;
@@ -1048,65 +1382,40 @@ export default function App(){
   const[answers,setAnswers]=useState([]);
   const[types,setTypes]=useState([]);
   const[subAns,setSubAns]=useState({});
-
   // 파일업로드 모드
   const[examFiles,setExamFiles]=useState([]);
   const[answerFiles,setAnswerFiles]=useState([]);
   // ★ 같은 시험지 / 다른 시험지 선택 (반이 2개 이상일 때)
   const[sameExam,setSameExam]=useState(true); // true=전체 같은 시험, false=반별 다른 시험
-  // ★ 공통 차수별 업로드 (같은 시험지일 때)
+  // ★ 업로드 폴더 그룹 — 개념적으로는 1개(이론편/실전편/혼합) 만 사용.
+  //   내부 구조는 하위호환 위해 "rounds" 이름 유지 (GS의 기존 upload_exam 플로우와 호환).
+  //   label 은 빈 문자열로 두고 저장 시 최상위 setType 값이 사용됨.
   const[rounds,setRounds]=useState([
-    {label:"1차",examFiles:[],answerFiles:[]},
+    {label:"",examFiles:[],answerFiles:[]},
   ]);
-  const addRound=()=>setRounds(p=>[...p,{label:`${p.length+1}차`,examFiles:[],answerFiles:[]}]);
-  const removeRound=(i)=>setRounds(p=>p.length<=1?p:p.filter((_,idx)=>idx!==i));
   const updateRound=(i,key,val)=>setRounds(p=>{const n=[...p];n[i]={...n[i],[key]:val};return n;});
-  // ★ 반별 차수 관리 (다른 시험지일 때) — {반이름: [{label, examFiles, answerFiles}]}
+  // ★ 반별 업로드 그룹 (다른 시험지일 때)
   const[classRounds,setClassRounds]=useState({});
-  const initClassRounds=(clsList)=>{const m={};clsList.forEach(c=>{if(!m[c.name])m[c.name]=[{label:"1차",examFiles:[],answerFiles:[]}];});setClassRounds(m);};
-  const addClassRound=(clsName)=>setClassRounds(p=>({...p,[clsName]:[...(p[clsName]||[]),{label:`${(p[clsName]||[]).length+1}차`,examFiles:[],answerFiles:[]}]}));
-  const removeClassRound=(clsName,i)=>setClassRounds(p=>{const arr=(p[clsName]||[]);if(arr.length<=1)return p;return{...p,[clsName]:arr.filter((_,idx)=>idx!==i)};});
+  const initClassRounds=(clsList)=>{const m={};clsList.forEach(c=>{if(!m[c.name])m[c.name]=[{label:"",examFiles:[],answerFiles:[]}];});setClassRounds(m);};
   const updateClassRound=(clsName,i,key,val)=>setClassRounds(p=>{const arr=[...(p[clsName]||[])];arr[i]={...arr[i],[key]:val};return{...p,[clsName]:arr};});
   const[memo,setMemo]=useState("");
   // 주관식 힌트 (업로드 모드)
   const[subjMode,setSubjMode]=useState("none"); // none | mixed | all
   const[subjRanges,setSubjRanges]=useState(""); // "21-30, 45, 50-55"
   const[objRanges,setObjRanges]=useState("");   // "1-20, 31-44"
-
   // 상태
   const[saving,setSaving]=useState(false);const[done,setDone]=useState(false);const[error,setError]=useState("");
-
-  // 대시보드
-  const[dashData,setDashData]=useState(null);const[dashLoading,setDashLoading]=useState(false);const[dashErr,setDashErr]=useState("");
-  const todayIsoStr=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
-  const[dashDate,setDashDate]=useState(todayIsoStr());
-
+  // (대시보드 상태는 DashboardTab 컴포넌트 내부로 이동됨)
   // 선생님 목록 (드롭다운용)
   const[teacherList,setTeacherList]=useState([]);
   useEffect(()=>{fetch(`${SHEETS_URL}?action=list_teachers`).then(r=>r.json()).then(d=>{if(d.result==="ok")setTeacherList(d.teachers||[]);}).catch(()=>{});},[]);
-
-  // 스케줄 관리
-  const[schedule,setSchedule]=useState([]);
-  const[schLoading,setSchLoading]=useState(false);
-  const[schForm,setSchForm]=useState({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});
-  const loadSchedule=()=>{setSchLoading(true);fetch(`${SHEETS_URL}?action=list_schedule`).then(r=>r.json()).then(d=>{if(d.result==="ok")setSchedule(d.schedule||[]);setSchLoading(false);}).catch(()=>setSchLoading(false));};
-  const saveSchedule=async()=>{
-    const f=schForm;
-    if(!f.day||!f.subject||!f.grade||!f.teacher)return alert("요일/과목/학년/선생님은 필수입니다.");
-    const params=new URLSearchParams({action:"save_schedule",rowIndex:String(f.rowIndex||0),day:f.day,subject:f.subject,grade:f.grade,level:f.level||"",examType:f.examType||"",teacher:f.teacher,time:f.time||"",memo:f.memo||"",active:f.active?"true":"false"});
-    const res=await fetch(`${SHEETS_URL}?${params.toString()}`);const d=await res.json();
-    if(d.result==="ok"){setSchForm({rowIndex:0,day:f.day,subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});loadSchedule();}
-    else alert("저장 실패: "+(d.message||""));
-  };
-  const deleteScheduleRow=async(rowIndex)=>{if(!confirm("삭제하시겠습니까?"))return;const res=await fetch(`${SHEETS_URL}?action=delete_schedule&rowIndex=${rowIndex}`);const d=await res.json();if(d.result==="ok")loadSchedule();};
-  useEffect(()=>{if(tab==="schedule")loadSchedule();},[tab]);
-
+  // (스케줄 관리 상태·함수는 ScheduleTab 컴포넌트 내부로 이동)
   const dateStr=examDate.replace(/-/g,".")+" "+examTime;
   const totalStudents=classes.reduce((s,c)=>s+(parseInt(c.count)||0),0);
-
   // 선생님 이름 저장
   useEffect(()=>{if(teacher)lsSet({teacher});},[teacher]);
-
+  // 시험 종류 기억 (다음 등록 시 자동 채움)
+  useEffect(()=>{if(examType)lsSet({lastExamType:examType});},[examType]);
   // 반 추가
   const addClass=()=>{
     if(!teacher.trim())return alert("먼저 선생님 이름을 입력하세요.");
@@ -1122,7 +1431,6 @@ export default function App(){
     setClassRounds(p=>({...p,[name]:[{label:"1차",examFiles:[],answerFiles:[]}]}));
     setTl("");setTcl("");setTcount("");
   };
-
   // 시험정보 확인 → 모드 선택
   const goToMode=()=>{
     if(!teacher.trim())return alert("선생님 이름을 입력하세요.");
@@ -1130,10 +1438,8 @@ export default function App(){
     if(!examType)return alert("시험 종류를 선택하세요.");
     setScreen("modeSelect");
   };
-
   // 직접입력 시작
   const startDirect=()=>{setAnswers(Array(qc).fill(null));setTypes(Array(qc).fill("obj"));setSubAns({});setScreen("direct");};
-
   // 답 입력
   // 객관식 버튼: 복수정답 토글(동일 클릭 해제 / 다른 숫자 클릭 시 추가)
   const hAns=useCallback((i,v)=>{setAnswers(p=>{
@@ -1153,21 +1459,21 @@ export default function App(){
   });},[]);
   const hType=useCallback(i=>{setTypes(p=>{const n=[...p];n[i]=p[i]==="obj"?"sub":"obj";return n;});setAnswers(p=>{const n=[...p];n[i]=null;return n;});setSubAns(p=>{const n={...p};delete n[i];return n;});},[]);
   const hSub=useCallback((i,v)=>{setSubAns(p=>({...p,[i]:v}));setAnswers(p=>{const n=[...p];n[i]=v;return n;});},[]);
-
   const _isFilled=a=>{if(a===null||a===undefined||a==="")return false;if(Array.isArray(a))return a.length>0;return true;};
   const filled=answers.filter(a=>_isFilled(a)).length;
-
   // 직접입력 저장
   const saveDirect=async()=>{
     if(filled===0)return alert("최소 1문항 이상 정답을 입력하세요.");
     setSaving(true);setError("");
     try{
-      // 복수정답 배열은 "2,3" 형태 문자열로 직렬화
+      // 복수정답 배열은 "2,3" 형태 문자열로 직렬화 → 그 뒤 {"1":v,...} 객체로 정규화
       const answersSer=answers.map(v=>Array.isArray(v)?v.join(","):v);
-      // 1) 정답 데이터 시트 저장 (반별)
+      const answersObj=normalizeAnswerData(answersSer);
+      const typesObj=normalizeAnswerData(types);
+      // 1) 정답 데이터 시트 저장 (반별) — 시험 구분(setType) 포함
       for(const cls of classes){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,round:"",totalQuestions:qc,answers:answersSer,types,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum})});
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:setType||"",round:setType||"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum})});
       }
       // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 반별 개별 업로드
       if(examFiles.length>0||answerFiles.length>0){
@@ -1175,23 +1481,22 @@ export default function App(){
         const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         for(const cls of classes){
           await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
+            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:setType||"",round:setType||"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
         }
       }
       setDone(true);setScreen("done");
     }catch(e){setError("저장 실패. 다시 시도해주세요.");}
     setSaving(false);
   };
-
   // 파일업로드 저장 (차수별)
   const saveUpload=async()=>{
     // 같은 시험지 모드 vs 반별 다른 시험지 모드
     if(sameExam||classes.length<=1){
       // ── 같은 시험지: 기존 rounds 사용 ──
       const active=rounds.filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
-      if(active.length===0)return alert("최소 1개 차수에 시험지·정답지를 업로드하세요.");
+      if(active.length===0)return alert("시험지·정답지 파일을 최소 1개 이상 올려주세요.");
       const missingAns=active.find(r=>r.answerFiles.length===0);
-      if(missingAns)return alert(`${missingAns.label} 시험에 정답지가 없습니다.\n정답지를 올려주세요 (Claude 분석 필수).`);
+      if(missingAns)return alert(`정답지가 없습니다.\n정답지를 올려주세요 (Claude 분석 필수).`);
       // 주관식 번호 범위 경고
       if(subjMode==="mixed" && subjRanges){
         const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
@@ -1200,9 +1505,9 @@ export default function App(){
       // 파일명 휴리스틱
       for(const rd of active){
         const suspAns=rd.answerFiles.find(f=>/(시험지|문제지|problem|question|quiz)/i.test(f.name)&&!/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
-        if(suspAns){if(!confirm(`⚠️ ${rd.label} 정답지로 올린 파일 "${suspAns.name}"이 시험지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
+        if(suspAns){if(!confirm(`⚠️ 정답지로 올린 파일 "${suspAns.name}"이 시험지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
         const suspExam=rd.examFiles.find(f=>/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
-        if(suspExam){if(!confirm(`⚠️ ${rd.label} 시험지로 올린 파일 "${suspExam.name}"이 답지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
+        if(suspExam){if(!confirm(`⚠️ 시험지로 올린 파일 "${suspExam.name}"이 답지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
       }
       setSaving(true);setError("");
       try{
@@ -1211,7 +1516,7 @@ export default function App(){
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           for(const cls of classes){
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,round:rd.label,date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:setType||"",round:setType||rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
           }
         }
         setDone(true);setScreen("done");
@@ -1219,13 +1524,12 @@ export default function App(){
       setSaving(false);
     }else{
       // ── 반별 다른 시험지: classRounds 사용 ──
-      // 각 반에 최소 1개 차수 파일 확인
       for(const cls of classes){
         const cRds=classRounds[cls.name]||[];
         const active=cRds.filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
-        if(active.length===0)return alert(`"${cls.name}" 반에 최소 1개 차수를 업로드하세요.`);
+        if(active.length===0)return alert(`"${cls.name}" 반에 최소 1개의 시험지·정답지를 업로드하세요.`);
         const missingAns=active.find(r=>r.answerFiles.length===0);
-        if(missingAns)return alert(`"${cls.name}" ${missingAns.label}에 정답지가 없습니다.`);
+        if(missingAns)return alert(`"${cls.name}"에 정답지가 없습니다.`);
       }
       if(subjMode==="mixed" && subjRanges){
         const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
@@ -1239,7 +1543,7 @@ export default function App(){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,round:rd.label,date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:setType||"",round:setType||rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
           }
         }
         setDone(true);setScreen("done");
@@ -1247,7 +1551,6 @@ export default function App(){
       setSaving(false);
     }
   };
-
   // 대시보드 조회
   // 프록시 다운로드 — Apps Script가 base64로 파일을 서빙 → blob으로 변환해서 저장
   // 다른 구글 계정(권한 없는 선생님)도 다운 가능
@@ -1261,7 +1564,6 @@ export default function App(){
     const blob=new Blob([u8],{type:d.mimeType||"application/octet-stream"});
     return{blob,mimeType:d.mimeType||"",name:d.name||""};
   };
-
   // 다운로드 (구글 계정 없이도 가능 — Apps Script 프록시)
   const proxyDownload=async(fileId,fileName)=>{
     try{
@@ -1272,7 +1574,6 @@ export default function App(){
       setTimeout(()=>URL.revokeObjectURL(url),1000);
     }catch(err){alert("다운로드 실패: "+(err.message||err));}
   };
-
   // 미리보기 (구글 계정 없이도 가능 — Blob URL로 새 탭 열기)
   const proxyPreview=async(fileId,fileName)=>{
     try{
@@ -1299,31 +1600,15 @@ export default function App(){
       }
     }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
-
-  const loadDashboard=(dateOverride)=>{
-    const d=dateOverride||dashDate;
-    setDashLoading(true);setDashErr("");setDashData(null);
-    fetch(`${SHEETS_URL}?action=teacher_dashboard&date=${encodeURIComponent(d)}`)
-      .then(r=>r.json()).then(d=>{if(d.result==="ok"){setDashData(d);}else{setDashErr(d.message||"조회 실패");}setDashLoading(false);})
-      .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
-    // 스케줄 상태도 동시에 조회
-    fetch(`${SHEETS_URL}?action=schedule_status&date=${encodeURIComponent(d)}`)
-      .then(r=>r.json()).then(d=>{if(d.result==="ok")setSchStatus(d);else setSchStatus(null);}).catch(()=>setSchStatus(null));
-  };
-  const[schStatus,setSchStatus]=useState(null);
-  useEffect(()=>{if(tab==="dashboard")loadDashboard();},[tab,dashDate]);
-
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"1차",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
+  // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
-
   return(
     <div style={S.app} className="app-shell">
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:${T.bg}}input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-shadow:0 0 0 3px ${T.goldLight}!important}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes spin{to{transform:rotate(360deg)}}.fade-up{animation:fadeUp .3s ease-out}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}
 /* ── 반응형: 모바일 스타일 유지 (좌우폭 480px 고정) ── */
 `}</style>
-
       <header style={S.hdr}><div style={S.hdrIn} className="hdr-inner"><div style={S.logoR}><div style={S.logoM}>채움</div><div><div style={S.hdrT}>채움학원</div><div style={S.hdrS}>시험 등록 (선생님용)</div></div></div>{teacher&&<div style={S.hdrB}>👤 {teacher}</div>}</div></header>
-
       {/* ═══ 상단 탭 (home 에서만 표시) ═══ */}
       {screen==="home"&&(<div style={{display:"flex",gap:6,padding:"10px 14px 0"}}>
         <button onClick={()=>setTab("register")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="register"?T.goldDark:T.white,color:tab==="register"?T.white:T.textSub,boxShadow:tab==="register"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📋 시험 등록</button>
@@ -1333,20 +1618,15 @@ export default function App(){
         <button onClick={()=>setTab("stats")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="stats"?T.goldDark:T.white,color:tab==="stats"?T.white:T.textSub,boxShadow:tab==="stats"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📈 오답 통계</button>
         <button onClick={()=>setTab("generator")} style={{flex:1,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab==="generator"?T.goldDark:T.white,color:tab==="generator"?T.white:T.textSub,boxShadow:tab==="generator"?"none":`inset 0 0 0 1.5px ${T.border}`}}>📚 문제 생성</button>
       </div>)}
-
       {/* ═══ 일괄 프린트 탭 ═══ */}
       {screen==="home"&&tab==="print"&&(<PrintTab sheetsUrl={SHEETS_URL} T={T} S={S}/>)}
-
       {/* ═══ 오답 통계 탭 ═══ */}
       {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S}/>)}
-
       {/* ═══ 문제 생성기 탭 ═══ */}
       {screen==="home"&&tab==="generator"&&(<GeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
-
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
       {screen==="home"&&tab==="register"&&(<div style={S.wrap} className="fade-up">
         <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📋</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 등록</h1><p style={{fontSize:13,color:T.textMuted}}>시험 대상 반과 정보를 설정하세요</p></div>
-
         {/* 선생님 이름 */}
         <div style={S.card}>
           <div style={S.secLabel}>선생님 정보</div>
@@ -1369,7 +1649,6 @@ export default function App(){
             )}
           </div>
         </div>
-
         <div style={S.card}>
           <div style={S.secLabel}>시험 대상 반 추가</div>
           <Chip label="과목" req opts={SUBJECTS} val={ts} onChange={setTs}/>
@@ -1398,7 +1677,6 @@ export default function App(){
             <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{classes.map((c,i)=>(<div key={i} style={S.tag}><span>{c.name}{c.count?` ${c.count}명`:""}</span><button onClick={()=>setClasses(p=>p.filter((_,j)=>j!==i))} style={S.tagX}>×</button></div>))}</div>
           </div>)}
         </div>
-
         <div style={S.card}>
           <div style={S.secLabel}>시험 정보</div>
           <Chip label="시험 종류" req opts={EXAM_TYPES} val={examType} onChange={setExamType} custom/>
@@ -1410,325 +1688,16 @@ export default function App(){
             </div>
           </div>
         </div>
-
         <button style={S.btnG} onClick={goToMode}>다음 →</button>
       </div>)}
-
-      {/* ═══ 오늘의 현황 대시보드 (과목→학년→선생님 계층) ═══ */}
-      {screen==="home"&&tab==="dashboard"&&(()=>{
-        const isDashToday=dashDate===todayIsoStr();
-        const dashDateLabel=(()=>{const m=dashDate.match(/(\d{4})-(\d{2})-(\d{2})/);return m?`${parseInt(m[2])}/${parseInt(m[3])}`:"";})();
-        return(<div style={S.wrap} className="fade-up">
-        <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1><p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p></div>
-        {/* 날짜 선택 + 새로고침 */}
-        <div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-            <span style={{fontSize:12,fontWeight:700,color:T.textSub}}>📅 날짜</span>
-            <input type="date" value={dashDate} onChange={e=>setDashDate(e.target.value||todayIsoStr())} style={{padding:"6px 10px",fontSize:13,border:`1.5px solid ${T.border}`,borderRadius:8,fontFamily:"inherit",background:T.white,color:T.text}}/>
-            <button onClick={()=>setDashDate(todayIsoStr())} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:8,border:`1.5px solid ${isDashToday?T.goldDark:T.border}`,background:isDashToday?T.goldLight:T.white,color:isDashToday?T.goldDeep:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>오늘</button>
-            <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()-1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>← 이전</button>
-            <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()+1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>다음 →</button>
-            <button onClick={()=>loadDashboard()} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}}>🔄 새로고침</button>
-          </div>
-        </div>
-        {/* 스케줄 vs 실제 업로드 비교 */}
-        {schStatus&&schStatus.hasSchedules&&schStatus.schedule&&schStatus.schedule.length>0&&(()=>{
-          const cnt={done:0,waiting:0,none:0,extra:0};
-          schStatus.schedule.forEach(s=>{
-            if(s.status==="✅ 완료")cnt.done++;
-            else if(s.status==="⏳ 처리대기")cnt.waiting++;
-            else if(s.status==="📤 파일없음")cnt.none++;
-            else if(s.status==="➕ 스케줄 외")cnt.extra++;
-          });
-          return(<div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-              <div style={{fontSize:13,fontWeight:700,color:T.text}}>📋 스케줄 vs 실제 업로드 ({schStatus.day}요일)</div>
-              <div style={{fontSize:11,color:T.textMuted}}>완료 {cnt.done} · 대기 {cnt.waiting} · 누락 {cnt.none}{cnt.extra?` · 추가 ${cnt.extra}`:""}</div>
-            </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-              {schStatus.schedule.map((s,i)=>{
-                const bg=s.status==="✅ 완료"?"#e8f7ec":s.status==="⏳ 처리대기"?"#fff8e1":s.status==="📤 파일없음"?"#ffebee":"#f3e5f5";
-                return(<div key={i} style={{padding:"7px 9px",fontSize:11,background:bg,borderRadius:6,lineHeight:1.4}}>
-                  <div style={{fontWeight:700}}>{s.status}</div>
-                  <div style={{color:T.textSub}}>{s.subject} {s.grade} {s.level} {s.examType?"· "+s.examType:""}</div>
-                  <div style={{color:T.textMuted,fontSize:10}}>👤 {s.teacher} {s.time?"· "+s.time:""}</div>
-                </div>);
-              })}
-            </div>
-          </div>);
-        })()}
-        {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
-        {dashErr&&<div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{dashErr}</div>}
-        {dashData&&!dashLoading&&(()=>{
-          const allExams=dashData.exams||[];
-          const expTot=dashData.expectedTotal||dashData.summary?.totalExpected||0;
-          const subTot=dashData.submissionTotal||dashData.summary?.totalSubmitted||0;
-          // 계층 그룹화: 과목 → 학년 → 선생님 → 시험들
-          const tree={};
-          const subjOrder=["영어","수학","국어","과학","사회"];
-          const gradeOrder=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
-          allExams.forEach(ex=>{
-            // subject 빈값/오기 fallback: examType, className, examName에서 과목 키워드 추출
-            const guessSubj=(ex)=>{
-              if(ex.subject&&["영어","국어","수학","과학","사회"].includes(ex.subject))return ex.subject;
-              const keys=["영어","국어","수학","과학","사회"];
-              const sources=[ex.examType,ex.className,ex.examName].filter(Boolean).join(" ");
-              for(const k of keys){if(sources.indexOf(k)>=0)return k;}
-              // 선생님 이름 기반 추론 (선생님목록에서 조회)
-              if(ex.teacher&&teacherList&&teacherList.length){
-                const t=teacherList.find(x=>(x.name||x["이름"])===ex.teacher);
-                if(t){
-                  const ts=String(t.subject||t["과목"]||"");
-                  const mm=ts.match(/(영어|국어|수학|과학|사회)/);
-                  if(mm)return mm[1];
-                }
-              }
-              return ex.subject||"기타";
-            };
-            const s=guessSubj(ex);const g=ex.grade||"기타";const t=ex.teacher||"미지정";
-            if(!tree[s])tree[s]={};
-            if(!tree[s][g])tree[s][g]={};
-            if(!tree[s][g][t])tree[s][g][t]=[];
-            tree[s][g][t].push(ex);
-          });
-          const subjKeys=Object.keys(tree).sort((a,b)=>{
-            const ia=subjOrder.indexOf(a),ib=subjOrder.indexOf(b);
-            return (ia<0?99:ia)-(ib<0?99:ib);
-          });
-          return(<>
-            {/* 요약 카드 */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:14}}>
-              <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>등록 시험</div><div style={{fontSize:22,fontWeight:800,color:T.goldDark}}>{allExams.length}</div></div>
-              <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>예상 인원</div><div style={{fontSize:22,fontWeight:800,color:T.blue}}>{expTot}</div></div>
-              <div style={S.sumCard}><div style={{fontSize:11,color:T.textMuted}}>제출 수</div><div style={{fontSize:22,fontWeight:800,color:T.accent}}>{subTot}</div></div>
-            </div>
-            {expTot>0&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginBottom:14}}>
-              <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>🖨️ 실장님 프린트 참고</div>
-              <div style={{fontSize:12,color:T.textSub,lineHeight:1.6}}>오늘 총 <b style={{color:T.blue}}>{expTot}장</b>의 시험지가 필요합니다.</div>
-            </div>)}
-            {allExams.length===0?(
-              <div style={{padding:24,background:T.borderLight,borderRadius:10,color:T.textMuted,fontSize:13,textAlign:"center"}}>오늘 등록된 시험이 없습니다.</div>
-            ):(()=>{
-              // 과목별 요약 계산
-              const subjSummary=subjKeys.map(s=>{
-                const list=[];Object.values(tree[s]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>list.push(e))));
-                const exp=list.reduce((a,e)=>a+(e.studentCount||0),0);
-                const sub=list.reduce((a,e)=>a+(e.submitted||0),0);
-                const files=list.reduce((a,e)=>({exam:a.exam+(e.hasExamFile?1:0),ans:a.ans+(e.hasAnswerFile?1:0)}),{exam:0,ans:0});
-                return{subj:s,count:list.length,exp,sub,files};
-              });
-              const curSubj=activeSubj&&subjKeys.includes(activeSubj)?activeSubj:subjKeys[0];
-              return(<>
-                {/* 과목 탭 네비게이션 */}
-                <div style={{display:"flex",gap:4,marginBottom:12,overflowX:"auto",paddingBottom:4}}>
-                  {subjSummary.map(ss=>{
-                    const isAct=ss.subj===curSubj;
-                    const emj=ss.subj==="영어"?"🇬🇧":ss.subj==="수학"?"🔢":ss.subj==="국어"?"📖":ss.subj==="과학"?"🔬":ss.subj==="사회"?"🌏":"📚";
-                    return(<button key={ss.subj} onClick={()=>setActiveSubj(ss.subj)} style={{flex:"1 0 auto",minWidth:110,padding:"8px 10px",borderRadius:10,border:isAct?`2px solid ${T.goldDark}`:`1.5px solid ${T.border}`,background:isAct?T.goldLight:T.white,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
-                      <div style={{fontSize:13,fontWeight:800,color:isAct?T.goldDark:T.text,marginBottom:2}}>{emj} {ss.subj}과 · {ss.count}</div>
-                      <div style={{fontSize:10,color:T.textMuted,lineHeight:1.5}}>예상 {ss.exp}명 · 제출 {ss.sub}명<br/>📄 {ss.files.exam}/{ss.count} · 🔑 {ss.files.ans}/{ss.count}</div>
-                    </button>);
-                  })}
-                </div>
-              {/* 선택된 과목의 내용 */}
-              {[curSubj].map(subj=>{
-                const subjExams=[];Object.values(tree[subj]).forEach(g=>Object.values(g).forEach(t=>t.forEach(e=>subjExams.push(e))));
-                const subjExp=subjExams.reduce((s,e)=>s+(e.studentCount||0),0);
-                const subjSub=subjExams.reduce((s,e)=>s+(e.submitted||0),0);
-                const subjEmoji=subj==="영어"?"🇬🇧":subj==="수학"?"🔢":subj==="국어"?"📖":subj==="과학"?"🔬":subj==="사회"?"🌏":"📚";
-                const gradeKeys=Object.keys(tree[subj]).sort((a,b)=>{
-                  const ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);
-                  return (ia<0?99:ia)-(ib<0?99:ib);
-                });
-                return(<div key={subj} style={{marginBottom:18,border:`2px solid ${T.goldMuted}`,borderRadius:12,overflow:"hidden",background:T.white}}>
-                  <div style={{padding:"12px 14px",background:T.goldDark,color:T.white,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <div style={{fontSize:16,fontWeight:800}}>{subjEmoji} {subj}과</div>
-                    <div style={{fontSize:11,opacity:.9}}>시험 {subjExams.length}개 · 예상 {subjExp}명 · 제출 {subjSub}명</div>
-                  </div>
-                  {gradeKeys.map(gr=>{
-                  const gradeTeachers=tree[subj][gr];
-                  const teachers=Object.keys(gradeTeachers).sort();
-                  const gradeExams=[];teachers.forEach(t=>gradeTeachers[t].forEach(e=>gradeExams.push(e)));
-                  const gradeExp=gradeExams.reduce((s,e)=>s+(e.studentCount||0),0);
-                  return(<div key={gr} style={{borderTop:`1px solid ${T.borderLight}`}}>
-                    <div style={{padding:"8px 14px",background:T.goldPale,fontSize:13,fontWeight:700,color:T.goldDeep,display:"flex",justifyContent:"space-between"}}>
-                      <span>🎓 {gr}</span>
-                      <span style={{fontSize:11,fontWeight:500,color:T.textMuted}}>{gradeExams.length}개 · {gradeExp}명</span>
-                    </div>
-                    {teachers.map(tch=>{
-                      const tExams=gradeTeachers[tch].slice().sort((a,b)=>(a.examTime||"").localeCompare(b.examTime||""));
-                      return(<div key={tch} style={{padding:"6px 10px 10px"}}>
-                        <div style={{fontSize:11,fontWeight:700,color:T.textSub,padding:"6px 4px",display:"flex",alignItems:"center",gap:6}}>
-                          <span style={{padding:"2px 8px",borderRadius:10,background:T.blueLight,color:T.blue,fontSize:10}}>👤 {tch}</span>
-                          <span style={{color:T.textMuted,fontWeight:500}}>{tExams.length}개</span>
-                        </div>
-                        {tExams.map((ex,i)=>{
-                          const timeLabel=ex.examTime||"-";
-                          const lvLabel=ex.level?(ex.level==="전체"?"전체":ex.level+"반"):"";
-                          const title=`${ex.examType}${ex.round?" · "+ex.round:""}${lvLabel?" ("+lvLabel+")":""}`;
-                          const hasFile=ex.hasExamFile||ex.hasAnswerFile;
-                          const fileStatus=ex.hasExamFile&&ex.hasAnswerFile?{t:"시험지·정답지 업로드 완료",c:T.accent,bg:T.accentLight}
-                            :ex.hasAnswerFile?{t:"정답지만 업로드",c:T.goldDark,bg:T.goldLight}
-                            :ex.hasExamFile?{t:"시험지만 업로드",c:T.goldDark,bg:T.goldLight}
-                            :{t:"파일 없음",c:T.danger,bg:T.dangerLight};
-                          const expected=ex.studentCount||0;
-                          const submitted=ex.submitted||0;
-                          const pct=expected>0?Math.min(100,(submitted/expected)*100):0;
-                          return(<div key={i} style={{padding:"10px 12px",marginBottom:6,background:T.bg,border:`1px solid ${T.borderLight}`,borderRadius:8}}>
-                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4,gap:6}}>
-                              <div style={{fontSize:13,fontWeight:700,color:T.text,flex:1}}>{title}</div>
-                              <div style={{fontSize:11,fontWeight:700,color:T.blue,whiteSpace:"nowrap"}}>🕐 {timeLabel}</div>
-                            </div>
-                            {ex.className&&<div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>{ex.className}</div>}
-                            <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10,marginBottom:6}}>
-                              <span style={S.pill}>📝 {ex.totalQuestions||0}문항</span>
-                              <span style={S.pillBlue}>👥 예상 {expected}명</span>
-                              <span style={S.pillGreen}>✅ 제출 {submitted}명</span>
-                              <span style={{padding:"2px 8px",borderRadius:10,fontWeight:600,background:fileStatus.bg,color:fileStatus.c}}>{hasFile?"📎":"⚠️"} {fileStatus.t}</span>
-                            </div>
-                            {expected>0&&(<div style={{height:5,background:T.borderLight,borderRadius:3,overflow:"hidden",marginBottom:6}}><div style={{height:"100%",width:`${pct}%`,background:submitted>=expected?T.accent:T.gold,transition:"width .3s"}}/></div>)}
-                            {/* 파일 다운로드 목록 (토글) */}
-                            {(ex.files||[]).length>0&&(()=>{
-                              const fkey=`${subj}_${gr}_${tch}_${i}`;
-                              const isOpen=!!openFiles[fkey];
-                              return(<div style={{marginTop:6,paddingTop:6,borderTop:`1px dashed ${T.border}`}}>
-                              <button onClick={()=>toggleFiles(fkey)} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,fontWeight:700,color:T.textSub,background:"none",border:"none",cursor:"pointer",padding:"2px 0",fontFamily:"inherit",width:"100%",justifyContent:"space-between"}}>
-                                <span>📎 첨부 파일 {ex.files.length}개</span>
-                                <span style={{fontSize:10,color:T.goldDark}}>{isOpen?"▲ 접기":"▼ 펼치기"}</span>
-                              </button>
-                              {isOpen&&(<div style={{display:"flex",flexDirection:"column",gap:3,marginTop:4}}>
-                                {ex.files.map((fl,fi)=>(<div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:T.white,borderRadius:6,border:`1px solid ${T.borderLight}`}}>
-                                  <span style={{fontSize:11}}>{fl.kind==="answer"?"🔑":"📄"}</span>
-                                  <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
-                                    <div style={{fontSize:11,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fl.name}</div>
-                                    <div style={{fontSize:9,color:T.textMuted}}>{fl.kind==="answer"?"정답지":"시험지"} · {fl.size?Math.round(fl.size/1024)+"KB":""}</div>
-                                  </div>
-                                  <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:5,border:"none",cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
-                                  <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:5,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
-                                </div>))}
-                              </div>)}
-                            </div>);
-                            })()}
-                            {ex.folderLink&&<a href={ex.folderLink} target="_blank" rel="noreferrer" style={{fontSize:10,color:T.blue,textDecoration:"none",fontWeight:600,display:"inline-block",marginTop:6}}>📁 Drive 폴더 열기 →</a>}
-                          </div>);
-                        })}
-                      </div>);
-                    })}
-                  </div>);
-                })}
-              </div>);
-            })}
-            </>);})()}
-          </>);
-        })()}
-      </div>);})()}
-
-      {/* ═══ 스케줄 관리 탭 ═══ */}
-      {screen==="home"&&tab==="schedule"&&(<div style={S.wrap} className="fade-up">
-        <div style={{textAlign:"center",padding:"20px 0 12px"}}>
-          <div style={{fontSize:36,marginBottom:4}}>🗓️</div>
-          <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 스케줄 관리</h1>
-          <p style={{fontSize:13,color:T.textMuted}}>요일별 반복 시험을 등록 · 매일 20시 #시험지준비 채널 리마인드</p>
-        </div>
-
-        {/* 등록 폼 */}
-        <div style={S.card}>
-          <div style={S.secLabel}>{schForm.rowIndex?"스케줄 수정":"새 스케줄 등록"}</div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-            <div>
-              <div style={S.label}>요일 *</div>
-              <select style={S.inp} value={schForm.day} onChange={e=>setSchForm({...schForm,day:e.target.value})}>
-                {["월","화","수","목","금","토","일"].map(d=>(<option key={d} value={d}>{d}</option>))}
-              </select>
-            </div>
-            <div>
-              <div style={S.label}>과목 *</div>
-              <select style={S.inp} value={schForm.subject} onChange={e=>setSchForm({...schForm,subject:e.target.value})}>
-                <option value="">-- 선택 --</option>
-                {["국어","영어","수학","과학","사회"].map(s=>(<option key={s} value={s}>{s}</option>))}
-              </select>
-            </div>
-            <div>
-              <div style={S.label}>학년 *</div>
-              <select style={S.inp} value={schForm.grade} onChange={e=>setSchForm({...schForm,grade:e.target.value})}>
-                <option value="">-- 선택 --</option>
-                {["초5","초6","중1","중2","중3","고1","고2","고3"].map(g=>(<option key={g} value={g}>{g}</option>))}
-              </select>
-            </div>
-            <div>
-              <div style={S.label}>레벨</div>
-              <input style={S.inp} placeholder="예: A반" value={schForm.level} onChange={e=>setSchForm({...schForm,level:e.target.value})}/>
-            </div>
-            <div>
-              <div style={S.label}>시험 종류</div>
-              <input style={S.inp} placeholder="예: 단원평가" value={schForm.examType} onChange={e=>setSchForm({...schForm,examType:e.target.value})}/>
-            </div>
-            <div>
-              <div style={S.label}>선생님 *</div>
-              <select style={S.inp} value={schForm.teacher} onChange={e=>setSchForm({...schForm,teacher:e.target.value})}>
-                <option value="">-- 선택 --</option>
-                {teacherList.filter(t=>!schForm.subject||t.subject===schForm.subject).map(t=>(<option key={t.name} value={t.name}>{t.name} ({t.subject})</option>))}
-              </select>
-            </div>
-            <div>
-              <div style={S.label}>시험 시간</div>
-              <input type="time" style={S.inp} value={schForm.time} onChange={e=>setSchForm({...schForm,time:e.target.value})}/>
-            </div>
-            <div>
-              <div style={S.label}>활성</div>
-              <select style={S.inp} value={schForm.active?"true":"false"} onChange={e=>setSchForm({...schForm,active:e.target.value==="true"})}>
-                <option value="true">활성 (리마인드 발송)</option>
-                <option value="false">비활성</option>
-              </select>
-            </div>
-          </div>
-          <div style={{marginBottom:10}}>
-            <div style={S.label}>비고</div>
-            <input style={S.inp} placeholder="메모" value={schForm.memo} onChange={e=>setSchForm({...schForm,memo:e.target.value})}/>
-          </div>
-          <div style={{display:"flex",gap:8}}>
-            <button style={{...S.btnG,flex:1}} onClick={saveSchedule}>{schForm.rowIndex?"수정 저장":"+ 등록"}</button>
-            {schForm.rowIndex?(<button style={{padding:"12px 18px",borderRadius:10,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer",fontWeight:700}} onClick={()=>setSchForm({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true})}>취소</button>):null}
-          </div>
-        </div>
-
-        {/* 스케줄 목록 (요일별 그룹) */}
-        <div style={S.card}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-            <div style={S.secLabel}>등록된 스케줄 ({schedule.length}개)</div>
-            <button onClick={loadSchedule} style={{padding:"6px 12px",fontSize:12,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer"}}>🔄 새로고침</button>
-          </div>
-          {schLoading?(<div style={{padding:20,textAlign:"center",color:T.textMuted}}>불러오는 중…</div>):
-            schedule.length===0?(<div style={{padding:20,textAlign:"center",color:T.textMuted,fontSize:13}}>등록된 스케줄이 없습니다.</div>):(
-              ["월","화","수","목","금","토","일"].map(day=>{
-                const list=schedule.filter(s=>s.day===day);
-                if(list.length===0)return null;
-                return(<div key={day} style={{marginBottom:14}}>
-                  <div style={{fontSize:14,fontWeight:800,color:T.goldDark,marginBottom:6,paddingBottom:4,borderBottom:`1.5px solid ${T.goldLight}`}}>{day}요일 ({list.length}건)</div>
-                  {list.map(s=>(<div key={s.rowIndex} style={{padding:10,marginBottom:6,background:s.active?T.white:"#f5f5f5",border:`1px solid ${T.border}`,borderRadius:8,opacity:s.active?1:0.6}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-                      <div style={{flex:1,fontSize:13,lineHeight:1.5}}>
-                        <div style={{fontWeight:700,color:T.text}}>{s.subject} {s.grade} {s.level} · {s.examType}</div>
-                        <div style={{color:T.textSub,fontSize:12}}>👤 {s.teacher} · 🕐 {s.time||"미정"} {s.memo?" · "+s.memo:""} {!s.active?" · ⏸ 비활성":""}</div>
-                      </div>
-                      <div style={{display:"flex",gap:4}}>
-                        <button onClick={()=>setSchForm({rowIndex:s.rowIndex,day:s.day,subject:s.subject,grade:s.grade,level:s.level||"",examType:s.examType||"",teacher:s.teacher,time:s.time||"",memo:s.memo||"",active:s.active})} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,cursor:"pointer"}}>수정</button>
-                        <button onClick={()=>deleteScheduleRow(s.rowIndex)} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>삭제</button>
-                      </div>
-                    </div>
-                  </div>))}
-                </div>);
-              })
-            )
-          }
-        </div>
-      </div>)}
-
+      {/* ═══ 오늘의 현황 대시보드 — 별도 컴포넌트 ═══ */}
+      {screen==="home"&&tab==="dashboard"&&(<DashboardTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
+      {/* ═══ 스케줄 관리 탭 — 별도 컴포넌트 ═══ */}
+      {screen==="home"&&tab==="schedule"&&(<ScheduleTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
       {/* ═══ 모드 선택 ═══ */}
       {screen==="modeSelect"&&(<div style={S.wrap} className="fade-up">
         <div style={{textAlign:"center",padding:"20px 0 16px"}}><h2 style={{fontSize:20,fontWeight:800,color:T.text,marginBottom:8}}>정답 등록 방식 선택</h2>
           <p style={{fontSize:13,color:T.textMuted}}>어떤 방식으로 정답을 등록할까요?</p></div>
-
         {/* 미리보기 */}
         <div style={{...S.card,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
           <div style={{fontSize:12,color:T.textMuted}}>등록 대상</div>
@@ -1737,7 +1706,6 @@ export default function App(){
           <div style={{fontSize:14,fontWeight:700,color:T.goldDark,marginTop:2}}>{examType} · {dateStr}</div>
           {totalStudents>0&&<div style={{fontSize:12,color:T.blue,marginTop:6,fontWeight:600}}>🖨️ 예상 프린트 {totalStudents}장</div>}
         </div>
-
         {/* 모드 A: 직접 입력 */}
         <button onClick={()=>setScreen("directSetup")} style={S.modeCard}>
           <div style={{fontSize:28,marginBottom:8}}>⌨️</div>
@@ -1745,7 +1713,6 @@ export default function App(){
           <div style={{fontSize:12,color:T.textSub,lineHeight:1.5}}>정답 번호를 하나씩 클릭해서 입력합니다. 바로 채점이 가능합니다.</div>
           <div style={{fontSize:11,color:T.accent,fontWeight:700,marginTop:8}}>✓ 즉시 채점 가능</div>
         </button>
-
         {/* 모드 B: 파일 업로드 */}
         <button onClick={()=>setScreen("upload")} style={S.modeCard}>
           <div style={{fontSize:28,marginBottom:8}}>📄</div>
@@ -1753,10 +1720,8 @@ export default function App(){
           <div style={{fontSize:12,color:T.textSub,lineHeight:1.5}}>정답지 파일을 올리면 Claude가 자동 분석합니다. Cowork 연동이 필요합니다.</div>
           <div style={{fontSize:11,color:T.goldDark,fontWeight:700,marginTop:8}}>⏳ Claude 분석 후 채점 가능</div>
         </button>
-
         <button style={{...S.btnO,width:"100%",marginTop:8}} onClick={()=>setScreen("home")}>← 뒤로</button>
       </div>)}
-
       {/* ═══ 직접입력: 문항수 설정 + 파일 업로드(선택) ═══ */}
       {screen==="directSetup"&&(<div style={S.wrap} className="fade-up">
         <div style={S.card}>
@@ -1766,7 +1731,6 @@ export default function App(){
             <input style={S.chInp} placeholder="직접" value={customQ} onChange={e=>setCustomQ(e.target.value.replace(/[^0-9]/g,""))} onFocus={()=>setTotalQ(0)}/>
           </div>
         </div>
-
         {/* 시작번호 설정 */}
         <div style={S.card}>
           <div style={S.secLabel}>시작 번호 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(시험지 첫 번호가 1이 아닌 경우)</span></div>
@@ -1776,7 +1740,6 @@ export default function App(){
             {startNum>1&&<span style={{fontSize:11,color:T.accent,fontWeight:600}}>→ OMR에 {startNum}(1), {startNum+1}(2)... 표시</span>}
           </div>
         </div>
-
         {/* 시험지/정답지 파일 업로드 (선택) — 실장님 프린트용 */}
         <div style={S.card}>
           <div style={S.secLabel}>시험지·정답지 파일 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(선택 · 실장님 프린트용)</span></div>
@@ -1787,13 +1750,11 @@ export default function App(){
           <FileUploadMulti label="정답지" files={answerFiles} onFilesChange={setAnswerFiles} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
           {(examFiles.length>0||answerFiles.length>0)&&<div style={{marginTop:8,padding:"10px 12px",borderRadius:8,background:T.accentLight,fontSize:12,color:T.accent,fontWeight:600}}>✓ 저장 시 Google Drive에도 함께 업로드됩니다</div>}
         </div>
-
         <div style={{display:"flex",gap:10}}>
           <button style={{...S.btnO,flex:1}} onClick={()=>setScreen("modeSelect")}>← 뒤로</button>
           <button style={{...S.btnG,flex:2}} onClick={startDirect}>정답 입력 시작 →</button>
         </div>
       </div>)}
-
       {/* ═══ 직접입력: 정답 입력 ═══ */}
       {screen==="direct"&&!done&&(<div className="fade-up">
         <div style={S.progA}><div style={S.progBg}><div style={{...S.progF,width:`${(filled/qc)*100}%`,background:filled===qc?T.accent:T.gold}}/></div>
@@ -1803,7 +1764,6 @@ export default function App(){
           </div></div>
         <div style={{padding:"6px 12px",background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,textAlign:"center"}}>{classes.map(c=>c.name).join(", ")} · {examType}</div>
         <div style={{padding:"8px 12px",background:T.accentLight+"55",fontSize:11,color:T.accent,fontWeight:600,textAlign:"center",lineHeight:1.5}}>💡 <b>객관식 복수정답</b>: 2개 이상 버튼 눌러서 선택 · <b>주관식 여러 빈칸</b>: "solve|gathered|announced"처럼 <b>|</b>로 구분 · <b>대체답</b>: "to look/looking"처럼 <b>/</b>로 구분</div>
-
         <div style={{padding:"8px 10px 100px"}}>
           {Array.from({length:qc},(_,i)=>{const isObj=types[i]==="obj";const sel=answers[i];const fi=_isFilled(sel);
             const selArr=Array.isArray(sel)?sel:(fi&&typeof sel!=="string"?[Number(sel)]:[]);
@@ -1818,19 +1778,16 @@ export default function App(){
               ):(<input style={S.sInp} placeholder="주관식 정답" value={subAns[i]||""} onChange={e=>hSub(i,e.target.value)}/>)}
             </div>);})}
         </div>
-
         <div style={S.subBar}>
           <button style={{...S.btnO,flex:"0 0 auto",padding:"11px 16px"}} onClick={()=>setScreen("modeSelect")}>← 뒤로</button>
           <div style={{flex:1,textAlign:"center"}}><span style={{fontSize:13,fontWeight:600,color:T.goldDark}}>{filled}/{qc}</span></div>
           <button style={S.subBtn} onClick={saveDirect} disabled={saving}>{saving?"저장 중...":"저장하기"}</button>
         </div>
       </div>)}
-
       {/* ═══ 파일 업로드 ═══ */}
       {screen==="upload"&&!done&&(<div style={S.wrap} className="fade-up">
         <div style={S.card}>
           <div style={S.secLabel}>파일 업로드</div>
-
           {/* ★ 반이 2개 이상일 때: 같은/다른 시험지 선택 */}
           {classes.length>=2&&(<div style={{marginBottom:14}}>
             <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:8}}>시험지 구분</div>
@@ -1843,26 +1800,31 @@ export default function App(){
               );})}
             </div>
           </div>)}
-
+          {/* ── 시험 구분 (이론편 / 실전편 / 혼합) — 1개만 선택 ── */}
+          <div style={{marginBottom:12,padding:"12px 14px",border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📚 시험 구분</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {SET_TYPES.map(st=>{
+                const a=setType===st;
+                const emj=st==="이론편"?"📘":st==="실전편"?"📕":"📗";
+                return(<button key={st} onClick={()=>{setSetTypeState(st);lsSet({lastSetType:st});}} style={{padding:"8px 14px",fontSize:13,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{emj} {st}</button>);
+              })}
+              {setType&&<button onClick={()=>{setSetTypeState("");lsSet({lastSetType:""});}} style={{padding:"8px 10px",fontSize:11,borderRadius:8,border:`1px solid ${T.border}`,background:T.white,color:T.textMuted,cursor:"pointer",fontFamily:"inherit"}}>✕ 해제</button>}
+            </div>
+            <div style={{fontSize:11,color:T.textMuted,marginTop:6,lineHeight:1.5}}>시험지 내용에 맞는 구분을 선택하세요. 학생앱 시험 카드에 뱃지로 표시됩니다.</div>
+          </div>
           {/* ── 같은 시험지 모드 (또는 반 1개) ── */}
           {(sameExam||classes.length<=1)&&(<>
             <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
-              💡 차수별로 시험지·정답지를 올려주세요. 파일 없는 차수는 자동 생략됩니다.
+              💡 시험지·정답지 파일을 올려주세요.
             </div>
             {rounds.map((rd,ri)=>(
               <div key={ri} style={{padding:"10px 12px",marginBottom:10,border:`2px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                  <input style={{...S.inp,width:80,fontWeight:700}} value={rd.label} onChange={e=>updateRound(ri,"label",e.target.value)} placeholder="1차"/>
-                  <div style={{fontSize:12,color:T.textMuted,flex:1}}>시험 (예: 1차, 재시, 보강)</div>
-                  {rounds.length>1&&(<button onClick={()=>removeRound(ri)} style={{padding:"4px 10px",fontSize:11,background:T.dangerLight,color:T.danger,border:"none",borderRadius:6,cursor:"pointer",fontWeight:700}}>✕ 삭제</button>)}
-                </div>
-                <FileUploadMulti label={`${rd.label} 시험지`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
-                <FileUploadMulti label={`${rd.label} 정답지`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                <FileUploadMulti label={`시험지${setType?" ("+setType+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                <FileUploadMulti label={`정답지${setType?" ("+setType+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
               </div>
             ))}
-            <button onClick={addRound} style={{width:"100%",padding:"10px",marginBottom:8,background:T.white,border:`1.5px dashed ${T.goldDark}`,borderRadius:8,cursor:"pointer",fontWeight:700,color:T.goldDark,fontFamily:"inherit"}}>+ 차수 추가</button>
           </>)}
-
           {/* ── 반별 다른 시험지 모드 ── */}
           {!sameExam&&classes.length>=2&&(<>
             <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
@@ -1870,31 +1832,23 @@ export default function App(){
             </div>
             {classes.map((cls,ci)=>(
               <div key={ci} style={{marginBottom:14,border:`2px solid ${T.blue}40`,borderRadius:12,overflow:"hidden"}}>
-                <div style={{padding:"10px 14px",background:T.blueLight,fontWeight:700,fontSize:13,color:T.blue}}>{cls.name}</div>
+                <div style={{padding:"10px 14px",background:T.blueLight,fontWeight:700,fontSize:13,color:T.blue}}>{cls.name}{setType?` · ${setType}`:""}</div>
                 <div style={{padding:"10px 12px"}}>
                   {(classRounds[cls.name]||[]).map((rd,ri)=>(
                     <div key={ri} style={{padding:"10px 12px",marginBottom:8,border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                        <input style={{...S.inp,width:80,fontWeight:700}} value={rd.label} onChange={e=>updateClassRound(cls.name,ri,"label",e.target.value)} placeholder="1차"/>
-                        <div style={{fontSize:12,color:T.textMuted,flex:1}}>{cls.name} {rd.label}</div>
-                        {(classRounds[cls.name]||[]).length>1&&(<button onClick={()=>removeClassRound(cls.name,ri)} style={{padding:"4px 10px",fontSize:11,background:T.dangerLight,color:T.danger,border:"none",borderRadius:6,cursor:"pointer",fontWeight:700}}>✕ 삭제</button>)}
-                      </div>
                       <FileUploadMulti label={`시험지`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                       <FileUploadMulti label={`정답지`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                     </div>
                   ))}
-                  <button onClick={()=>addClassRound(cls.name)} style={{width:"100%",padding:"8px",background:T.white,border:`1.5px dashed ${T.blue}`,borderRadius:8,cursor:"pointer",fontWeight:700,color:T.blue,fontFamily:"inherit",fontSize:12}}>+ {cls.name} 차수 추가</button>
                 </div>
               </div>
             ))}
           </>)}
-
           <div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginTop:8}}>
             <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>💡 이렇게 처리됩니다</div>
-            <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 각 차수별로 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 학생 앱에서 시험 선택 시 <b>차수</b>도 함께 표시됩니다.</div>
+            <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 학생 앱에서 시험 선택 시 <b>{setType||"시험 구분"}</b> 뱃지가 표시됩니다.</div>
           </div>
         </div>
-
         {/* 주관식 힌트 입력 */}
         <div style={S.card}>
           <div style={S.secLabel}>주관식 문항 힌트 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(Claude 분석 정확도↑)</span></div>
@@ -1914,7 +1868,6 @@ export default function App(){
               </button>
             );})}
           </div>
-
           {subjMode==="mixed"&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
             <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📍 주관식 문항 번호 (선택)</div>
             <div style={{fontSize:11,color:T.textSub,lineHeight:1.6,marginBottom:10}}>
@@ -1929,7 +1882,6 @@ export default function App(){
             </div>
           </div>)}
         </div>
-
         <div style={S.card}>
           <div style={S.label}>메모 (선택사항)</div>
           <textarea style={S.textarea} placeholder="참고사항" value={memo} onChange={e=>setMemo(e.target.value)} rows={2}/>
@@ -1939,13 +1891,11 @@ export default function App(){
           <button style={{...S.btnG,flex:2}} onClick={saveUpload} disabled={saving}>{saving?"업로드 중...":"시험 등록하기"}</button>
         </div>
       </div>)}
-
       {/* ═══ 저장 중 ═══ */}
       {saving&&(<div style={S.overlay}><div style={S.modal}>
         <div style={{width:40,height:40,border:`3px solid ${T.borderLight}`,borderTopColor:T.gold,borderRadius:"50%",animation:"spin .8s linear infinite",margin:"0 auto 16px"}}/>
         <p style={{fontSize:15,fontWeight:700,color:T.text}}>저장 중...</p>
       </div></div>)}
-
       {/* ═══ 완료 ═══ */}
       {screen==="done"&&(<div style={S.wrap} className="fade-up">
         <div style={{textAlign:"center",padding:"48px 20px"}}>
@@ -1965,12 +1915,10 @@ export default function App(){
           <button style={{...S.btnG,maxWidth:320,margin:"0 auto"}} onClick={reset}>다른 시험 등록하기</button>
         </div>
       </div>)}
-
       {error&&<div style={{position:"fixed",bottom:80,left:"50%",transform:"translateX(-50%)",background:T.dangerLight,color:T.danger,padding:"10px 20px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:999}}>{error}</div>}
     </div>
   );
 }
-
 const S={
   app:{fontFamily:"'Noto Sans KR',-apple-system,sans-serif",background:T.bg,minHeight:"100vh",maxWidth:480,margin:"0 auto",paddingBottom:20},
   hdr:{background:T.white,borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,zIndex:100},
