@@ -1428,7 +1428,7 @@ export default function App(){
     if(!cnt||cnt<=0)return alert("예상 인원을 입력하세요.\n(실장님이 시험지를 몇 장 프린트해야 할지 계산하기 위해 필수입니다.)");
     const newClasses=[...classes,{subject:ts,grade:tg,level:lv,name,count:cnt}];
     setClasses(newClasses);
-    setClassRounds(p=>({...p,[name]:[{label:"1차",examFiles:[],answerFiles:[]}]}));
+    setClassRounds(p=>({...p,[name]:[{label:"",examFiles:[],answerFiles:[]}]}));
     setTl("");setTcl("");setTcount("");
   };
   // 시험정보 확인 → 모드 선택
