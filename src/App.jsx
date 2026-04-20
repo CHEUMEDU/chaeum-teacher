@@ -10,6 +10,12 @@ const LV_LEVELS=["SB","B","I","A","SA","전체"];
 const LV_MIDDLE=["인하부중","인주중","관교중","관교여중","용현중","용현여중","남인천여중","인화여중","제물포여중"];
 const LV_HIGH=["인하부고","학익고","학익여고","인성여고","인명여고","제물포고","인천고"];
 const LV_CATS=[{key:"level",label:"레벨",opts:LV_LEVELS},{key:"middle",label:"중학교",opts:LV_MIDDLE},{key:"high",label:"고등학교",opts:LV_HIGH},{key:"etc",label:"기타",opts:[]}];
+// 같은 시험지를 공유하는 학교 묶음 프리셋 (선생님이 자주 쓰는 조합)
+const LV_PRESETS=[
+  {key:"kwangyo",label:"관교팀",cat:"middle",opts:["관교여중","관교중"]},
+  {key:"inhwa",label:"인화/인하부팀",cat:"middle",opts:["인화여중","인하부중"]},
+  {key:"yonghyun",label:"용현팀",cat:"middle",opts:["용현중","용현여중"]},
+];
 const EXAM_TYPES=["단어시험","문법시험","종합시험","모의고사","수학테스트","영작시험","해석시험","DAILY TEST","WEEKLY TEST","MONTHLY TEST","기타"];
 const LS_KEY="chaeum_teacher";
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS_KEY)||"{}");}catch(e){return{};}}
@@ -1366,6 +1372,8 @@ export default function App(){
   const[teacher,setTeacher]=useState(_ls.teacher||"");
   // 반 추가
   const[ts,setTs]=useState("");const[tg,setTg]=useState("");const[tl,setTl]=useState("");const[tcl,setTcl]=useState("");const[tlCat,setTlCat]=useState("level");
+  // ★ 학교 다중선택 — 같은 시험지를 공유하는 여러 학교를 한 번에 등록
+  const[tlMulti,setTlMulti]=useState([]); // 중/고등학교 카테고리에서만 사용
   const[tcount,setTcount]=useState(""); // 반별 예상 인원
   const[classes,setClasses]=useState([]);
   // 시험 정보
@@ -1420,16 +1428,34 @@ export default function App(){
   const addClass=()=>{
     if(!teacher.trim())return alert("먼저 선생님 이름을 입력하세요.");
     if(!ts)return alert("과목을 선택하세요.");if(!tg)return alert("학년을 선택하세요.");
-    const lv=tlCat==="etc"?tcl:tl;if(!lv)return alert("레벨/학교를 선택하세요.");
-    const name=`${ts} ${tg} ${lv}반`;
+    // ★ 학교 다중선택 지원: 중/고등학교 카테고리에서는 tlMulti 배열 사용
+    //   - 2개 이상 선택 시: level="관교여중,관교중", 반이름="영어 중2 관교여중+관교중반"
+    //   - 1개 선택 시: 기존과 동일
+    //   - 기타/레벨 카테고리: tl 또는 tcl 그대로 사용
+    let lv, displayName;
+    if((tlCat==="middle"||tlCat==="high")&&tlMulti.length>0){
+      lv=tlMulti.join(",");
+      displayName=tlMulti.join("+");
+    }else{
+      const single=tlCat==="etc"?tcl:tl;
+      if(!single)return alert("레벨/학교를 선택하세요.");
+      lv=single;displayName=single;
+    }
+    if(!lv)return alert("레벨/학교를 선택하세요.");
+    const name=`${ts} ${tg} ${displayName}반`;
     if(classes.some(c=>c.name===name))return alert("이미 추가된 반입니다.");
     // ★ 예상 인원 필수 — 실장님 프린트 매수 산출에 필요
     const cnt=parseInt(tcount)||0;
     if(!cnt||cnt<=0)return alert("예상 인원을 입력하세요.\n(실장님이 시험지를 몇 장 프린트해야 할지 계산하기 위해 필수입니다.)");
+    // 다중선택 시 최종 확인 — 같은 시험지가 맞는지 재확인
+    if(tlMulti.length>=2){
+      const ok=window.confirm(`다음 ${tlMulti.length}개 학교를 하나의 반으로 등록합니다:\n\n  ${tlMulti.join(" + ")}\n\n⚠ 반드시 **같은 시험지**를 공유할 때만 사용하세요.\n시험지가 다르면 [취소] 후 학교를 1개씩 등록해주세요.\n\n계속하시겠습니까?`);
+      if(!ok)return;
+    }
     const newClasses=[...classes,{subject:ts,grade:tg,level:lv,name,count:cnt}];
     setClasses(newClasses);
     setClassRounds(p=>({...p,[name]:[{label:"",examFiles:[],answerFiles:[]}]}));
-    setTl("");setTcl("");setTcount("");
+    setTl("");setTcl("");setTcount("");setTlMulti([]);
   };
   // 시험정보 확인 → 모드 선택
   const goToMode=()=>{
@@ -1603,7 +1629,7 @@ export default function App(){
     }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
   return(
     <div style={S.app} className="app-shell">
@@ -1657,8 +1683,22 @@ export default function App(){
           <Chip label="학년" req opts={GRADES} val={tg} onChange={setTg}/>
           <div style={{marginBottom:14}}>
             <div style={S.label}>레벨 / 학교 <span style={{color:T.danger}}>*</span></div>
-            <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=tlCat===c.key;return(<button key={c.key} onClick={()=>{setTlCat(c.key);setTl("");setTcl("");}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
-            {tlCat!=="etc"?(<div style={S.cw}>{(LV_CATS.find(c=>c.key===tlCat)?.opts||[]).map(o=>{const a=tl===o;return(<button key={o} onClick={()=>{setTl(tl===o?"":o);setTcl("");}} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{o}</button>);})}</div>
+            <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=tlCat===c.key;return(<button key={c.key} onClick={()=>{setTlCat(c.key);setTl("");setTcl("");setTlMulti([]);}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
+            {(tlCat==="middle"||tlCat==="high")?(<>
+              {/* 프리셋 (같은 시험지를 공유하는 학교 묶음) */}
+              {LV_PRESETS.filter(p=>p.cat===tlCat).length>0&&(<div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
+                <span style={{fontSize:11,color:T.textMuted,alignSelf:"center",marginRight:2}}>빠른 선택:</span>
+                {LV_PRESETS.filter(p=>p.cat===tlCat).map(p=>(
+                  <button key={p.key} onClick={()=>setTlMulti(p.opts.slice())} style={{padding:"4px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:`1px dashed ${T.goldDark}`,background:T.goldPale||"#FFF8E6",color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>{p.label}</button>
+                ))}
+                {tlMulti.length>0&&(<button onClick={()=>setTlMulti([])} style={{padding:"4px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>초기화</button>)}
+              </div>)}
+              {/* 체크박스형 다중선택 (학교는 같은 시험지를 공유할 때 여러 개 선택) */}
+              <div style={S.cw}>{(LV_CATS.find(c=>c.key===tlCat)?.opts||[]).map(o=>{const a=tlMulti.includes(o);return(<button key={o} onClick={()=>setTlMulti(p=>p.includes(o)?p.filter(x=>x!==o):[...p,o])} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{a?"☑ ":"☐ "}{o}</button>);})}</div>
+              {tlMulti.length>=2&&(<div style={{marginTop:8,padding:"8px 10px",background:"#FFF8E6",border:`1px solid ${T.goldMuted||"#E8D8A0"}`,borderRadius:8,fontSize:11,color:T.textSub,lineHeight:1.5}}>
+                ⚠ <b>{tlMulti.length}개 학교를 하나의 반으로 등록</b>합니다. 반드시 <b>같은 시험지</b>를 공유할 때만 사용하세요.<br/>시험지가 다르면 학교를 <b>1개씩 따로</b> 등록해주세요.
+              </div>)}
+            </>):tlCat==="level"?(<div style={S.cw}>{(LV_CATS.find(c=>c.key===tlCat)?.opts||[]).map(o=>{const a=tl===o;return(<button key={o} onClick={()=>{setTl(tl===o?"":o);setTcl("");}} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{o}</button>);})}</div>
             ):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={tcl} onChange={e=>{setTcl(e.target.value);setTl(e.target.value);}}/>)}
           </div>
           {/* 인원 입력 (필수) */}
@@ -1670,8 +1710,8 @@ export default function App(){
             </div>
             <div style={{fontSize:11,color:T.textMuted,marginTop:4,lineHeight:1.4}}>⚠️ 인원을 입력해야 실장님이 시험지를 몇 장 프린트할지 알 수 있습니다.</div>
           </div>
-          {ts&&tg&&(tl&&tl!=="custom"||tcl)&&(<div style={S.addRow}>
-            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {tlCat==="etc"?tcl:tl}반{tcount?` · ${tcount}명`:" · (인원 미입력)"}</div>
+          {ts&&tg&&(((tlCat==="middle"||tlCat==="high")&&tlMulti.length>0)||(tlCat==="level"&&tl)||(tlCat==="etc"&&tcl))&&(<div style={S.addRow}>
+            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {(tlCat==="middle"||tlCat==="high")?tlMulti.join("+"):(tlCat==="etc"?tcl:tl)}반{tcount?` · ${tcount}명`:" · (인원 미입력)"}</div>
             <button onClick={addClass} style={{...S.addBtn,opacity:!tcount?.5:1,cursor:!tcount?"not-allowed":"pointer"}} disabled={!tcount}>+ 반 추가</button>
           </div>)}
           {classes.length>0&&(<div style={{marginTop:12}}>
