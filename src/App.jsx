@@ -1314,36 +1314,49 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
       <div style={{fontSize:36,marginBottom:4}}>👥</div>
       <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>선생님 관리</h1>
       <p style={{fontSize:13,color:T.textMuted}}>카테고리(관리자/국어/영어/수학)별로 선생님을 간단히 추가·삭제</p>
-      {/* ★ v12.5: 진단 + 강제 재분류 도구 */}
-      <div style={{display:"flex",gap:8,justifyContent:"center",marginTop:10,flexWrap:"wrap"}}>
+      {/* ★ v13: 진단 + 재분류 + 시드 재주입 도구 */}
+      <div style={{display:"flex",gap:6,justifyContent:"center",marginTop:10,flexWrap:"wrap"}}>
         <button onClick={async()=>{
           try{
             const r=await fetch(`${sheetsUrl}?action=diag_teachers`);
             const d=await r.json();
             if(d.result!=="ok"){alert("진단 실패: "+(d.message||""));return;}
             const lines=[];
+            lines.push(`[버전: ${d._v||"구버전"}]`);
             lines.push(`시트: ${d.sheetName}  /  행: ${d.lastRow}  /  열: ${d.lastCol}`);
             lines.push(`헤더: [${(d.header||[]).join(" | ")}]`);
             lines.push(`--- 데이터 ${d.rows.length}행 ---`);
             (d.rows||[]).forEach(r=>{
-              lines.push(`행${r.sheetRow}: [${r.col1_category}] ${r.col2_name} (과목:${r.col3_subject})`);
+              lines.push(`행${r.sheetRow}: [${r.col1_category||"(빈값)"}] ${r.col2_name}`);
             });
+            if(d._v!=="v13"){
+              lines.push("\n⚠️ Apps Script가 아직 v13으로 배포되지 않았습니다.");
+            }
             alert(lines.join("\n"));
           }catch(err){alert("진단 오류: "+String(err));}
-        }} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer"}}>🔍 시트 진단</button>
+        }} style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer"}}>🔍 진단</button>
         <button onClick={async()=>{
-          if(!confirm("⚙️ 강제 재분류\n\n알려진 선생님 이름(김우림=영어, 이강억=수학 등)을 기준으로\n현재 저장된 카테고리를 올바르게 덮어씁니다.\n\n계속할까요?"))return;
+          if(!confirm("⚙️ 강제 재분류\n\n이름 기준으로 카테고리를 자동 덮어씁니다.\n(김우림=영어, 이강억=수학 등)\n\n계속할까요?"))return;
           try{
             const r=await fetch(`${sheetsUrl}?action=reclassify_teachers`);
             const d=await r.json();
             if(d.result==="ok"){
-              const msg=`✅ 재분류 완료: ${d.updated}명 변경\n\n`+
-                (d.details||[]).map(x=>`행${x.row} ${x.name}: ${x.was||"(빈값)"} → ${x.now}`).join("\n");
-              alert(msg);
-              load();
+              const msg=`✅ 재분류 완료: ${d.updated}명 변경 (${d._v||"?"})\n\n`+
+                (d.details||[]).slice(0,30).map(x=>`행${x.row} ${x.name}: ${x.was} → ${x.now}`).join("\n");
+              alert(msg); load();
             }else alert("재분류 실패: "+(d.message||""));
           }catch(err){alert("재분류 오류: "+String(err));}
-        }} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",background:T.goldDark,color:T.white,cursor:"pointer"}}>⚙️ 강제 재분류</button>
+        }} style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",background:T.goldDark,color:T.white,cursor:"pointer"}}>⚙️ 재분류</button>
+        <button onClick={async()=>{
+          if(!confirm("🌱 시드 재주입\n\n선생님 시트를 비우고 기본 명단(12명)을 다시 채웁니다.\n수동으로 추가했던 선생님은 사라집니다.\n\n계속할까요?"))return;
+          try{
+            const r=await fetch(`${sheetsUrl}?action=reseed_teachers`);
+            const d=await r.json();
+            if(d.result==="ok"){
+              alert(`✅ 시드 재주입 완료: ${d.seeded}명 (${d._v||"?"})`); load();
+            }else alert("재주입 실패: "+(d.message||""));
+          }catch(err){alert("재주입 오류: "+String(err));}
+        }} style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",background:"#7B5E2D",color:T.white,cursor:"pointer"}}>🌱 시드 재주입</button>
       </div>
     </div>
     {/* 카테고리 탭 */}
