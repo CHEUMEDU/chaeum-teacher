@@ -249,6 +249,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[prevLoading,setPrevLoading]=useState(false);
   const[prevRow,setPrevRow]=useState(null);
   const[selectedSet,setSelectedSet]=useState(0); // 0=A, 1=B, 2=C
+  // ★ v15: 검수 결과 모달 (verification 상세)
+  const[verifyModal,setVerifyModal]=useState(null); // null | {row, verification, startNumber, totalQuestions}
   // 반 추가 핸들러 — 다중학교 지원
   const addGenClass=()=>{
     if(!genSubject)return alert("과목을 선택하세요.");
@@ -876,6 +878,20 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
                <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>👤 {h.teacher} · {h.targetClass} · {h.requestedAt||""}</div>
              </div>
              <div style={{display:"flex",alignItems:"center",gap:6}}>
+               {/* ★ v15: 검수 뱃지 — 정답 PDF 분석 검증 결과 */}
+               {h.status==="완료"&&h.verification&&(()=>{
+                 const vs=String(h.verificationStatus||h.verification.status||"").toLowerCase();
+                 const wn=(h.verification.warnings||[]).length;
+                 const isErr=vs==="error";
+                 const isWarn=vs==="warning"||wn>0;
+                 const ok=!isErr&&!isWarn;
+                 const color=ok?"#2E7D32":isErr?"#C62828":"#E65100";
+                 const bg=ok?"#E8F5E9":isErr?"#FFEBEE":"#FFF3E0";
+                 const ic=ok?"✅":isErr?"❌":"⚠️";
+                 const txt=ok?"검증":isErr?`오류${wn?` ${wn}`:""}`:`경고${wn?` ${wn}`:""}`;
+                 return(<button onClick={(ev)=>{ev.stopPropagation();setVerifyModal({row:h.rowIndex,verification:h.verification,startNumber:h.startNumber||1,totalQuestions:h.questionCount||h.totalQuestions||0,textbook:h.textbook,targetClass:h.targetClass});}}
+                   title="검수 상세 보기" style={{padding:"4px 8px",borderRadius:12,background:bg,color:color,fontSize:11,fontWeight:700,border:"none",cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>{ic} {txt}</button>);
+               })()}
                <span style={{padding:"4px 10px",borderRadius:20,background:statusBg,color:statusColor,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{h.status||"대기"}</span>
                <button onClick={(ev)=>{ev.stopPropagation();deleteExamGen(h.rowIndex);}}
                  title="삭제" style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,color:T.textMuted,fontSize:14,lineHeight:"22px",textAlign:"center",cursor:"pointer",padding:0,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
@@ -909,6 +925,57 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
          </div>);
        })}
     </div>
+    {/* ★ v15: 검수 결과 상세 모달 */}
+    {verifyModal&&(()=>{
+      const v=verifyModal.verification||{};
+      const ws=v.warnings||[];
+      const sc=v.subjectiveCount||{};
+      const ma=v.multipleAnswerQuestions||[];
+      const sq=v.subjectiveQuestions||[];
+      const status=String(v.status||(v.crossCheckPassed?"ok":"warning")).toLowerCase();
+      const isOk=status==="ok"&&ws.length===0;
+      const headerColor=isOk?"#2E7D32":status==="error"?"#C62828":"#E65100";
+      const headerBg=isOk?"#E8F5E9":status==="error"?"#FFEBEE":"#FFF3E0";
+      const headerIc=isOk?"✅":status==="error"?"❌":"⚠️";
+      return(<div onClick={()=>setVerifyModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999,padding:16}}>
+        <div onClick={(e)=>e.stopPropagation()} style={{background:T.white,borderRadius:14,maxWidth:480,width:"100%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,.22)"}}>
+          <div style={{padding:"14px 16px",background:headerBg,borderRadius:"14px 14px 0 0",borderBottom:`1px solid ${T.border}`}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:15,fontWeight:800,color:headerColor}}>{headerIc} 검수 결과</div>
+              <button onClick={()=>setVerifyModal(null)} style={{border:"none",background:"none",fontSize:18,cursor:"pointer",color:T.textMuted,padding:4}}>✕</button>
+            </div>
+            <div style={{fontSize:12,color:T.textSub,marginTop:4}}>{verifyModal.textbook} · {verifyModal.targetClass}</div>
+          </div>
+          <div style={{padding:"14px 16px"}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.textSub,marginBottom:6}}>📋 문제 수 검증</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>시험지</div><div style={{fontSize:18,fontWeight:700,color:T.text}}>{v.examQuestionCount??"-"}</div></div>
+              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정답지</div><div style={{fontSize:18,fontWeight:700,color:T.text}}>{v.answerCount??verifyModal.totalQuestions}</div></div>
+              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정보파일</div><div style={{fontSize:18,fontWeight:700,color:T.text}}>{v.infoQuestionCount??"-"}</div></div>
+            </div>
+            <div style={{fontSize:12,fontWeight:700,color:T.textSub,marginBottom:6}}>✏️ 주관식 검증</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
+              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>시험지</div><div style={{fontSize:16,fontWeight:700,color:T.accent}}>{sc.exam??"-"}</div></div>
+              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정답지</div><div style={{fontSize:16,fontWeight:700,color:T.accent}}>{sc.answer??"-"}</div></div>
+              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정보파일</div><div style={{fontSize:16,fontWeight:700,color:T.accent}}>{sc.info??"-"}</div></div>
+            </div>
+            <div style={{padding:"8px 12px",borderRadius:8,background:T.bg,marginBottom:10,fontSize:13}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:T.textMuted}}>시작번호</span><span style={{fontWeight:700,color:T.text}}>{verifyModal.startNumber}번부터</span></div>
+              {sq.length>0&&<div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:T.textMuted}}>주관식 문항</span><span style={{fontWeight:600,color:T.text,fontSize:11}}>{sq.join(", ")}</span></div>}
+              {ma.length>0&&<div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:T.textMuted}}>복수정답 문항</span><span style={{fontWeight:600,color:T.text,fontSize:11}}>{ma.join(", ")}</span></div>}
+              {v.processedAt&&<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:T.textMuted}}>처리시각</span><span style={{fontWeight:500,color:T.textSub,fontSize:11}}>{String(v.processedAt).replace("T"," ").replace("Z","")}</span></div>}
+            </div>
+            {ws.length>0&&<div style={{marginTop:10}}>
+              <div style={{fontSize:12,fontWeight:700,color:"#E65100",marginBottom:6}}>⚠️ 경고 ({ws.length}개)</div>
+              {ws.map((w,wi)=><div key={wi} style={{padding:"6px 10px",borderRadius:6,background:"#FFF3E0",color:"#BF360C",fontSize:12,marginBottom:4}}>{String(w)}</div>)}
+            </div>}
+            {isOk&&<div style={{padding:10,borderRadius:8,background:"#E8F5E9",color:"#1B5E20",fontSize:12,fontWeight:600,textAlign:"center",marginTop:10}}>
+              ✅ 모든 검증을 통과했습니다
+            </div>}
+          </div>
+        </div>
+      </div>);
+    })()}
   </div>);
   // ── Step 2: 확인 화면 ──
   if(step===2){
