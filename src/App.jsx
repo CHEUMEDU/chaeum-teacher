@@ -10,12 +10,6 @@ const LV_LEVELS=["SB","B","I","A","SA","전체"];
 const LV_MIDDLE=["인하부중","인주중","관교중","관교여중","용현중","용현여중","남인천여중","인화여중","제물포여중"];
 const LV_HIGH=["인하부고","학익고","학익여고","인성여고","인명여고","제물포고","인천고"];
 const LV_CATS=[{key:"level",label:"레벨",opts:LV_LEVELS},{key:"middle",label:"중학교",opts:LV_MIDDLE},{key:"high",label:"고등학교",opts:LV_HIGH},{key:"etc",label:"기타",opts:[]}];
-// 같은 시험지를 공유하는 학교 묶음 프리셋 (선생님이 자주 쓰는 조합)
-const LV_PRESETS=[
-  {key:"kwangyo",label:"관교팀",cat:"middle",opts:["관교여중","관교중"]},
-  {key:"inhwa",label:"인화/인하부팀",cat:"middle",opts:["인화여중","인하부중"]},
-  {key:"yonghyun",label:"용현팀",cat:"middle",opts:["용현중","용현여중"]},
-];
 const EXAM_TYPES=["단어시험","문법시험","종합시험","모의고사","수학테스트","영작시험","해석시험","DAILY TEST","WEEKLY TEST","MONTHLY TEST","기타"];
 const LS_KEY="chaeum_teacher";
 function lsGet(){try{return JSON.parse(localStorage.getItem(LS_KEY)||"{}");}catch(e){return{};}}
@@ -185,7 +179,11 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[genLevel,setGenLevel]=useState("");
   const[genLevelCustom,setGenLevelCustom]=useState("");
   const[genLevelCat,setGenLevelCat]=useState("level");
+  const[genLevelMulti,setGenLevelMulti]=useState([]); // ★ 다중선택 (레벨/중/고)
   const[genClasses,setGenClasses]=useState([]); // [{subject,grade,level,name}]
+  // ★ 문제 생성 — 시험 구분 (이론편/실전편/혼합)
+  const[genSetType,setGenSetType]=useState("");
+  const GEN_SET_TYPES=["이론편","실전편","혼합"];
   const[targetTeacher,setTargetTeacher]=useState("");
   const[mcRatio,setMcRatio]=useState(100); // 객관식 비율 (0~100), 기본 100%
   const[customQCount,setCustomQCount]=useState(""); // 직접입력 문제수
@@ -205,16 +203,27 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[prevLoading,setPrevLoading]=useState(false);
   const[prevRow,setPrevRow]=useState(null);
   const[selectedSet,setSelectedSet]=useState(0); // 0=A, 1=B, 2=C
-  // 반 추가 핸들러
+  // 반 추가 핸들러 — 다중학교 지원
   const addGenClass=()=>{
     if(!genSubject)return alert("과목을 선택하세요.");
     if(!genGrade)return alert("학년을 선택하세요.");
-    const lv=genLevelCat==="etc"?genLevelCustom:genLevel;
-    if(!lv)return alert("레벨/학교를 선택하세요.");
-    const name=`${genSubject} ${genGrade} ${lv}반`;
+    let lv, displayName;
+    if((genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")&&genLevelMulti.length>0){
+      lv=genLevelMulti.join(",");
+      displayName=genLevelMulti.join("+");
+    }else{
+      const single=genLevelCat==="etc"?genLevelCustom:"";
+      if(!single)return alert("레벨/학교를 선택하세요.");
+      lv=single;displayName=single;
+    }
+    const name=`${genSubject} ${genGrade} ${displayName}반`;
     if(genClasses.some(c=>c.name===name))return alert("이미 추가된 반입니다.");
+    if(genLevelMulti.length>=2){
+      const ok=window.confirm(`다음 ${genLevelMulti.length}개를 하나의 반으로 등록합니다:\n\n  ${genLevelMulti.join(" + ")}\n\n⚠ 반드시 **같은 시험지**를 공유할 때만 사용하세요.\n\n계속하시겠습니까?`);
+      if(!ok)return;
+    }
     setGenClasses(p=>[...p,{subject:genSubject,grade:genGrade,level:lv,name}]);
-    setGenLevel("");setGenLevelCustom("");
+    setGenLevel("");setGenLevelCustom("");setGenLevelMulti([]);
   };
   // ── 교재 목록 (서버에서 동적 로딩) ──
   const loadTextbooks=useCallback(()=>{
@@ -306,6 +315,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         mcRatio,
         targetClass:genClasses.map(c=>c.name).join(", "),
         teacher:targetTeacher,
+        setType:genSetType||"",   // ★ 이론편 / 실전편 / 혼합 (선택)
         memo,
       };
       await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -695,24 +705,72 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         <div style={S.label}>과목 <span style={{color:T.danger}}>*</span></div>
         <div style={S.cw}>{SUBJECTS.map(o=>{const a=genSubject===o;return(<button key={o} onClick={()=>setGenSubject(genSubject===o?"":o)} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500}}>{o}</button>);})}</div>
       </div>
+      {/* 학년 — 2단 드롭다운 */}
       <div style={{marginBottom:14}}>
         <div style={S.label}>학년 <span style={{color:T.danger}}>*</span></div>
-        <div style={S.cw}>{GRADES.map(o=>{const a=genGrade===o;return(<button key={o} onClick={()=>setGenGrade(genGrade===o?"":o)} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500}}>{o}</button>);})}</div>
+        <div style={{display:"flex",gap:8}}>
+          <select style={{...S.inp,flex:"1 1 50%",cursor:"pointer"}} value={(genGrade.match(/^(초|중|고|초등)/)||[""])[0]||""} onChange={e=>{
+            const sch=e.target.value;
+            if(!sch){setGenGrade("");return;}
+            if(sch==="초등"){setGenGrade("초등");return;}
+            const curNum=(genGrade.match(/\d+/)||[""])[0];
+            const maxN=sch==="초"?6:3;
+            setGenGrade(curNum&&parseInt(curNum)<=maxN?sch+curNum:"");
+          }}>
+            <option value="">학교급 선택</option>
+            <option value="초">초등학교</option>
+            <option value="초등">초등 (학년 무관)</option>
+            <option value="중">중학교</option>
+            <option value="고">고등학교</option>
+          </select>
+          <select style={{...S.inp,flex:"1 1 50%",cursor:"pointer"}} value={(genGrade.match(/\d+/)||[""])[0]||""} disabled={!genGrade||genGrade==="초등"} onChange={e=>{
+            const n=e.target.value;
+            const sch=(genGrade.match(/^(초|중|고)/)||[""])[0];
+            if(!sch)return;
+            setGenGrade(n?sch+n:"");
+          }}>
+            <option value="">학년 선택</option>
+            {(genGrade.startsWith("초")&&genGrade!=="초등"?[1,2,3,4,5,6]:[1,2,3]).map(n=>(<option key={n} value={String(n)}>{n}학년</option>))}
+          </select>
+        </div>
       </div>
+      {/* 레벨 / 학교 — 다중선택 */}
       <div style={{marginBottom:14}}>
         <div style={S.label}>레벨 / 학교 <span style={{color:T.danger}}>*</span></div>
-        <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=genLevelCat===c.key;return(<button key={c.key} onClick={()=>{setGenLevelCat(c.key);setGenLevel("");setGenLevelCustom("");}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
-        {genLevelCat!=="etc"?(<div style={S.cw}>{(LV_CATS.find(c=>c.key===genLevelCat)?.opts||[]).map(o=>{const a=genLevel===o;return(<button key={o} onClick={()=>setGenLevel(genLevel===o?"":o)} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{o}</button>);})}</div>
-        ):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={genLevelCustom} onChange={e=>{setGenLevelCustom(e.target.value);setGenLevel(e.target.value);}}/>)}
+        <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=genLevelCat===c.key;return(<button key={c.key} onClick={()=>{setGenLevelCat(c.key);setGenLevel("");setGenLevelCustom("");setGenLevelMulti([]);}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
+        {(genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")?(<>
+          <div style={S.cw}>{(LV_CATS.find(c=>c.key===genLevelCat)?.opts||[]).map(o=>{const a=genLevelMulti.includes(o);return(<button key={o} onClick={()=>setGenLevelMulti(p=>p.includes(o)?p.filter(x=>x!==o):[...p,o])} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{a?"☑ ":"☐ "}{o}</button>);})}</div>
+          {genLevelMulti.length>0&&(<div style={{marginTop:6}}>
+            <button onClick={()=>setGenLevelMulti([])} style={{padding:"4px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>초기화</button>
+          </div>)}
+          {genLevelMulti.length>=2&&(<div style={{marginTop:8,padding:"8px 10px",background:"#FFF8E6",border:`1px solid ${T.goldMuted||"#E8D8A0"}`,borderRadius:8,fontSize:11,color:T.textSub,lineHeight:1.5}}>
+            ⚠ <b>{genLevelMulti.length}개를 하나의 반으로 등록</b>합니다. 반드시 <b>같은 시험지</b>를 공유할 때만 사용하세요.
+          </div>)}
+        </>):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={genLevelCustom} onChange={e=>{setGenLevelCustom(e.target.value);setGenLevel(e.target.value);}}/>)}
       </div>
-      {genSubject&&genGrade&&(genLevel||genLevelCustom)&&(<div style={S.addRow}>
-        <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{genSubject} {genGrade} {genLevelCat==="etc"?genLevelCustom:genLevel}반</div>
+      {genSubject&&genGrade&&(((genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")&&genLevelMulti.length>0)||(genLevelCat==="etc"&&genLevelCustom))&&(<div style={S.addRow}>
+        <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{genSubject} {genGrade} {(genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")?genLevelMulti.join("+"):genLevelCustom}반</div>
         <button onClick={addGenClass} style={S.addBtn}>+ 반 추가</button>
       </div>)}
       {genClasses.length>0&&(<div style={{marginTop:12,marginBottom:14}}>
         <div style={{fontSize:12,fontWeight:600,color:T.textMuted,marginBottom:6}}>추가된 반 ({genClasses.length}개)</div>
         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{genClasses.map((c,i)=>(<div key={i} style={S.tag}><span>{c.name}</span><button onClick={()=>setGenClasses(p=>p.filter((_,j)=>j!==i))} style={S.tagX}>×</button></div>))}</div>
       </div>)}
+      {/* ★ 시험 구분 (이론편/실전편/혼합) — Claude에게 문제 유형 지시 */}
+      <div style={{marginBottom:14,padding:"12px 14px",border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📚 시험 구분 (선택) — Claude에게 문제 유형 지시</div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {GEN_SET_TYPES.map(st=>{
+            const a=genSetType===st;
+            const emj=st==="이론편"?"📘":st==="실전편"?"📕":"📗";
+            const desc=st==="이론편"?"개념·기본 확인 위주":st==="실전편"?"실전 문제 풀이 중심":"이론+실전 섞음";
+            return(<button key={st} onClick={()=>setGenSetType(genSetType===st?"":st)} style={{padding:"10px 14px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit",display:"flex",flexDirection:"column",alignItems:"flex-start",gap:2,minWidth:110}}>
+              <span>{emj} {st}</span><span style={{fontSize:10,fontWeight:400,opacity:.8}}>{desc}</span>
+            </button>);
+          })}
+        </div>
+        <div style={{fontSize:11,color:T.textMuted,marginTop:6,lineHeight:1.5}}>선택하면 Claude가 해당 유형에 맞춰 문제를 생성합니다. 비워두면 기본(혼합) 유형.</div>
+      </div>
       <div style={S.label}>메모 (선택)</div>
       <input style={S.inp} placeholder="추가 요청사항 (예: 서술형 포함)" value={memo}
         onChange={e=>setMemo(e.target.value)}/>
@@ -1380,9 +1438,7 @@ export default function App(){
   const[examType,setExamType]=useState(_ls.lastExamType||""); // 직전 시험 종류 기억
   const[examDate,setExamDate]=useState(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;});
   const[examTime,setExamTime]=useState(()=>{const d=new Date();return`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;});
-  // ★ 시험 구분 (이론편/실전편/혼합) — 구 "1차/2차/3차" 대체
-  const[setType,setSetTypeState]=useState(_ls.lastSetType||""); // 직전 선택값 기억
-  const SET_TYPES=["이론편","실전편","혼합"];
+  // ★ (레거시 호환용) setType 은 더 이상 사용하지 않음. 차수는 rounds[i].label 로 관리.
   // 직접입력 모드
   const[totalQ,setTotalQ]=useState(50);const[customQ,setCustomQ]=useState("");
   const qc=customQ?parseInt(customQ)||50:totalQ;
@@ -1433,11 +1489,11 @@ export default function App(){
     //   - 1개 선택 시: 기존과 동일
     //   - 기타/레벨 카테고리: tl 또는 tcl 그대로 사용
     let lv, displayName;
-    if((tlCat==="middle"||tlCat==="high")&&tlMulti.length>0){
+    if((tlCat==="middle"||tlCat==="high"||tlCat==="level")&&tlMulti.length>0){
       lv=tlMulti.join(",");
       displayName=tlMulti.join("+");
     }else{
-      const single=tlCat==="etc"?tcl:tl;
+      const single=tlCat==="etc"?tcl:"";
       if(!single)return alert("레벨/학교를 선택하세요.");
       lv=single;displayName=single;
     }
@@ -1500,7 +1556,7 @@ export default function App(){
       // 1) 정답 데이터 시트 저장 (반별) — 시험 구분(setType) 포함
       for(const cls of classes){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:setType||"",round:setType||"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum})});
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:"",round:"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum})});
       }
       // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 반별 개별 업로드
       if(examFiles.length>0||answerFiles.length>0){
@@ -1508,7 +1564,7 @@ export default function App(){
         const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         for(const cls of classes){
           await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:setType||"",round:setType||"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
+            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:"",round:"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
         }
       }
       setDone(true);setScreen("done");
@@ -1544,7 +1600,7 @@ export default function App(){
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           for(const cls of classes){
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:setType||"",round:setType||rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
           }
         }
         setDone(true);setScreen("done");
@@ -1571,7 +1627,7 @@ export default function App(){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:setType||"",round:setType||rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
           }
         }
         setDone(true);setScreen("done");
@@ -1680,26 +1736,49 @@ export default function App(){
         <div style={S.card}>
           <div style={S.secLabel}>시험 대상 반 추가</div>
           <Chip label="과목" req opts={SUBJECTS} val={ts} onChange={setTs}/>
-          <Chip label="학년" req opts={GRADES} val={tg} onChange={setTg}/>
+          {/* 학년 — 2단 드롭다운 (학교급 + 학년) */}
+          <div style={{marginBottom:14}}>
+            <div style={S.label}>학년 <span style={{color:T.danger}}>*</span></div>
+            <div style={{display:"flex",gap:8}}>
+              <select style={{...S.inp,flex:"1 1 50%",cursor:"pointer"}} value={(tg.match(/^(초|중|고|초등)/)||[""])[0]||""} onChange={e=>{
+                const sch=e.target.value;
+                if(!sch){setTg("");return;}
+                if(sch==="초등"){setTg("초등");return;} // 초등 전체
+                // 학년 유지 시도, 아니면 리셋
+                const curNum=(tg.match(/\d+/)||[""])[0];
+                const maxN=sch==="초"?6:3;
+                setTg(curNum&&parseInt(curNum)<=maxN?sch+curNum:"");
+              }}>
+                <option value="">학교급 선택</option>
+                <option value="초">초등학교</option>
+                <option value="초등">초등 (학년 무관)</option>
+                <option value="중">중학교</option>
+                <option value="고">고등학교</option>
+              </select>
+              <select style={{...S.inp,flex:"1 1 50%",cursor:"pointer"}} value={(tg.match(/\d+/)||[""])[0]||""} disabled={!tg||tg==="초등"} onChange={e=>{
+                const n=e.target.value;
+                const sch=(tg.match(/^(초|중|고)/)||[""])[0];
+                if(!sch)return;
+                setTg(n?sch+n:"");
+              }}>
+                <option value="">학년 선택</option>
+                {(tg.startsWith("초")&&tg!=="초등"?[1,2,3,4,5,6]:[1,2,3]).map(n=>(<option key={n} value={String(n)}>{n}학년</option>))}
+              </select>
+            </div>
+          </div>
           <div style={{marginBottom:14}}>
             <div style={S.label}>레벨 / 학교 <span style={{color:T.danger}}>*</span></div>
             <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=tlCat===c.key;return(<button key={c.key} onClick={()=>{setTlCat(c.key);setTl("");setTcl("");setTlMulti([]);}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
-            {(tlCat==="middle"||tlCat==="high")?(<>
-              {/* 프리셋 (같은 시험지를 공유하는 학교 묶음) */}
-              {LV_PRESETS.filter(p=>p.cat===tlCat).length>0&&(<div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:6}}>
-                <span style={{fontSize:11,color:T.textMuted,alignSelf:"center",marginRight:2}}>빠른 선택:</span>
-                {LV_PRESETS.filter(p=>p.cat===tlCat).map(p=>(
-                  <button key={p.key} onClick={()=>setTlMulti(p.opts.slice())} style={{padding:"4px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:`1px dashed ${T.goldDark}`,background:T.goldPale||"#FFF8E6",color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>{p.label}</button>
-                ))}
-                {tlMulti.length>0&&(<button onClick={()=>setTlMulti([])} style={{padding:"4px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>초기화</button>)}
-              </div>)}
-              {/* 체크박스형 다중선택 (학교는 같은 시험지를 공유할 때 여러 개 선택) */}
+            {(tlCat==="middle"||tlCat==="high"||tlCat==="level")?(<>
+              {/* 체크박스형 다중선택 — 같은 시험지를 공유할 때 여러 개 선택 */}
               <div style={S.cw}>{(LV_CATS.find(c=>c.key===tlCat)?.opts||[]).map(o=>{const a=tlMulti.includes(o);return(<button key={o} onClick={()=>setTlMulti(p=>p.includes(o)?p.filter(x=>x!==o):[...p,o])} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{a?"☑ ":"☐ "}{o}</button>);})}</div>
-              {tlMulti.length>=2&&(<div style={{marginTop:8,padding:"8px 10px",background:"#FFF8E6",border:`1px solid ${T.goldMuted||"#E8D8A0"}`,borderRadius:8,fontSize:11,color:T.textSub,lineHeight:1.5}}>
-                ⚠ <b>{tlMulti.length}개 학교를 하나의 반으로 등록</b>합니다. 반드시 <b>같은 시험지</b>를 공유할 때만 사용하세요.<br/>시험지가 다르면 학교를 <b>1개씩 따로</b> 등록해주세요.
+              {tlMulti.length>0&&(<div style={{marginTop:6,display:"flex",gap:5}}>
+                <button onClick={()=>setTlMulti([])} style={{padding:"4px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>초기화</button>
               </div>)}
-            </>):tlCat==="level"?(<div style={S.cw}>{(LV_CATS.find(c=>c.key===tlCat)?.opts||[]).map(o=>{const a=tl===o;return(<button key={o} onClick={()=>{setTl(tl===o?"":o);setTcl("");}} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{o}</button>);})}</div>
-            ):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={tcl} onChange={e=>{setTcl(e.target.value);setTl(e.target.value);}}/>)}
+              {tlMulti.length>=2&&(<div style={{marginTop:8,padding:"8px 10px",background:"#FFF8E6",border:`1px solid ${T.goldMuted||"#E8D8A0"}`,borderRadius:8,fontSize:11,color:T.textSub,lineHeight:1.5}}>
+                ⚠ <b>{tlMulti.length}개를 하나의 반으로 등록</b>합니다. 반드시 <b>같은 시험지</b>를 공유할 때만 사용하세요.<br/>시험지가 다르면 <b>1개씩 따로</b> 등록해주세요.
+              </div>)}
+            </>):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={tcl} onChange={e=>{setTcl(e.target.value);setTl(e.target.value);}}/>)}
           </div>
           {/* 인원 입력 (필수) */}
           <div style={{marginBottom:14}}>
@@ -1710,8 +1789,8 @@ export default function App(){
             </div>
             <div style={{fontSize:11,color:T.textMuted,marginTop:4,lineHeight:1.4}}>⚠️ 인원을 입력해야 실장님이 시험지를 몇 장 프린트할지 알 수 있습니다.</div>
           </div>
-          {ts&&tg&&(((tlCat==="middle"||tlCat==="high")&&tlMulti.length>0)||(tlCat==="level"&&tl)||(tlCat==="etc"&&tcl))&&(<div style={S.addRow}>
-            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {(tlCat==="middle"||tlCat==="high")?tlMulti.join("+"):(tlCat==="etc"?tcl:tl)}반{tcount?` · ${tcount}명`:" · (인원 미입력)"}</div>
+          {ts&&tg&&(((tlCat==="middle"||tlCat==="high"||tlCat==="level")&&tlMulti.length>0)||(tlCat==="etc"&&tcl))&&(<div style={S.addRow}>
+            <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{ts} {tg} {(tlCat==="middle"||tlCat==="high"||tlCat==="level")?tlMulti.join("+"):tcl}반{tcount?` · ${tcount}명`:" · (인원 미입력)"}</div>
             <button onClick={addClass} style={{...S.addBtn,opacity:!tcount?.5:1,cursor:!tcount?"not-allowed":"pointer"}} disabled={!tcount}>+ 반 추가</button>
           </div>)}
           {classes.length>0&&(<div style={{marginTop:12}}>
@@ -1842,53 +1921,50 @@ export default function App(){
               );})}
             </div>
           </div>)}
-          {/* ── 시험 구분 (이론편 / 실전편 / 혼합) — 1개만 선택 ── */}
-          <div style={{marginBottom:12,padding:"12px 14px",border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-            <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📚 시험 구분</div>
-            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              {SET_TYPES.map(st=>{
-                const a=setType===st;
-                const emj=st==="이론편"?"📘":st==="실전편"?"📕":"📗";
-                return(<button key={st} onClick={()=>{setSetTypeState(st);lsSet({lastSetType:st});}} style={{padding:"8px 14px",fontSize:13,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{emj} {st}</button>);
-              })}
-              {setType&&<button onClick={()=>{setSetTypeState("");lsSet({lastSetType:""});}} style={{padding:"8px 10px",fontSize:11,borderRadius:8,border:`1px solid ${T.border}`,background:T.white,color:T.textMuted,cursor:"pointer",fontFamily:"inherit"}}>✕ 해제</button>}
-            </div>
-            <div style={{fontSize:11,color:T.textMuted,marginTop:6,lineHeight:1.5}}>시험지 내용에 맞는 구분을 선택하세요. 학생앱 시험 카드에 뱃지로 표시됩니다.</div>
-          </div>
-          {/* ── 같은 시험지 모드 (또는 반 1개) ── */}
+          {/* ── 같은 시험지 모드 (또는 반 1개) ── 차수 여러 개 지원 ── */}
           {(sameExam||classes.length<=1)&&(<>
             <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
-              💡 시험지·정답지 파일을 올려주세요.
+              💡 시험지·정답지 파일을 올려주세요. 차수가 여러 개면 아래 <b>+ 차수 추가</b>로 늘릴 수 있어요.
             </div>
             {rounds.map((rd,ri)=>(
-              <div key={ri} style={{padding:"10px 12px",marginBottom:10,border:`2px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-                <FileUploadMulti label={`시험지${setType?" ("+setType+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
-                <FileUploadMulti label={`정답지${setType?" ("+setType+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+              <div key={ri} style={{padding:"10px 12px",marginBottom:10,border:`2px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale,position:"relative"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                  <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차, 중간고사 등) — 선택`} value={rd.label||""} onChange={e=>updateRound(ri,"label",e.target.value)}/>
+                  {rounds.length>1&&(<button onClick={()=>setRounds(p=>p.filter((_,j)=>j!==ri))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
+                </div>
+                <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
               </div>
             ))}
+            <button onClick={()=>setRounds(p=>[...p,{label:"",examFiles:[],answerFiles:[]}])} style={{width:"100%",padding:"10px 14px",marginBottom:10,fontSize:13,fontWeight:700,borderRadius:10,border:`2px dashed ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>+ 차수 추가</button>
           </>)}
-          {/* ── 반별 다른 시험지 모드 ── */}
+          {/* ── 반별 다른 시험지 모드 ── 각 반별로 차수 여러 개 지원 ── */}
           {!sameExam&&classes.length>=2&&(<>
             <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:12,padding:"10px 12px",background:T.goldPale,borderRadius:8,border:`1px solid ${T.goldMuted}`}}>
-              💡 각 반별로 시험지·정답지를 따로 올려주세요.
+              💡 각 반별로 시험지·정답지를 따로 올려주세요. 반별로 차수도 여러 개 추가할 수 있어요.
             </div>
             {classes.map((cls,ci)=>(
               <div key={ci} style={{marginBottom:14,border:`2px solid ${T.blue}40`,borderRadius:12,overflow:"hidden"}}>
-                <div style={{padding:"10px 14px",background:T.blueLight,fontWeight:700,fontSize:13,color:T.blue}}>{cls.name}{setType?` · ${setType}`:""}</div>
+                <div style={{padding:"10px 14px",background:T.blueLight,fontWeight:700,fontSize:13,color:T.blue}}>{cls.name}</div>
                 <div style={{padding:"10px 12px"}}>
                   {(classRounds[cls.name]||[]).map((rd,ri)=>(
                     <div key={ri} style={{padding:"10px 12px",marginBottom:8,border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-                      <FileUploadMulti label={`시험지`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
-                      <FileUploadMulti label={`정답지`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                        <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차) — 선택`} value={rd.label||""} onChange={e=>updateClassRound(cls.name,ri,"label",e.target.value)}/>
+                        {(classRounds[cls.name]||[]).length>1&&(<button onClick={()=>setClassRounds(p=>({...p,[cls.name]:(p[cls.name]||[]).filter((_,j)=>j!==ri)}))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
+                      </div>
+                      <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
+                      <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                     </div>
                   ))}
+                  <button onClick={()=>setClassRounds(p=>({...p,[cls.name]:[...(p[cls.name]||[]),{label:"",examFiles:[],answerFiles:[]}]}))} style={{width:"100%",padding:"8px 12px",fontSize:12,fontWeight:700,borderRadius:8,border:`2px dashed ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>+ 차수 추가</button>
                 </div>
               </div>
             ))}
           </>)}
           <div style={{padding:"12px 14px",borderRadius:10,background:T.blueLight,border:`1px solid ${T.blue}30`,marginTop:8}}>
             <div style={{fontSize:12,fontWeight:700,color:T.blue,marginBottom:4}}>💡 이렇게 처리됩니다</div>
-            <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 학생 앱에서 시험 선택 시 <b>{setType||"시험 구분"}</b> 뱃지가 표시됩니다.</div>
+            <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 학생 앱에서 시험 선택 시 <b>차수</b>가 표시됩니다.</div>
           </div>
         </div>
         {/* 주관식 힌트 입력 */}
