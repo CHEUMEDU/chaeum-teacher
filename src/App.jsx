@@ -1241,11 +1241,15 @@ function ScheduleTab({sheetsUrl, T, S, teacherList}){
 
 /* ═══ 선생님 관리 탭 — 카테고리별(관리자/국어/영어/수학) CRUD ═══ */
 function TeachersTab({sheetsUrl, T, S, onChanged}){
+  // ★ v12.2: 폼 단순화 — 이름만 입력, 과목/슬랙ID/비고 제거
+  // ★ 한글 인코딩 이슈 방지 — 카테고리를 영문 키로 전송 (서버가 한글로 변환)
   const TEACHER_CATS=["관리자","국어","영어","수학","기타"];
+  const CAT_KEY={관리자:"admin",국어:"korean",영어:"english",수학:"math",기타:"other"};
   const [teachers,setTeachers]=useState([]);
   const [loading,setLoading]=useState(false);
+  const [saving,setSaving]=useState(false);
   const [activeCat,setActiveCat]=useState("관리자");
-  const [form,setForm]=useState({rowIndex:0,category:"관리자",name:"",subject:"",slackId:"",memo:""});
+  const [form,setForm]=useState({rowIndex:0,category:"관리자",name:""});
   const load=useCallback(()=>{
     setLoading(true);
     fetch(`${sheetsUrl}?action=list_teachers`)
@@ -1257,38 +1261,55 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
   useEffect(()=>{load();},[load]);
   const save=async()=>{
     if(!form.name.trim())return alert("이름을 입력하세요.");
-    const p=new URLSearchParams({action:"save_teacher",rowIndex:String(form.rowIndex||0),category:form.category,name:form.name.trim(),subject:form.subject.trim(),slackId:form.slackId.trim(),memo:form.memo.trim()});
-    const d=await fetch(`${sheetsUrl}?${p.toString()}`).then(r=>r.json());
-    if(d.result==="ok"){
-      setForm({rowIndex:0,category:form.category,name:"",subject:"",slackId:"",memo:""});
-      load();
-    }else alert("저장 실패: "+(d.message||""));
+    if(saving)return;
+    setSaving(true);
+    try{
+      // ★ POST + JSON body + 영문 카테고리 키 — 한글 인코딩 이슈 완전 회피
+      //   Apps Script doPost 에서 "save_teacher" action 을 라우팅
+      const payload={
+        action:"save_teacher",
+        rowIndex:form.rowIndex||0,
+        categoryKey:CAT_KEY[form.category]||"other",
+        name:form.name.trim()
+      };
+      const d=await fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify(payload)}).then(r=>r.json());
+      if(d.result==="ok"){
+        setForm({rowIndex:0,category:form.category,name:""});
+        load();
+      }else alert("저장 실패: "+(d.message||"알 수 없는 오류"));
+    }catch(err){
+      alert("저장 실패: "+String(err));
+    }finally{setSaving(false);}
   };
-  const edit=(t)=>setForm({rowIndex:t.rowIndex,category:t.category||"기타",name:t.name||"",subject:t.subject||"",slackId:t.slackId||"",memo:t.memo||""});
-  const reset=()=>setForm({rowIndex:0,category:activeCat,name:"",subject:"",slackId:"",memo:""});
+  const edit=(t)=>{
+    const cat=t.category&&TEACHER_CATS.includes(t.category)?t.category:"기타";
+    setForm({rowIndex:t.rowIndex,category:cat,name:t.name||""});
+  };
+  const reset=()=>setForm({rowIndex:0,category:activeCat,name:""});
   const remove=async(t)=>{
     if(!confirm(`[${t.category||"기타"}] ${t.name} 선생님을 삭제하시겠습니까?`))return;
-    const d=await fetch(`${sheetsUrl}?action=delete_teacher&rowIndex=${t.rowIndex}`).then(r=>r.json());
+    // POST 로 통일 (한글 이름 인코딩 이슈 회피)
+    const d=await fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify({action:"delete_teacher",rowIndex:t.rowIndex})}).then(r=>r.json());
     if(d.result==="ok")load();
   };
-  const filtered=teachers.filter(t=>(t.category||t.subject||"기타")===activeCat);
+  const filtered=teachers.filter(t=>(t.category||"기타")===activeCat);
   return(<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"20px 0 12px"}}>
       <div style={{fontSize:36,marginBottom:4}}>👥</div>
       <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>선생님 관리</h1>
-      <p style={{fontSize:13,color:T.textMuted}}>카테고리(관리자/국어/영어/수학)별로 선생님을 추가·수정·삭제</p>
+      <p style={{fontSize:13,color:T.textMuted}}>카테고리(관리자/국어/영어/수학)별로 선생님을 간단히 추가·삭제</p>
     </div>
     {/* 카테고리 탭 */}
     <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
       {TEACHER_CATS.map(c=>{
-        const cnt=teachers.filter(t=>(t.category||t.subject||"기타")===c).length;
+        const cnt=teachers.filter(t=>(t.category||"기타")===c).length;
         return(<button key={c} onClick={()=>{setActiveCat(c);setForm(f=>({...f,category:c}));}} style={{flex:"1 1 80px",padding:"10px 6px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:activeCat===c?T.goldDark:T.white,color:activeCat===c?T.white:T.textSub,boxShadow:activeCat===c?"none":`inset 0 0 0 1.5px ${T.border}`}}>{c} <span style={{opacity:0.7,fontSize:11}}>({cnt})</span></button>);
       })}
     </div>
-    {/* 폼 */}
+    {/* 폼 — 이름만 입력 */}
     <div style={S.card}>
       <div style={S.secLabel}>{form.rowIndex?"선생님 수정":"새 선생님 추가"}</div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 2fr",gap:8,marginBottom:8}}>
         <div>
           <div style={S.label}>카테고리 *</div>
           <select style={S.inp} value={form.category} onChange={e=>setForm({...form,category:e.target.value})}>
@@ -1297,23 +1318,11 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
         </div>
         <div>
           <div style={S.label}>이름 *</div>
-          <input style={S.inp} placeholder="예: 김선생" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/>
-        </div>
-        <div>
-          <div style={S.label}>과목 <span style={{fontSize:11,color:T.textMuted}}>(비워두면 카테고리로)</span></div>
-          <input style={S.inp} placeholder="예: 영어" value={form.subject} onChange={e=>setForm({...form,subject:e.target.value})}/>
-        </div>
-        <div>
-          <div style={S.label}>슬랙 멤버ID</div>
-          <input style={S.inp} placeholder="U0XXXXXX (선택)" value={form.slackId} onChange={e=>setForm({...form,slackId:e.target.value})}/>
-        </div>
-        <div style={{gridColumn:"1 / span 2"}}>
-          <div style={S.label}>비고</div>
-          <input style={S.inp} placeholder="메모 (선택)" value={form.memo} onChange={e=>setForm({...form,memo:e.target.value})}/>
+          <input style={S.inp} placeholder="예: 김원장, 박실장, 김선생" value={form.name} onChange={e=>setForm({...form,name:e.target.value})} onKeyDown={e=>{if(e.key==="Enter")save();}}/>
         </div>
       </div>
       <div style={{display:"flex",gap:8}}>
-        <button onClick={save} style={{...S.btn,flex:1}}>{form.rowIndex?"수정 저장":"추가"}</button>
+        <button onClick={save} disabled={saving} style={{...S.btn,flex:1,opacity:saving?0.5:1}}>{saving?"저장 중…":(form.rowIndex?"수정 저장":"추가")}</button>
         {form.rowIndex>0&&(<button onClick={reset} style={{...S.btn,flex:"0 0 auto",background:T.white,color:T.textSub,boxShadow:`inset 0 0 0 1.5px ${T.border}`}}>취소</button>)}
       </div>
     </div>
@@ -1327,8 +1336,7 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
           {filtered.map(t=>(
             <div key={t.rowIndex} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",background:T.white,borderRadius:8,border:`1px solid ${T.border}`}}>
               <div style={{flex:1}}>
-                <div style={{fontWeight:700,color:T.text}}>{t.name} <span style={{fontSize:11,fontWeight:400,color:T.textMuted}}>· {t.subject||t.category}</span></div>
-                {(t.slackId||t.memo)&&(<div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{t.slackId&&`Slack: ${t.slackId}`}{t.slackId&&t.memo&&" · "}{t.memo}</div>)}
+                <div style={{fontWeight:700,color:T.text}}>{t.name}</div>
               </div>
               <button onClick={()=>edit(t)} style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:T.goldLight||"#F4E9C5",color:T.text}}>수정</button>
               <button onClick={()=>remove(t)} style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",cursor:"pointer",background:"#FBE9E7",color:T.danger||"#C62828"}}>삭제</button>
