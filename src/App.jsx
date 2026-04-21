@@ -839,7 +839,17 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
     <div style={{marginTop:24}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
         <div style={{fontSize:14,fontWeight:700,color:T.text}}>📋 생성 요청 내역</div>
-        <button onClick={loadHistory} style={{fontSize:11,color:T.goldDark,fontWeight:600,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>🔄 새로고침</button>
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={async()=>{
+            try{
+              const r=await fetch(`${sheetsUrl}?action=scan_exam_gen_results`);
+              const d=await r.json();
+              if(d.result==="ok"){alert("✅ Drive 스캔 완료 — 학생앱에서 검색 가능합니다.\n(자동처리로그 시트에서 상세 확인)");loadHistory();}
+              else alert("스캔 실패: "+(d.message||""));
+            }catch(e){alert("스캔 실패: "+String(e));}
+          }} style={{fontSize:11,color:T.accent,fontWeight:700,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>📂 Drive 결과 스캔</button>
+          <button onClick={loadHistory} style={{fontSize:11,color:T.goldDark,fontWeight:600,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>🔄 새로고침</button>
+        </div>
       </div>
       {histLoading?<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>로딩 중…</div>:
        history.length===0?<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>아직 생성 요청이 없습니다</div>:
@@ -1266,14 +1276,20 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
     try{
       // ★ POST + JSON body + 영문 카테고리 키 — 한글 인코딩 이슈 완전 회피
       //   Apps Script doPost 에서 "save_teacher" action 을 라우팅
+      //   v12.4: categoryKey + category(한글) 둘 다 전송 — 구 배포에서도 동작
       const payload={
         action:"save_teacher",
         rowIndex:form.rowIndex||0,
         categoryKey:CAT_KEY[form.category]||"other",
+        category:form.category,  // 한글 카테고리 (backup)
         name:form.name.trim()
       };
       const d=await fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"text/plain;charset=UTF-8"},body:JSON.stringify(payload)}).then(r=>r.json());
       if(d.result==="ok"){
+        // ★ 서버가 반환한 카테고리와 요청한 카테고리가 다르면 경고 (Apps Script 구버전 의심)
+        if(d.category && d.category!==form.category){
+          alert(`⚠️ 카테고리가 '${form.category}' 로 전송됐으나 서버는 '${d.category}' 로 저장했습니다.\nApps Script를 v12.4로 재배포 해주세요.`);
+        }
         setForm({rowIndex:0,category:form.category,name:""});
         load();
       }else alert("저장 실패: "+(d.message||"알 수 없는 오류"));
