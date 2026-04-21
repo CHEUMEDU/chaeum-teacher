@@ -476,6 +476,18 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       else{alert("등록 실패: "+(d.message||""));}
     }catch(e){alert("등록 오류: "+e);}
   };
+  // ★ v14: A세트 ↔ B세트 교체 (백업 세트로 swap)
+  const swapExamSet=async(rowIndex,activeNow)=>{
+    const targetLabel=activeNow==="A"?"B":"A";
+    if(!confirm(`현재 ${activeNow}세트가 학생앱에 노출 중입니다.\n${targetLabel}세트로 교체하시겠습니까?\n\n학생들이 보는 시험 문제가 즉시 바뀝니다.`))return;
+    try{
+      const r=await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"swap_exam_set",rowIndex})});
+      // no-cors라 응답 못 읽음 → 낙관적 처리 + 새로고침
+      alert(`✅ ${targetLabel}세트로 교체 요청을 보냈습니다.\n잠시 후 새로고침하면 바뀐 결과가 보입니다.`);
+      setTimeout(loadHistory,1500);
+    }catch(e){alert("교체 오류: "+e);}
+  };
   // 생성 요청 삭제
   const deleteExamGen=async(rowIndex)=>{
     if(!confirm("이 생성 요청을 삭제하시겠습니까?\n(삭제 후 복구할 수 없습니다)"))return;
@@ -869,13 +881,27 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
                  title="삭제" style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,color:T.textMuted,fontSize:14,lineHeight:"22px",textAlign:"center",cursor:"pointer",padding:0,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
              </div>
            </div>
-           {h.status==="완료"&&<div style={{display:"flex",gap:6,marginTop:6}}>
-             <button onClick={()=>loadPreview(h.rowIndex)} disabled={prevLoading&&prevRow===h.rowIndex}
-               style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>
-               {prevLoading&&prevRow===h.rowIndex?"로딩…":"👁️ 미리보기"}
-             </button>
-             <button onClick={()=>autoRegisterForStudents(h.rowIndex)}
-               style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.accent,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>📱 학생앱 등록</button>
+           {h.status==="완료"&&<div>
+             {/* ★ v14: 활성 세트 뱃지 + B세트 보유 여부 안내 */}
+             {(h.resultFileIdB||h.activeSet)&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:4,fontSize:11}}>
+               <span style={{padding:"2px 8px",borderRadius:10,background:(h.activeSet||"A")==="A"?"#E8F5E9":"#E3F2FD",color:(h.activeSet||"A")==="A"?"#2E7D32":"#1565C0",fontWeight:700}}>
+                 현재 노출: {h.activeSet||"A"}세트
+               </span>
+               {h.resultFileIdB?<span style={{color:T.textMuted}}>· B세트 백업 있음</span>:<span style={{color:T.textMuted}}>· 백업 없음(단일 세트)</span>}
+             </div>}
+             <div style={{display:"flex",gap:6,marginTop:6}}>
+               <button onClick={()=>loadPreview(h.rowIndex)} disabled={prevLoading&&prevRow===h.rowIndex}
+                 style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>
+                 {prevLoading&&prevRow===h.rowIndex?"로딩…":"👁️ 미리보기"}
+               </button>
+               <button onClick={()=>autoRegisterForStudents(h.rowIndex)}
+                 style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.accent,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>📱 학생앱 등록</button>
+               {h.resultFileIdB&&<button onClick={()=>swapExamSet(h.rowIndex,h.activeSet||"A")}
+                 title={`현재 ${h.activeSet||"A"}세트가 노출 중 — ${(h.activeSet||"A")==="A"?"B":"A"}세트로 교체`}
+                 style={{flex:1,padding:"8px",fontSize:12,fontWeight:700,borderRadius:8,border:"none",background:"#FFB300",color:T.white,cursor:"pointer",fontFamily:"inherit"}}>
+                 🔄 {(h.activeSet||"A")==="A"?"B":"A"}세트로 교체
+               </button>}
+             </div>
            </div>}
            {h.status==="생성중"&&<div style={{padding:"6px 10px",borderRadius:8,background:"#FFF3E0",fontSize:12,color:"#E65100",fontWeight:600,textAlign:"center",marginTop:6}}>
              ⏳ Claude가 문제를 만들고 있어요… (약 10분)
