@@ -1341,7 +1341,6 @@ function ScheduleTab({sheetsUrl, T, S, teacherList}){
     </div>
   </div>);
 }
-
 /* ═══ 선생님 관리 탭 — 카테고리별(관리자/국어/영어/수학) CRUD ═══ */
 function TeachersTab({sheetsUrl, T, S, onChanged}){
   // ★ v12.2: 폼 단순화 — 이름만 입력, 과목/슬랙ID/비고 제거
@@ -1500,7 +1499,6 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
     </div>
   </div>);
 }
-
 /* ═══ 오늘의 현황 대시보드 탭 (과목→학년→선생님 계층) ═══
    독립된 상태(dashDate, dashData, schStatus, activeSubj, openFiles)를 내부로 캡슐화.
    App 에서는 teacherList, 파일 프록시 함수들만 props로 전달.
@@ -1525,10 +1523,8 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
       .then(r=>r.json()).then(d3=>{if(d3.result==="ok")setSchStatus(d3);else setSchStatus(null);}).catch(()=>setSchStatus(null));
   }, [dashDate, sheetsUrl]);
   useEffect(()=>{ loadDashboard(); }, [loadDashboard]);
-
   const isDashToday=dashDate===todayIsoStr();
   const dashDateLabel=(()=>{const m=dashDate.match(/(\d{4})-(\d{2})-(\d{2})/);return m?`${parseInt(m[2])}/${parseInt(m[3])}`:"";})();
-
   return(<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1><p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p></div>
     {/* 날짜 선택 + 새로고침 */}
@@ -1733,7 +1729,6 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     })()}
   </div>);
 }
-
 export default function App(){
   // 상단 탭 (등록 / 오늘의 현황)
   const[tab,setTab]=useState("register");
@@ -1770,13 +1765,27 @@ export default function App(){
   //   내부 구조는 하위호환 위해 "rounds" 이름 유지 (GS의 기존 upload_exam 플로우와 호환).
   //   label 은 빈 문자열로 두고 저장 시 최상위 setType 값이 사용됨.
   const[rounds,setRounds]=useState([
-    {label:"",examFiles:[],answerFiles:[]},
+    {label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30},
   ]);
-  const updateRound=(i,key,val)=>setRounds(p=>{const n=[...p];n[i]={...n[i],[key]:val};return n;});
+  const updateRound=(i,key,val)=>setRounds(p=>{
+    const n=[...p];n[i]={...n[i],[key]:val};
+    // ★ v17: totalQ/startNum/endNum 자동 동기화 (startNum + totalQ - 1 = endNum)
+    if(key==="totalQ"){const t=Math.max(1,parseInt(val)||1);const s=Math.max(1,parseInt(n[i].startNum)||1);n[i].totalQ=t;n[i].endNum=s+t-1;}
+    if(key==="startNum"){const s=Math.max(1,parseInt(val)||1);const t=Math.max(1,parseInt(n[i].totalQ)||1);n[i].startNum=s;n[i].endNum=s+t-1;}
+    if(key==="endNum"){const e=Math.max(1,parseInt(val)||1);const s=Math.max(1,parseInt(n[i].startNum)||1);n[i].endNum=Math.max(s,e);n[i].totalQ=n[i].endNum-s+1;}
+    return n;
+  });
   // ★ 반별 업로드 그룹 (다른 시험지일 때)
   const[classRounds,setClassRounds]=useState({});
-  const initClassRounds=(clsList)=>{const m={};clsList.forEach(c=>{if(!m[c.name])m[c.name]=[{label:"",examFiles:[],answerFiles:[]}];});setClassRounds(m);};
-  const updateClassRound=(clsName,i,key,val)=>setClassRounds(p=>{const arr=[...(p[clsName]||[])];arr[i]={...arr[i],[key]:val};return{...p,[clsName]:arr};});
+  const initClassRounds=(clsList)=>{const m={};clsList.forEach(c=>{if(!m[c.name])m[c.name]=[{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}];});setClassRounds(m);};
+  const updateClassRound=(clsName,i,key,val)=>setClassRounds(p=>{
+    const arr=[...(p[clsName]||[])];arr[i]={...arr[i],[key]:val};
+    // ★ v17: totalQ/startNum/endNum 자동 동기화 (rounds와 동일 로직)
+    if(key==="totalQ"){const t=Math.max(1,parseInt(val)||1);const s=Math.max(1,parseInt(arr[i].startNum)||1);arr[i].totalQ=t;arr[i].endNum=s+t-1;}
+    if(key==="startNum"){const s=Math.max(1,parseInt(val)||1);const t=Math.max(1,parseInt(arr[i].totalQ)||1);arr[i].startNum=s;arr[i].endNum=s+t-1;}
+    if(key==="endNum"){const e=Math.max(1,parseInt(val)||1);const s=Math.max(1,parseInt(arr[i].startNum)||1);arr[i].endNum=Math.max(s,e);arr[i].totalQ=arr[i].endNum-s+1;}
+    return{...p,[clsName]:arr};
+  });
   const[memo,setMemo]=useState("");
   // 주관식 힌트 (업로드 모드)
   const[subjMode,setSubjMode]=useState("none"); // none | mixed | all
@@ -1828,7 +1837,7 @@ export default function App(){
     }
     const newClasses=[...classes,{subject:ts,grade:tg,level:lv,name,count:cnt}];
     setClasses(newClasses);
-    setClassRounds(p=>({...p,[name]:[{label:"",examFiles:[],answerFiles:[]}]}));
+    setClassRounds(p=>({...p,[name]:[{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]}));
     setTl("");setTcl("");setTcount("");setTlMulti([]);
   };
   // 시험정보 확인 → 모드 선택
@@ -1918,7 +1927,7 @@ export default function App(){
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           for(const cls of classes){
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:parseInt(rd.totalQ)||30,startNumber:parseInt(rd.startNum)||1,endNumber:parseInt(rd.endNum)||30})});
           }
         }
         setDone(true);setScreen("done");
@@ -1945,7 +1954,7 @@ export default function App(){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:parseInt(rd.totalQ)||30,startNumber:parseInt(rd.startNum)||1,endNumber:parseInt(rd.endNum)||30})});
           }
         }
         setDone(true);setScreen("done");
@@ -2003,7 +2012,7 @@ export default function App(){
     }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[]}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
   return(
     <div style={S.app} className="app-shell">
@@ -2262,11 +2271,32 @@ export default function App(){
                   <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차, 중간고사 등) — 선택`} value={rd.label||""} onChange={e=>updateRound(ri,"label",e.target.value)}/>
                   {rounds.length>1&&(<button onClick={()=>setRounds(p=>p.filter((_,j)=>j!==ri))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                 </div>
+                {/* ★ v17: 전체 문항수 / 시작 번호 / 끝 번호 — Claude 분석 정확도용 */}
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:8}}>
+                  <div>
+                    <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:3}}>전체 문항수</div>
+                    <input type="number" min="1" value={rd.totalQ||30} onChange={e=>updateRound(ri,"totalQ",e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border}`,fontSize:13,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:3}}>시작 번호</div>
+                    <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateRound(ri,"startNum",e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border}`,fontSize:13,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:3}}>끝 번호</div>
+                    <input type="number" min="1" value={rd.endNum||30} onChange={e=>updateRound(ri,"endNum",e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border}`,fontSize:13,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                  </div>
+                </div>
+                <div style={{fontSize:10,color:((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?T.accent:T.danger,fontWeight:600,lineHeight:1.4,marginBottom:8}}>
+                  {((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?
+                    `✓ ${rd.startNum||1}번 ~ ${rd.endNum||30}번 · 총 ${rd.totalQ||30}문항`:
+                    `⚠ 끝번호(${rd.endNum||0}) - 시작번호(${rd.startNum||1}) + 1 = ${(parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1} ≠ 문항수(${rd.totalQ||0})`}
+                  {(parseInt(rd.startNum)||1)>1&&<span style={{color:T.textMuted,fontWeight:500,marginLeft:6}}>💡 다른 문제집/모의고사에서 발췌한 경우 시작번호를 수정하세요</span>}
+                </div>
                 <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                 <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
               </div>
             ))}
-            <button onClick={()=>setRounds(p=>[...p,{label:"",examFiles:[],answerFiles:[]}])} style={{width:"100%",padding:"10px 14px",marginBottom:10,fontSize:13,fontWeight:700,borderRadius:10,border:`2px dashed ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>+ 차수 추가</button>
+            <button onClick={()=>setRounds(p=>[...p,{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}])} style={{width:"100%",padding:"10px 14px",marginBottom:10,fontSize:13,fontWeight:700,borderRadius:10,border:`2px dashed ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>+ 차수 추가</button>
           </>)}
           {/* ── 반별 다른 시험지 모드 ── 각 반별로 차수 여러 개 지원 ── */}
           {!sameExam&&classes.length>=2&&(<>
@@ -2283,11 +2313,31 @@ export default function App(){
                         <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차) — 선택`} value={rd.label||""} onChange={e=>updateClassRound(cls.name,ri,"label",e.target.value)}/>
                         {(classRounds[cls.name]||[]).length>1&&(<button onClick={()=>setClassRounds(p=>({...p,[cls.name]:(p[cls.name]||[]).filter((_,j)=>j!==ri)}))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                       </div>
+                      {/* ★ v17: 전체 문항수 / 시작 번호 / 끝 번호 — Claude 분석 정확도용 */}
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:6}}>
+                        <div>
+                          <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:2}}>전체 문항수</div>
+                          <input type="number" min="1" value={rd.totalQ||30} onChange={e=>updateClassRound(cls.name,ri,"totalQ",e.target.value)} style={{width:"100%",padding:"5px 6px",borderRadius:5,border:`1px solid ${T.border}`,fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                        </div>
+                        <div>
+                          <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:2}}>시작 번호</div>
+                          <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateClassRound(cls.name,ri,"startNum",e.target.value)} style={{width:"100%",padding:"5px 6px",borderRadius:5,border:`1px solid ${T.border}`,fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                        </div>
+                        <div>
+                          <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:2}}>끝 번호</div>
+                          <input type="number" min="1" value={rd.endNum||30} onChange={e=>updateClassRound(cls.name,ri,"endNum",e.target.value)} style={{width:"100%",padding:"5px 6px",borderRadius:5,border:`1px solid ${T.border}`,fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                        </div>
+                      </div>
+                      <div style={{fontSize:10,color:((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?T.accent:T.danger,fontWeight:600,lineHeight:1.4,marginBottom:6}}>
+                        {((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?
+                          `✓ ${rd.startNum||1}~${rd.endNum||30}번 (총 ${rd.totalQ||30}문항)`:
+                          `⚠ 끝-시작+1=${(parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1} ≠ 문항수(${rd.totalQ||0})`}
+                      </div>
                       <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                       <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                     </div>
                   ))}
-                  <button onClick={()=>setClassRounds(p=>({...p,[cls.name]:[...(p[cls.name]||[]),{label:"",examFiles:[],answerFiles:[]}]}))} style={{width:"100%",padding:"8px 12px",fontSize:12,fontWeight:700,borderRadius:8,border:`2px dashed ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>+ 차수 추가</button>
+                  <button onClick={()=>setClassRounds(p=>({...p,[cls.name]:[...(p[cls.name]||[]),{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]}))} style={{width:"100%",padding:"8px 12px",fontSize:12,fontWeight:700,borderRadius:8,border:`2px dashed ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>+ 차수 추가</button>
                 </div>
               </div>
             ))}
