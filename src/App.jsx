@@ -234,6 +234,9 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   const[mcRatio,setMcRatio]=useState(100); // 객관식 비율 (0~100), 기본 100%
   const[customQCount,setCustomQCount]=useState(""); // 직접입력 문제수
   const[memo,setMemo]=useState("");
+  // ★ v2: 시험 날짜/시간 (문제 생성 → 구글드라이브 폴더명에 사용)
+  const[examDate,setExamDate]=useState(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;});
+  const[examTime,setExamTime]=useState("19:00");
   const[sending,setSending]=useState(false);
   const[sentOk,setSentOk]=useState(false);
   // 교재 목록 (서버에서 동적 로딩)
@@ -365,6 +368,8 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
         targetClass:genClasses.map(c=>c.name).join(", "),
         teacher:targetTeacher,
         setType:genSetType||"",   // ★ 이론편 / 실전편 / 혼합 (선택)
+        examDate,                 // ★ v2: 시험 날짜 (YYYY-MM-DD)
+        examTime,                 // ★ v2: 시험 시간 (HH:MM)
         memo,
       };
       await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -831,6 +836,21 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           })}
         </div>
         <div style={{fontSize:11,color:T.textMuted,marginTop:6,lineHeight:1.5}}>선택하면 Claude가 해당 유형에 맞춰 문제를 생성합니다. 비워두면 기본(혼합) 유형.</div>
+      </div>
+      {/* ★ v2: 시험 날짜/시간 */}
+      <div style={{marginBottom:14,padding:"12px 14px",border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
+        <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📅 시험 날짜 / 시간</div>
+        <div style={{display:"flex",gap:8}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>시험 날짜</div>
+            <input type="date" style={{...S.inp,width:"100%"}} value={examDate} onChange={e=>setExamDate(e.target.value)}/>
+          </div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>시험 시간</div>
+            <input type="time" style={{...S.inp,width:"100%"}} value={examTime} onChange={e=>setExamTime(e.target.value)}/>
+          </div>
+        </div>
+        <div style={{fontSize:11,color:T.textMuted,marginTop:6,lineHeight:1.5}}>선택한 날짜 폴더 아래 선생님 폴더에 문제가 저장됩니다. (예: 2026.04.24 / 김선생 / …)</div>
       </div>
       <div style={S.label}>메모 (선택)</div>
       <input style={S.inp} placeholder="추가 요청사항 (예: 서술형 포함)" value={memo}
