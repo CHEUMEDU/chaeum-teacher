@@ -1928,6 +1928,236 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
    독립된 상태(dashDate, dashData, schStatus, activeSubj, openFiles)를 내부로 캡슐화.
    App 에서는 teacherList, 파일 프록시 함수들만 props로 전달.
    */
+/* ═══ [v21.0] AI 답지 검수 — 모달 ═══ */
+function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
+  // 모델별 답안을 한 곳에 모아서 비교 + 선생님 수정 + 확정
+  const totalQ = parseInt(item.totalQ||0,10);
+  const mr = item.modelResults || {};
+  const ga = (mr.gemini && mr.gemini.answers) || {};
+  const pa = (mr.gpt && mr.gpt.answers) || {};
+  const ca = (mr.claude && mr.claude.answers) || {};
+  const types = item.types || {};
+  // 초기 정답: 만장일치 문항은 자동, 불일치 문항은 빈칸
+  const initial = useMemo(()=>{
+    const out = {};
+    for(let q=1;q<=totalQ;q++){
+      const k=String(q);
+      const g=String(ga[k]||"").trim();
+      const p=String(pa[k]||"").trim();
+      const c=String(ca[k]||"").trim();
+      // 정규화 비교
+      const norm = s=>String(s||"").replace(/[①②③④⑤]/g,m=>({"①":"1","②":"2","③":"3","④":"4","⑤":"5"})[m]).trim();
+      if(norm(g) && norm(g)===norm(p) && norm(p)===norm(c)){
+        out[k]=norm(g);
+      } else {
+        out[k]="";
+      }
+    }
+    return out;
+  },[totalQ, JSON.stringify(ga), JSON.stringify(pa), JSON.stringify(ca)]);
+  const [finalAns, setFinalAns] = useState(initial);
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfErr, setPdfErr] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  useEffect(()=>{
+    if(!item.folderId){setPdfErr("폴더ID 없음 (직접 입력 모드)");return;}
+    setPdfLoading(true); setPdfErr("");
+    fetch(`${sheetsUrl}?action=get_review_pdf&folderId=${encodeURIComponent(item.folderId)}`)
+      .then(r=>r.json()).then(d=>{
+        if(d.result==="success") setPdfUrl(d.previewUrl||"");
+        else setPdfErr(d.message||"답지 미리보기 실패");
+      }).catch(()=>setPdfErr("네트워크 오류")).finally(()=>setPdfLoading(false));
+  },[item.folderId, sheetsUrl]);
+  const setQ = (q,v)=>setFinalAns(p=>({...p,[String(q)]:v}));
+  const filledCount = Object.values(finalAns).filter(v=>String(v||"").trim()!=="").length;
+  const blanks = [];
+  for(let q=1;q<=totalQ;q++){if(!String(finalAns[String(q)]||"").trim())blanks.push(q);}
+  const submit = async ()=>{
+    if(blanks.length>0){
+      if(!confirm(`아직 ${blanks.length}개 문항이 비어있습니다.\n비어있는 문항: ${blanks.slice(0,10).join(", ")}${blanks.length>10?"...":""}\n\n그래도 확정할까요?`))return;
+    }
+    setSubmitting(true);
+    try{
+      const res = await fetch(sheetsUrl,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain;charset=utf-8"},
+        body: JSON.stringify({
+          action:"confirm_review",
+          rowIndex: item.rowIndex,
+          finalAnswers: finalAns,
+          confirmedBy: item.teacher||""
+        })
+      });
+      const d = await res.json();
+      if(d.result==="success"){
+        alert("✅ 검수 확정 완료. 정답목록에 저장되었습니다.");
+        onConfirmed && onConfirmed(item.rowIndex);
+        onClose();
+      } else {
+        alert("저장 실패: "+(d.message||""));
+      }
+    }catch(e){
+      alert("네트워크 오류: "+String(e));
+    }finally{setSubmitting(false);}
+  };
+  // 표시할 문항: 불일치만 보거나 전체 보기
+  const mismatchSet = new Set((item.mismatches||[]).map(m=>m.q));
+  const visibleQs = [];
+  for(let q=1;q<=totalQ;q++){
+    if(showAll || mismatchSet.has(q)) visibleQs.push(q);
+  }
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9999,display:"flex",alignItems:"stretch",justifyContent:"center",padding:0}} onClick={onClose}>
+      <div style={{background:T.white,width:"100%",maxWidth:1400,height:"100vh",overflow:"hidden",display:"flex",flexDirection:"column"}} onClick={e=>e.stopPropagation()}>
+        {/* 헤더 */}
+        <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.goldPale}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:800,color:T.text}}>🔍 AI 검수 — {item.subject} {item.grade} {item.level} ({item.examType})</div>
+            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>👨‍🏫 {item.teacher||"-"} · 📅 {item.date} · 📝 {totalQ}문제 · ❌ 불일치 {item.mismatchCount||0}개</div>
+          </div>
+          <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+        </div>
+        {/* 본문: 좌측 답지 PDF + 우측 답안 비교 */}
+        <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+          {/* 좌측: 답지 PDF */}
+          <div style={{flex:"1 1 50%",borderRight:`1px solid ${T.border}`,display:"flex",flexDirection:"column",background:T.bg}}>
+            <div style={{padding:"8px 12px",fontSize:12,fontWeight:700,color:T.textSub,borderBottom:`1px solid ${T.border}`,background:T.white}}>📄 답지 PDF</div>
+            <div style={{flex:1,position:"relative"}}>
+              {pdfLoading && <div style={{padding:24,textAlign:"center",color:T.textMuted}}>답지 불러오는 중...</div>}
+              {pdfErr && <div style={{padding:24,color:T.danger}}>{pdfErr}</div>}
+              {pdfUrl && (
+                <iframe src={pdfUrl} style={{width:"100%",height:"100%",border:"none"}} title="답지 미리보기"/>
+              )}
+            </div>
+          </div>
+          {/* 우측: 답안 비교 + 수정 */}
+          <div style={{flex:"1 1 50%",display:"flex",flexDirection:"column"}}>
+            <div style={{padding:"8px 12px",fontSize:12,fontWeight:700,color:T.textSub,borderBottom:`1px solid ${T.border}`,background:T.white,display:"flex",alignItems:"center",gap:10}}>
+              <span>📋 답안 비교 ({filledCount}/{totalQ} 채움)</span>
+              <label style={{fontSize:11,fontWeight:600,color:T.textMuted,cursor:"pointer",marginLeft:"auto"}}>
+                <input type="checkbox" checked={showAll} onChange={e=>setShowAll(e.target.checked)} style={{marginRight:4}}/>
+                전체 문항 보기
+              </label>
+            </div>
+            <div style={{flex:1,overflow:"auto"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead style={{position:"sticky",top:0,background:T.goldPale,zIndex:1}}>
+                  <tr>
+                    <th style={{padding:"8px 4px",border:`1px solid ${T.border}`,width:36}}>#</th>
+                    <th style={{padding:"8px 4px",border:`1px solid ${T.border}`,width:60,color:"#0d8aff"}}>Gemini</th>
+                    <th style={{padding:"8px 4px",border:`1px solid ${T.border}`,width:60,color:"#10a37f"}}>GPT</th>
+                    <th style={{padding:"8px 4px",border:`1px solid ${T.border}`,width:60,color:"#ca8a04"}}>Claude</th>
+                    <th style={{padding:"8px 4px",border:`1px solid ${T.border}`,background:T.goldDark,color:T.white}}>최종 정답</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleQs.map(q=>{
+                    const k=String(q);
+                    const g=String(ga[k]||"-");
+                    const p=String(pa[k]||"-");
+                    const c=String(ca[k]||"-");
+                    const isMis = mismatchSet.has(q);
+                    const isSubj = (types[k]||"")==="sa" || (types[k]||"")==="sub";
+                    return (
+                      <tr key={q} style={{background: isMis?"#fff5f0":T.white}}>
+                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",fontWeight:700,color:isMis?T.danger:T.textSub}}>{q}{isSubj&&<span style={{fontSize:9,color:T.textMuted,display:"block"}}>주관식</span>}</td>
+                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",color:"#0d8aff"}}>{g}</td>
+                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",color:"#10a37f"}}>{p}</td>
+                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",color:"#ca8a04"}}>{c}</td>
+                        <td style={{padding:"4px",border:`1px solid ${T.border}`}}>
+                          <input value={finalAns[k]||""} onChange={e=>setQ(q,e.target.value)} placeholder={isSubj?"답 입력":"1~5"} style={{width:"100%",padding:"4px 6px",fontSize:12,border:`1.5px solid ${isMis?T.danger:T.border}`,borderRadius:6,fontFamily:"inherit",background:isMis?"#fffbf6":T.white,fontWeight:isMis?700:500,textAlign:isSubj?"left":"center"}}/>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {visibleQs.length===0 && (
+                    <tr><td colSpan={5} style={{padding:24,textAlign:"center",color:T.textMuted}}>표시할 문항이 없습니다.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        {/* 하단 버튼 */}
+        <div style={{padding:"12px 18px",borderTop:`1px solid ${T.border}`,background:T.bg,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+          <div style={{fontSize:12,color:T.textSub}}>
+            {blanks.length>0 ? <span style={{color:T.danger,fontWeight:700}}>⚠️ 미입력 {blanks.length}개</span> : <span style={{color:T.accent,fontWeight:700}}>✅ 모든 문항 입력 완료</span>}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={onClose} style={{...S.btnO,padding:"8px 16px"}}>취소</button>
+            <button onClick={submit} disabled={submitting} style={{padding:"8px 20px",fontSize:13,fontWeight:700,borderRadius:8,border:"none",background:submitting?T.borderLight:T.goldDark,color:T.white,cursor:submitting?"not-allowed":"pointer",fontFamily:"inherit"}}>{submitting?"저장 중...":"✅ 검수 확정"}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+function ReviewListModal({sheetsUrl, T, S, onClose}){
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [selected, setSelected] = useState(null);
+  const load = useCallback(()=>{
+    setLoading(true); setErr("");
+    fetch(`${sheetsUrl}?action=list_review_pending`)
+      .then(r=>r.json()).then(d=>{
+        if(d.result==="success") setItems(d.items||[]);
+        else setErr(d.message||"조회 실패");
+      }).catch(()=>setErr("네트워크 오류")).finally(()=>setLoading(false));
+  },[sheetsUrl]);
+  useEffect(()=>{ load(); },[load]);
+  if(selected){
+    return <ReviewDetailModal item={selected} sheetsUrl={sheetsUrl} T={T} S={S} onClose={()=>setSelected(null)} onConfirmed={()=>{ setSelected(null); load(); }}/>;
+  }
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+      <div style={{background:T.white,width:"100%",maxWidth:900,maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",borderRadius:12}} onClick={e=>e.stopPropagation()}>
+        <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.goldPale}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:800,color:T.text}}>🔍 AI 검수 대기 목록</div>
+            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>3중 만장일치에 실패한 답안 {items.length}건</div>
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={load} style={{...S.btnO,padding:"6px 12px"}}>🔄 새로고침</button>
+            <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+          </div>
+        </div>
+        <div style={{flex:1,overflow:"auto",padding:14}}>
+          {loading && <div style={{padding:24,textAlign:"center",color:T.textMuted}}>불러오는 중...</div>}
+          {err && <div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{err}</div>}
+          {!loading && !err && items.length===0 && (
+            <div style={{padding:40,textAlign:"center",color:T.textMuted}}>
+              <div style={{fontSize:36,marginBottom:8}}>✨</div>
+              <div style={{fontSize:14,fontWeight:600}}>검수 대기 항목이 없습니다.</div>
+              <div style={{fontSize:12,marginTop:4}}>모든 답지가 자동 등록되었습니다.</div>
+            </div>
+          )}
+          {!loading && items.length>0 && (
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {items.map(it=>(
+                <div key={it.rowIndex} onClick={()=>setSelected(it)} style={{padding:"12px 14px",border:`1.5px solid ${T.border}`,borderRadius:10,background:T.white,cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.15s"}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=T.goldDark;e.currentTarget.style.background=T.goldPale;}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.background=T.white;}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:14,fontWeight:700,color:T.text}}>{it.subject} {it.grade} {it.level} <span style={{color:T.textSub,fontWeight:500}}>· {it.examType}{it.setType?" ("+it.setType+")":""}</span></div>
+                    <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>👨‍🏫 {it.teacher||"-"} · 📅 {it.date} · 📝 {it.totalQ}문제 · 🏫 {it.className||"-"}</div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:18,fontWeight:800,color:T.danger}}>{it.mismatchCount}</div>
+                    <div style={{fontSize:10,color:T.textMuted}}>불일치</div>
+                  </div>
+                  <div style={{fontSize:18,color:T.goldDark,marginLeft:6}}>›</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const todayIsoStr=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
   const [dashDate, setDashDate] = useState(todayIsoStr());
@@ -1937,7 +2167,16 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   const [schStatus, setSchStatus] = useState(null);
   const [activeSubj, setActiveSubj] = useState(null);
   const [openFiles, setOpenFiles] = useState({}); // {exam_i_j: bool}
+  // [v21.0] AI 검수 대기 카운트 + 모달
+  const [reviewCount, setReviewCount] = useState(0);
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const toggleFiles = (k)=>setOpenFiles(p=>({...p,[k]:!p[k]}));
+  const loadReviewCount = useCallback(()=>{
+    fetch(`${sheetsUrl}?action=list_review_pending`)
+      .then(r=>r.json()).then(d=>{
+        if(d.result==="success") setReviewCount((d.items||[]).length);
+      }).catch(()=>{});
+  },[sheetsUrl]);
   const loadDashboard = useCallback((dateOverride)=>{
     const d=dateOverride||dashDate;
     setDashLoading(true); setDashErr(""); setDashData(null);
@@ -1946,12 +2185,33 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
       .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
     fetch(`${sheetsUrl}?action=schedule_status&date=${encodeURIComponent(d)}`)
       .then(r=>r.json()).then(d3=>{if(d3.result==="ok")setSchStatus(d3);else setSchStatus(null);}).catch(()=>setSchStatus(null));
-  }, [dashDate, sheetsUrl]);
+    loadReviewCount();
+  }, [dashDate, sheetsUrl, loadReviewCount]);
   useEffect(()=>{ loadDashboard(); }, [loadDashboard]);
+  // [v21.0] 30초마다 검수 대기 카운트 갱신
+  useEffect(()=>{
+    const id = setInterval(loadReviewCount, 30000);
+    return ()=>clearInterval(id);
+  },[loadReviewCount]);
   const isDashToday=dashDate===todayIsoStr();
   const dashDateLabel=(()=>{const m=dashDate.match(/(\d{4})-(\d{2})-(\d{2})/);return m?`${parseInt(m[2])}/${parseInt(m[3])}`:"";})();
   return(<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1><p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p></div>
+    {/* [v21.0] AI 검수 대기 배너 */}
+    {reviewCount > 0 && (
+      <div onClick={()=>setReviewModalOpen(true)} style={{padding:"12px 16px",borderRadius:10,background:"linear-gradient(135deg, #FFF3D0 0%, #FFE5A0 100%)",border:`2px solid ${T.goldDark}`,marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.15s"}}
+        onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 4px 12px rgba(212,160,23,0.25)";}}
+        onMouseLeave={e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="";}}>
+        <div style={{fontSize:28}}>🔍</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:14,fontWeight:800,color:T.goldDeep}}>AI 검수 대기 — {reviewCount}건</div>
+          <div style={{fontSize:11,color:T.textSub,marginTop:2}}>3중 만장일치에 실패한 답안. 클릭해서 검수해주세요.</div>
+        </div>
+        <div style={{fontSize:22,fontWeight:800,color:T.danger,padding:"6px 14px",background:T.white,borderRadius:8,minWidth:50,textAlign:"center"}}>{reviewCount}</div>
+        <div style={{fontSize:20,color:T.goldDark}}>›</div>
+      </div>
+    )}
+    {reviewModalOpen && <ReviewListModal sheetsUrl={sheetsUrl} T={T} S={S} onClose={()=>{setReviewModalOpen(false);loadReviewCount();}}/>}
     {/* 날짜 선택 + 새로고침 */}
     <div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -2218,6 +2478,28 @@ export default function App(){
   const[objRanges,setObjRanges]=useState("");   // "1-20, 31-44"
   // 상태
   const[saving,setSaving]=useState(false);const[done,setDone]=useState(false);const[error,setError]=useState("");
+  // [v21.0] AI 답지 자동 검수 상태
+  const[aiRunning,setAiRunning]=useState(false);
+  const[aiResults,setAiResults]=useState([]); // [{label, unanimous, mismatchCount, rowIndex, error}]
+  // AI 검수 호출 헬퍼 — POST cors + text/plain (preflight 회피)
+  const callAiExtract = async (answerFile, examInfo) => {
+    if(!answerFile) return null;
+    try {
+      const base64 = await fileToBase64(answerFile);
+      const res = await fetch(SHEETS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action: "ai_extract_answers",
+          answerFileBase64: base64,
+          ...examInfo
+        })
+      });
+      return await res.json();
+    } catch(e) {
+      return { result: "error", message: String(e) };
+    }
+  };
   // (대시보드 상태는 DashboardTab 컴포넌트 내부로 이동됨)
   // 선생님 목록 (드롭다운용)
   const[teacherList,setTeacherList]=useState([]);
@@ -2347,15 +2629,26 @@ export default function App(){
       }
       setSaving(true);setError("");
       try{
+        const aiTasks=[]; // [v21.0] AI 검수 호출용 (반×round)
         for(const rd of active){
           const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           for(const cls of classes){
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
               body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:parseInt(rd.totalQ)||30,startNumber:parseInt(rd.startNum)||1,endNumber:parseInt(rd.endNum)||30})});
+            // [v21.0] AI 검수 task 등록 (첫 답지 1개 사용)
+            if(rd.answerFiles[0]){
+              aiTasks.push({
+                file: rd.answerFiles[0],
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:parseInt(rd.totalQ)||30, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:parseInt(rd.startNum)||1 },
+                label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
+              });
+            }
           }
         }
         setDone(true);setScreen("done");
+        // [v21.0] AI 자동 검수 — done 화면 표시 후 백그라운드 실행
+        if(aiTasks.length>0) runAiExtractTasks(aiTasks);
       }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
       setSaving(false);
     }else{
@@ -2373,6 +2666,7 @@ export default function App(){
       }
       setSaving(true);setError("");
       try{
+        const aiTasks=[];
         for(const cls of classes){
           const cRds=(classRounds[cls.name]||[]).filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
           for(const rd of cRds){
@@ -2380,12 +2674,44 @@ export default function App(){
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
               body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:parseInt(rd.totalQ)||30,startNumber:parseInt(rd.startNum)||1,endNumber:parseInt(rd.endNum)||30})});
+            if(rd.answerFiles[0]){
+              aiTasks.push({
+                file: rd.answerFiles[0],
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:parseInt(rd.totalQ)||30, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:parseInt(rd.startNum)||1 },
+                label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
+              });
+            }
           }
         }
         setDone(true);setScreen("done");
+        if(aiTasks.length>0) runAiExtractTasks(aiTasks);
       }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
       setSaving(false);
     }
+  };
+  // [v21.0] AI 검수 task 일괄 실행 (병렬 호출)
+  const runAiExtractTasks = async (tasks) => {
+    setAiRunning(true);
+    setAiResults(tasks.map(t=>({label:t.label, status:"pending"})));
+    // 병렬 호출 (최대 4개씩 묶어서 — GAS rate limit 회피)
+    const CHUNK=4;
+    const allResults=[];
+    for(let i=0; i<tasks.length; i+=CHUNK){
+      const chunk = tasks.slice(i, i+CHUNK);
+      const chunkResults = await Promise.all(chunk.map(async (t,idx)=>{
+        const r = await callAiExtract(t.file, t.examInfo);
+        if(!r) return {label:t.label, status:"error", error:"호출 실패"};
+        if(r.result==="success") return {label:t.label, status:r.unanimous?"ok":"mismatch", unanimous:r.unanimous, mismatchCount:r.mismatchCount, rowIndex:r.rowIndex};
+        return {label:t.label, status:"error", error:r.message||"알 수 없음"};
+      }));
+      allResults.push(...chunkResults);
+      setAiResults(prev=>{
+        const next=[...prev];
+        chunkResults.forEach((cr,k)=>{ next[i+k]=cr; });
+        return next;
+      });
+    }
+    setAiRunning(false);
   };
   // 대시보드 조회
   // 프록시 다운로드 — Apps Script가 base64로 파일을 서빙 → blob으로 변환해서 저장
@@ -2437,7 +2763,7 @@ export default function App(){
     }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
   return(
     <div style={S.app} className="app-shell">
@@ -2833,8 +3159,33 @@ export default function App(){
             {filled>0&&<div style={S.resRow}><span>정답 입력</span><span style={{fontWeight:600}}>{filled}문항</span></div>}
           </div>
           <div style={{padding:"12px 14px",borderRadius:10,background:T.accentLight,fontSize:13,fontWeight:600,color:T.accent,textAlign:"center",marginBottom:20}}>
-            {filled>0?"✅ 학생들이 이 시험을 선택하면 즉시 채점됩니다!":"📄 Claude가 정답지를 분석하면 채점이 가능해집니다."}
+            {filled>0?"✅ 학생들이 이 시험을 선택하면 즉시 채점됩니다!":"📄 답지가 업로드되었습니다. AI가 자동 검수합니다."}
           </div>
+          {/* [v21.0] AI 검수 진행 상황 */}
+          {(aiRunning||aiResults.length>0)&&(
+            <div style={{...S.card,padding:"14px 16px",marginBottom:16,textAlign:"left"}}>
+              <div style={{fontSize:14,fontWeight:800,color:T.goldDark,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+                <span>🔍 AI 답지 자동 검수</span>
+                {aiRunning&&<span style={{fontSize:11,fontWeight:600,color:T.textMuted}}>진행 중... ({aiResults.filter(r=>r.status&&r.status!=="pending").length}/{aiResults.length})</span>}
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {aiResults.map((r,i)=>(
+                  <div key={i} style={{padding:"8px 10px",borderRadius:8,background:r.status==="ok"?T.accentLight:r.status==="mismatch"?"#fff5f0":r.status==="error"?T.dangerLight:T.borderLight,fontSize:12,display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{flex:1,fontWeight:600,color:T.text}}>{r.label}</div>
+                    {r.status==="pending"&&<span style={{color:T.textMuted}}>⏳ 분석 중...</span>}
+                    {r.status==="ok"&&<span style={{color:T.accent,fontWeight:700}}>✅ 만장일치 자동 등록</span>}
+                    {r.status==="mismatch"&&<span style={{color:"#d97706",fontWeight:700}}>⚠️ 불일치 {r.mismatchCount}개 (검수 필요)</span>}
+                    {r.status==="error"&&<span style={{color:T.danger,fontWeight:700}}>❌ {r.error||"오류"}</span>}
+                  </div>
+                ))}
+              </div>
+              {!aiRunning&&aiResults.some(r=>r.status==="mismatch")&&(
+                <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,textAlign:"center"}}>
+                  📋 "오늘의 현황" 탭 → AI 검수 대기 카드에서 검수하세요
+                </div>
+              )}
+            </div>
+          )}
           <button style={{...S.btnG,maxWidth:320,margin:"0 auto"}} onClick={reset}>다른 시험 등록하기</button>
         </div>
       </div>)}
