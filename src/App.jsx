@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 /* ============================================================
    채움학원 — 선생님용 시험 등록 v2
    신규: 선생님 이름, 반별 인원, 오늘의 현황 대시보드
