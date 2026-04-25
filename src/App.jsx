@@ -247,6 +247,9 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   // 히스토리 (생성 요청 목록)
   const[history,setHistory]=useState([]);
   const[histLoading,setHistLoading]=useState(false);
+  // ★ v20.5: 히스토리 필터 (선생님 선택 → 본인 자료만 보기) + 페이지네이션
+  const[histFilterTeacher,setHistFilterTeacher]=useState("");
+  const[histVisibleCount,setHistVisibleCount]=useState(3);
   // 미리보기 (3세트: A/B/C)
   const[preview,setPreview]=useState(null); // {detail, sets:[{questions},..]}
   const[prevLoading,setPrevLoading]=useState(false);
@@ -885,9 +888,36 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
           <button onClick={loadHistory} style={{fontSize:11,color:T.goldDark,fontWeight:600,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>🔄 새로고침</button>
         </div>
       </div>
-      {histLoading?<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>로딩 중…</div>:
-       history.length===0?<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>아직 생성 요청이 없습니다</div>:
-       history.map((h,i)=>{
+      {/* ★ v20.5: 선생님 필터 — 본인 자료만 보기 */}
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,padding:"8px 10px",background:T.bg,borderRadius:8}}>
+        <span style={{fontSize:11,color:T.textMuted,whiteSpace:"nowrap"}}>👤 선생님</span>
+        {_tl&&_tl.length>0?(
+          <select value={histFilterTeacher} onChange={e=>{setHistFilterTeacher(e.target.value);setHistVisibleCount(3);}} style={{...S.inp,flex:1,fontSize:12,padding:"6px 8px"}}>
+            <option value="">전체 선생님 ({history.length}건)</option>
+            {["국어","영어","수학","과학","사회"].map(sub=>{
+              const subT=_tl.filter(t=>t.subject===sub);
+              if(subT.length===0)return null;
+              return(<optgroup key={sub} label={sub+"과"}>{subT.map(t=>{
+                const cnt=history.filter(h=>h.teacher===t.name).length;
+                return(<option key={t.name} value={t.name}>{t.name} ({cnt}건)</option>);
+              })}</optgroup>);
+            })}
+            {_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).length>0&&(
+              <optgroup label="기타">{_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).map(t=>{
+                const cnt=history.filter(h=>h.teacher===t.name).length;
+                return(<option key={t.name} value={t.name}>{t.name} ({cnt}건)</option>);
+              })}</optgroup>
+            )}
+          </select>
+        ):(<input style={{...S.inp,flex:1,fontSize:12,padding:"6px 8px"}} placeholder="선생님 이름" value={histFilterTeacher} onChange={e=>{setHistFilterTeacher(e.target.value);setHistVisibleCount(3);}}/>)}
+        {histFilterTeacher&&<button onClick={()=>{setHistFilterTeacher("");setHistVisibleCount(3);}} style={{fontSize:11,padding:"4px 8px",border:`1px solid ${T.border}`,borderRadius:6,background:T.white,color:T.textMuted,cursor:"pointer",fontFamily:"inherit"}}>초기화</button>}
+      </div>
+      {(()=>{
+        const filteredHistory=histFilterTeacher?history.filter(h=>h.teacher===histFilterTeacher):history;
+        const visible=filteredHistory.slice(0,histVisibleCount);
+        if(histLoading)return<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>로딩 중…</div>;
+        if(filteredHistory.length===0)return<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>{histFilterTeacher?`${histFilterTeacher} 선생님의 생성 요청이 없습니다`:"아직 생성 요청이 없습니다"}</div>;
+        return<>{visible.map((h,i)=>{
          const statusColor=h.status==="완료"?T.accent:h.status==="생성중"?"#FF9800":h.status==="실패"?T.danger:T.textMuted;
          const statusBg=h.status==="완료"?T.accentLight:h.status==="생성중"?"#FFF3E0":h.status==="실패"?T.dangerLight:T.bg;
          return(<div key={i} style={{...S.card,marginBottom:8}}>
@@ -925,16 +955,29 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
                </span>
                {h.resultFileIdB?<span style={{color:T.textMuted}}>· B세트 백업 있음</span>:<span style={{color:T.textMuted}}>· 백업 없음(단일 세트)</span>}
              </div>}
-             <div style={{display:"flex",gap:6,marginTop:6}}>
+             <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
                <button onClick={()=>loadPreview(h.rowIndex)} disabled={prevLoading&&prevRow===h.rowIndex}
-                 style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>
+                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>
                  {prevLoading&&prevRow===h.rowIndex?"로딩…":"👁️ 미리보기"}
                </button>
                <button onClick={()=>autoRegisterForStudents(h.rowIndex)}
-                 style={{flex:1,padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.accent,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>📱 학생앱 등록</button>
+                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.accent,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>📱 학생앱 등록</button>
+               {/* ★ v20.5: 개별 다운로드 — Drive 결과파일 직접 다운로드 */}
+               {h.resultFileId&&<button onClick={()=>{
+                 window.open(`https://drive.google.com/uc?export=download&id=${h.resultFileId}`,"_blank");
+               }} title="결과 파일(JSON) 다운로드"
+                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>
+                 📥 다운로드{h.resultFileIdB?" (A)":""}
+               </button>}
+               {h.resultFileIdB&&<button onClick={()=>{
+                 window.open(`https://drive.google.com/uc?export=download&id=${h.resultFileIdB}`,"_blank");
+               }} title="B세트 결과 파일(JSON) 다운로드"
+                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>
+                 📥 다운로드 (B)
+               </button>}
                {h.resultFileIdB&&<button onClick={()=>swapExamSet(h.rowIndex,h.activeSet||"A")}
                  title={`현재 ${h.activeSet||"A"}세트가 노출 중 — ${(h.activeSet||"A")==="A"?"B":"A"}세트로 교체`}
-                 style={{flex:1,padding:"8px",fontSize:12,fontWeight:700,borderRadius:8,border:"none",background:"#FFB300",color:T.white,cursor:"pointer",fontFamily:"inherit"}}>
+                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:700,borderRadius:8,border:"none",background:"#FFB300",color:T.white,cursor:"pointer",fontFamily:"inherit"}}>
                  🔄 {(h.activeSet||"A")==="A"?"B":"A"}세트로 교체
                </button>}
              </div>
@@ -944,6 +987,17 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
            </div>}
          </div>);
        })}
+       {/* ★ v20.5: 더보기 / 접기 */}
+       {filteredHistory.length>histVisibleCount&&<button onClick={()=>setHistVisibleCount(c=>c+5)}
+         style={{width:"100%",padding:"10px",marginTop:4,fontSize:12,fontWeight:600,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.bg,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>
+         ⬇ 더보기 ({filteredHistory.length-histVisibleCount}건 더 / 총 {filteredHistory.length}건)
+       </button>}
+       {histVisibleCount>3&&filteredHistory.length<=histVisibleCount&&<button onClick={()=>setHistVisibleCount(3)}
+         style={{width:"100%",padding:"8px",marginTop:4,fontSize:11,fontWeight:500,borderRadius:10,border:`1px dashed ${T.border}`,background:"transparent",color:T.textMuted,cursor:"pointer",fontFamily:"inherit"}}>
+         ⬆ 3개만 보기
+       </button>}
+       </>;
+      })()}
     </div>
     {/* ★ v15: 검수 결과 상세 모달 */}
     {verifyModal&&(()=>{
@@ -1169,26 +1223,44 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
   // fallback
   return null;
 }
-/* ═══ 반별 성적 탭 (v20.4) ═══
-   - 기본 날짜 = 오늘
-   - 선생님 드랍다운 (과목별 그룹핑)
-   - 한 카드 = 한 반의 한 시험: 평균/최고/최저, 만점자, 미달자, 학생별 점수+오답번호+등수
-   - 어려운 문항 Top3 (참고용)
-   - 엑셀(.csv) 다운로드
+/* ═══ 반별 성적 탭 (v20.5) ═══
+   - 필터 순서: [날짜모드: 단일/기간] [날짜] [과목] [선생님] [학년]
+   - 기본 = 오늘 + 전체 과목 + 전체 선생님 + 전체 학년
+   - 미달 기준 = 70점 미만 (고정)
+   - 카드 정렬: 과목 > 학년 > 선생님 > 레벨 > 시험명
+   - 학생별 성적: 점수 높은 순 + 틀린문제 토글 (기본 접힘)
+   - 어려운 문항 Top 5
+   - 전체 조회 시: 과목/학년 헤더로 그룹핑
+   - 기간 모드: 학생별 누적 흐름 (반 단위로 묶음, 학생 점수 추세)
+   - 카드 제목: {과목} {학년} {레벨}반 · {시험명}  (👤 {선생님})
 */
 function StatsTab({sheetsUrl, T, S, teacherList}){
+  const LOW_THRESHOLD = 70; // ★ 미달 기준 고정 (70점 미만)
   const todayStr = (()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;})();
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [dateMode, setDateMode] = useState("single"); // "single" | "range"
   const [date, setDate] = useState(todayStr);
+  const [dateFrom, setDateFrom] = useState(todayStr);
+  const [dateTo, setDateTo] = useState(todayStr);
+  const [subject, setSubject] = useState("");
   const [teacher, setTeacher] = useState("");
   const [grade, setGrade] = useState("");
-  const [lowThreshold, setLowThreshold] = useState(60);
+  // 학생별 틀린문제 토글 — key = `${cardKey}:${studentName}`
+  const [openWrongs, setOpenWrongs] = useState({});
+  const toggleWrong = (k) => setOpenWrongs(p => ({...p, [k]: !p[k]}));
+
   const load = useCallback(async()=>{
     setLoading(true);
     try{
       const params = new URLSearchParams({action:"class_grades"});
-      if(date) params.set("date", date);
+      if(dateMode==="single"){
+        if(date) params.set("date", date);
+      } else {
+        if(dateFrom) params.set("dateFrom", dateFrom);
+        if(dateTo) params.set("dateTo", dateTo);
+      }
+      if(subject) params.set("subject", subject);
       if(teacher) params.set("teacher", teacher);
       if(grade) params.set("grade", grade);
       const r = await fetch(`${sheetsUrl}?${params.toString()}`);
@@ -1196,10 +1268,10 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
       setClasses(j.classes || []);
     }catch(e){ setClasses([]); }
     setLoading(false);
-  }, [date, teacher, grade, sheetsUrl]);
+  }, [dateMode, date, dateFrom, dateTo, subject, teacher, grade, sheetsUrl]);
   useEffect(()=>{ load(); }, [load]);
 
-  // 선생님 드랍다운: 과목별 그룹핑 (시험등록 탭과 동일 패턴)
+  // 선생님 드랍다운: 과목별 그룹핑
   const teachersBySubject = useMemo(()=>{
     const m = {};
     (teacherList||[]).forEach(t=>{
@@ -1210,11 +1282,26 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
     Object.keys(m).forEach(k=>m[k].sort());
     return m;
   }, [teacherList]);
-  const subjectOrder = ["영어","수학","국어","과학","사회","관리자","기타"];
+  const SUBJ_ORDER_ARR = ["국어","영어","수학","과학","사회","관리자","기타"];
   const sortedSubjects = Object.keys(teachersBySubject).sort((a,b)=>{
-    const ia = subjectOrder.indexOf(a), ib = subjectOrder.indexOf(b);
+    const ia = SUBJ_ORDER_ARR.indexOf(a), ib = SUBJ_ORDER_ARR.indexOf(b);
     return (ia===-1?99:ia) - (ib===-1?99:ib);
   });
+
+  // 클래스 정렬: 과목 > 학년 > 선생님 > 레벨 > 시험명 > 날짜
+  const subjOrderRank = (s)=>{ const i=SUBJ_ORDER_ARR.indexOf(s||""); return i===-1?99:i; };
+  const sortedClasses = useMemo(()=>{
+    return [...classes].sort((a,b)=>{
+      const aS=subjOrderRank(a.subject), bS=subjOrderRank(b.subject);
+      if(aS!==bS) return aS-bS;
+      if((a.subject||"")!==(b.subject||"")) return (a.subject||"")<(b.subject||"")?-1:1;
+      if((a.grade||"")!==(b.grade||"")) return (a.grade||"")<(b.grade||"")?-1:1;
+      if((a.teacher||"")!==(b.teacher||"")) return (a.teacher||"")<(b.teacher||"")?-1:1;
+      if((a.level||"")!==(b.level||"")) return (a.level||"")<(b.level||"")?-1:1;
+      if((a.examType||"")!==(b.examType||"")) return (a.examType||"")<(b.examType||"")?-1:1;
+      return (a.date||"")<(b.date||"")?-1:1;
+    });
+  }, [classes]);
 
   // CSV 다운로드 (한 반 카드용)
   const downloadCsv = (c)=>{
@@ -1231,7 +1318,246 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
     a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
   };
 
-  const scoreColor = (s)=> s>=90?T.accent : s>=80?T.goldDark : s>=lowThreshold?T.text : T.danger;
+  const scoreColor = (s)=> s>=90?T.accent : s>=80?T.goldDark : s>=LOW_THRESHOLD?T.text : T.danger;
+
+  // ★ 카드 헤더 컴포넌트
+  const CardHeader = ({c})=>(
+    <div style={{borderBottom:`1px solid ${T.border}`,paddingBottom:8,marginBottom:10}}>
+      <div style={{fontSize:15,fontWeight:700,color:T.text,lineHeight:1.4}}>
+        📘 {[c.subject, c.grade, (c.level?c.level+"반":"반")].filter(Boolean).join(" ")} · {c.examType}
+        {c.teacher && <span style={{fontSize:12,fontWeight:600,color:T.goldDark,marginLeft:6}}>(👤 {c.teacher})</span>}
+      </div>
+      <div style={{fontSize:11,color:T.textMuted,marginTop:3}}>
+        📅 {c.date} · 응시 {c.total}명
+      </div>
+    </div>
+  );
+
+  // ★ 단일 모드 카드 렌더링
+  const renderSingleCard = (c, key)=>{
+    const lowStudents = (c.students||[]).filter(s=>s.score<LOW_THRESHOLD);
+    return (
+      <div key={key} style={{...S.card, marginBottom:12}}>
+        <CardHeader c={c}/>
+        {/* 요약 통계 */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:10}}>
+          <div style={{textAlign:"center",padding:"8px 4px",background:T.bg,borderRadius:6}}>
+            <div style={{fontSize:10,color:T.textMuted}}>평균</div>
+            <div style={{fontSize:18,fontWeight:700,color:scoreColor(c.avg)}}>{c.avg}점</div>
+          </div>
+          <div style={{textAlign:"center",padding:"8px 4px",background:T.bg,borderRadius:6}}>
+            <div style={{fontSize:10,color:T.textMuted}}>최고</div>
+            <div style={{fontSize:18,fontWeight:700,color:T.accent}}>{c.max}점</div>
+          </div>
+          <div style={{textAlign:"center",padding:"8px 4px",background:T.bg,borderRadius:6}}>
+            <div style={{fontSize:10,color:T.textMuted}}>최저</div>
+            <div style={{fontSize:18,fontWeight:700,color:T.danger}}>{c.min}점</div>
+          </div>
+        </div>
+        {/* 만점/미달 뱃지 */}
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+          {c.perfectCount>0&&<span style={{fontSize:11,padding:"4px 8px",background:T.goldPale,color:T.goldDeep,borderRadius:6,fontWeight:600}}>🏆 만점자 {c.perfectCount}명</span>}
+          {lowStudents.length>0&&<span style={{fontSize:11,padding:"4px 8px",background:T.dangerLight,color:T.danger,borderRadius:6,fontWeight:600}}>⚠️ {LOW_THRESHOLD}점 미만 {lowStudents.length}명</span>}
+        </div>
+        {/* 학생별 성적 (점수 높은 순) — 틀린문제는 토글로 */}
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:12,color:T.textMuted,marginBottom:6,fontWeight:600,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <span>학생별 성적 (점수 높은 순)</span>
+            <button onClick={()=>{
+              // 전체 토글: 모두 닫힘이면 모두 열기, 아니면 모두 닫기
+              const cardKey = key;
+              const allKeys = (c.students||[]).map((s,si)=>`${cardKey}:${s.name||"?"}:${si}`);
+              const anyOpen = allKeys.some(k=>openWrongs[k]);
+              setOpenWrongs(p=>{
+                const np={...p};
+                allKeys.forEach(k=>np[k]=!anyOpen);
+                return np;
+              });
+            }} style={{fontSize:10,padding:"2px 8px",border:`1px solid ${T.border}`,borderRadius:10,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>
+              전체 펼치기/접기
+            </button>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:3}}>
+            {(c.students||[]).map((s,si)=>{
+              const k = `${key}:${s.name||"?"}:${si}`;
+              const open = !!openWrongs[k];
+              const has = s.wrongQs && s.wrongQs.length>0;
+              return (
+                <div key={si} style={{background:s.score<LOW_THRESHOLD?T.dangerLight:s.score===100?T.goldPale:T.bg,borderRadius:6,fontSize:12,overflow:"hidden"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",cursor:has?"pointer":"default"}} onClick={()=>{ if(has) toggleWrong(k); }}>
+                    <span style={{minWidth:32,fontSize:11,fontWeight:600,color:T.textMuted}}>#{s.rank}</span>
+                    <span style={{minWidth:60,fontWeight:600,color:T.text}}>{s.name||"?"}</span>
+                    <span style={{minWidth:50,fontWeight:700,color:scoreColor(s.score)}}>{s.score}점</span>
+                    <span style={{flex:1,color:T.textSub,fontSize:11,textAlign:"right"}}>
+                      {has
+                        ? <span style={{color:T.danger,fontWeight:600}}>{open?"▼":"▶"} 틀린 {s.wrongQs.length}문항</span>
+                        : <span style={{color:T.accent}}>✓ 전부 정답</span>}
+                    </span>
+                  </div>
+                  {has && open && (
+                    <div style={{padding:"6px 10px 10px 50px",fontSize:11,color:T.danger,wordBreak:"break-all",lineHeight:1.6}}>
+                      ❌ {s.wrongQs.join(", ")}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {/* 어려운 문항 Top5 */}
+        {c.hardest && c.hardest.length>0 && <div style={{marginBottom:10,padding:"8px 10px",background:T.bg,borderRadius:6}}>
+          <div style={{fontSize:11,color:T.textMuted,marginBottom:4,fontWeight:600}}>🔥 어려운 문항 Top {c.hardest.length}</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {c.hardest.map((h,hi)=>(
+              <span key={hi} style={{fontSize:11,padding:"3px 8px",background:h.pct>=70?T.dangerLight:T.white,color:h.pct>=70?T.danger:T.textSub,border:`1px solid ${T.border}`,borderRadius:10}}>
+                {h.q}번 ({h.wrong}명·{h.pct}%)
+              </span>
+            ))}
+          </div>
+        </div>}
+        {/* 액션 */}
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:1,fontSize:12}}>📥 엑셀 다운로드</button>
+        </div>
+      </div>
+    );
+  };
+
+  // ★ 기간 모드: 학생별 누적 흐름 — 같은 반(과목|학년|레벨|시험명)을 묶고 학생별 점수 추세
+  const rangeGroups = useMemo(()=>{
+    if(dateMode!=="range") return [];
+    const m = {};
+    sortedClasses.forEach(c=>{
+      const k = `${c.subject}|${c.grade}|${c.level}|${c.examType}|${c.teacher||""}`;
+      if(!m[k]){
+        m[k] = {meta:{subject:c.subject,grade:c.grade,level:c.level,examType:c.examType,teacher:c.teacher}, dateSet:new Set(), byStudent:{}, hardest:{}};
+      }
+      m[k].dateSet.add(c.date);
+      (c.students||[]).forEach(s=>{
+        if(!m[k].byStudent[s.name]) m[k].byStudent[s.name] = {scores:{}, wrongs:{}};
+        m[k].byStudent[s.name].scores[c.date] = s.score;
+        m[k].byStudent[s.name].wrongs[c.date] = s.wrongQs||[];
+      });
+      // 어려운 문항 누적 (반 전체)
+      (c.hardest||[]).forEach(h=>{
+        if(!m[k].hardest[h.q]) m[k].hardest[h.q] = {q:h.q, wrong:0, total:0};
+        m[k].hardest[h.q].wrong += h.wrong;
+        m[k].hardest[h.q].total += c.total;
+      });
+    });
+    return Object.values(m).map(g=>{
+      const dates = [...g.dateSet].sort();
+      const studentRows = Object.entries(g.byStudent).map(([name, data])=>{
+        const scoreList = dates.map(d=> data.scores[d]!==undefined ? data.scores[d] : null);
+        const valid = scoreList.filter(v=>v!==null);
+        const avg = valid.length ? Math.round(valid.reduce((a,b)=>a+b,0)/valid.length) : 0;
+        const max = valid.length ? Math.max(...valid) : 0;
+        const min = valid.length ? Math.min(...valid) : 0;
+        return {name, scores:scoreList, dates, avg, max, min, attempts:valid.length, wrongs:data.wrongs};
+      }).sort((a,b)=>b.avg-a.avg);
+      const hardest = Object.values(g.hardest).map(h=>({q:h.q, wrong:h.wrong, pct:h.total?Math.round((h.wrong/h.total)*100):0}))
+        .sort((a,b)=>b.wrong-a.wrong).slice(0,5);
+      return {meta:g.meta, dates, studentRows, hardest, classCount:g.dateSet.size};
+    });
+  }, [dateMode, sortedClasses]);
+
+  // ★ 기간 모드 카드 렌더
+  const renderRangeCard = (g, key)=>{
+    const m = g.meta;
+    const csvDownload = ()=>{
+      const head = ["학생", ...g.dates, "평균"];
+      const lines = [head.join(",")];
+      g.studentRows.forEach(s=>{
+        const row = [`"${s.name}"`, ...s.scores.map(v=>v===null?"":v), s.avg];
+        lines.push(row.join(","));
+      });
+      const bom = "\uFEFF";
+      const blob = new Blob([bom + lines.join("\n")], {type:"text/csv;charset=utf-8"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const fname = `누적_${m.subject||""}_${m.grade||""}${m.level||""}반_${m.examType||""}.csv`.replace(/[\\/:*?"<>|]/g,"");
+      a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
+    };
+    return (
+      <div key={key} style={{...S.card, marginBottom:12}}>
+        <div style={{borderBottom:`1px solid ${T.border}`,paddingBottom:8,marginBottom:10}}>
+          <div style={{fontSize:15,fontWeight:700,color:T.text,lineHeight:1.4}}>
+            📘 {[m.subject, m.grade, (m.level?m.level+"반":"반")].filter(Boolean).join(" ")} · {m.examType}
+            {m.teacher && <span style={{fontSize:12,fontWeight:600,color:T.goldDark,marginLeft:6}}>(👤 {m.teacher})</span>}
+          </div>
+          <div style={{fontSize:11,color:T.textMuted,marginTop:3}}>
+            🗓 {g.dates.length}회 응시 · 학생 {g.studentRows.length}명 · 기간 {g.dates[0]} ~ {g.dates[g.dates.length-1]}
+          </div>
+        </div>
+        {/* 가로 스크롤 표 — 학생 × 날짜 */}
+        <div style={{overflowX:"auto",marginBottom:10}}>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,minWidth:Math.max(360, 80+g.dates.length*70+60)}}>
+            <thead>
+              <tr style={{background:T.bg}}>
+                <th style={{padding:"6px 8px",textAlign:"left",borderBottom:`1px solid ${T.border}`,minWidth:80,position:"sticky",left:0,background:T.bg,zIndex:1}}>학생</th>
+                {g.dates.map(d=>(
+                  <th key={d} style={{padding:"6px 8px",textAlign:"center",borderBottom:`1px solid ${T.border}`,fontSize:10,color:T.textMuted,whiteSpace:"nowrap"}}>{String(d).slice(5)}</th>
+                ))}
+                <th style={{padding:"6px 8px",textAlign:"center",borderBottom:`1px solid ${T.border}`,background:T.goldPale,color:T.goldDeep,fontWeight:700,whiteSpace:"nowrap"}}>평균</th>
+              </tr>
+            </thead>
+            <tbody>
+              {g.studentRows.map((s,si)=>(
+                <tr key={si} style={{borderBottom:`1px solid ${T.borderLight}`}}>
+                  <td style={{padding:"6px 8px",fontWeight:600,color:T.text,position:"sticky",left:0,background:T.white,zIndex:1}}>{s.name}</td>
+                  {s.scores.map((v,vi)=>(
+                    <td key={vi} style={{padding:"6px 8px",textAlign:"center",color:v===null?T.textMuted:scoreColor(v),fontWeight:v===null?400:700}}>
+                      {v===null?"·":v}
+                    </td>
+                  ))}
+                  <td style={{padding:"6px 8px",textAlign:"center",color:scoreColor(s.avg),fontWeight:800,background:T.goldPale}}>
+                    {s.avg}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {/* 어려운 문항 Top5 (누적) */}
+        {g.hardest && g.hardest.length>0 && <div style={{marginBottom:10,padding:"8px 10px",background:T.bg,borderRadius:6}}>
+          <div style={{fontSize:11,color:T.textMuted,marginBottom:4,fontWeight:600}}>🔥 어려운 문항 Top {g.hardest.length} (기간 누적)</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {g.hardest.map((h,hi)=>(
+              <span key={hi} style={{fontSize:11,padding:"3px 8px",background:h.pct>=70?T.dangerLight:T.white,color:h.pct>=70?T.danger:T.textSub,border:`1px solid ${T.border}`,borderRadius:10}}>
+                {h.q}번 ({h.wrong}회·{h.pct}%)
+              </span>
+            ))}
+          </div>
+        </div>}
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={csvDownload} style={{...S.btn,flex:1,fontSize:12}}>📥 누적 엑셀 다운로드</button>
+        </div>
+      </div>
+    );
+  };
+
+  // ★ 단일 모드: 과목/학년 그룹 헤더 자동 삽입
+  const renderSingleGrouped = ()=>{
+    const out = [];
+    let lastSubject = null, lastGrade = null;
+    sortedClasses.forEach((c, i)=>{
+      const showHeader = (c.subject !== lastSubject) || (c.grade !== lastGrade);
+      if(showHeader){
+        out.push(
+          <div key={`hdr-${i}`} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 4px 6px 4px",marginTop:i===0?0:8}}>
+            <div style={{fontSize:13,fontWeight:800,color:T.goldDeep,padding:"4px 12px",background:T.goldPale,borderRadius:14,border:`1px solid ${T.goldMuted}`}}>
+              {c.subject||"(과목 없음)"} · {c.grade||"(학년 없음)"}
+            </div>
+            <div style={{flex:1,height:1,background:T.borderLight}}/>
+          </div>
+        );
+        lastSubject = c.subject;
+        lastGrade = c.grade;
+      }
+      out.push(renderSingleCard(c, `cls-${i}-${c.subject}-${c.grade}-${c.level}-${c.examType}-${c.date}`));
+    });
+    return out;
+  };
 
   return (<div style={S.wrap} className="fade-up">
     <div style={{textAlign:"center",padding:"20px 0 12px"}}>
@@ -1240,10 +1566,43 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
       <p style={{fontSize:13,color:T.textMuted}}>학생별 점수 · 오답번호 · 반 평균 / 최고 / 최저</p>
     </div>
     <div style={S.card}>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
-        <div>
+      {/* 날짜 모드 토글 */}
+      <div style={{display:"flex",gap:6,marginBottom:10}}>
+        {[{k:"single",label:"📅 단일 날짜"},{k:"range",label:"📆 기간 (학생별 흐름)"}].map(m=>{
+          const a = dateMode===m.k;
+          return(<button key={m.k} onClick={()=>setDateMode(m.k)} style={{
+            flex:1,padding:"8px",fontSize:12,fontWeight:a?700:500,borderRadius:8,
+            border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,
+            cursor:"pointer",fontFamily:"inherit"
+          }}>{m.label}</button>);
+        })}
+      </div>
+      {/* 날짜 입력 */}
+      {dateMode==="single" ? (
+        <div style={{marginBottom:10}}>
           <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>날짜</div>
           <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...S.inp,width:"100%"}}/>
+        </div>
+      ) : (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+          <div>
+            <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>시작</div>
+            <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{...S.inp,width:"100%"}}/>
+          </div>
+          <div>
+            <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>끝</div>
+            <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{...S.inp,width:"100%"}}/>
+          </div>
+        </div>
+      )}
+      {/* 과목 / 선생님 / 학년 */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
+        <div>
+          <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>과목</div>
+          <select value={subject} onChange={e=>setSubject(e.target.value)} style={{...S.inp,width:"100%"}}>
+            <option value="">전체 과목</option>
+            {["국어","영어","수학","과학","사회"].map(s=><option key={s} value={s}>{s}</option>)}
+          </select>
         </div>
         <div>
           <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>선생님</div>
@@ -1257,90 +1616,23 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
           </select>
         </div>
         <div>
-          <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>학년 (선택)</div>
+          <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>학년</div>
           <select value={grade} onChange={e=>setGrade(e.target.value)} style={{...S.inp,width:"100%"}}>
             <option value="">전체 학년</option>
             {["초3","초4","초5","초6","중1","중2","중3","고1","고2","고3"].map(g=><option key={g}>{g}</option>)}
           </select>
         </div>
-        <div>
-          <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>미달 기준 (점)</div>
-          <input type="number" min="0" max="100" value={lowThreshold} onChange={e=>setLowThreshold(Number(e.target.value)||60)} style={{...S.inp,width:"100%"}}/>
-        </div>
       </div>
       <button onClick={load} style={{...S.btnG,width:"100%"}}>🔍 조회</button>
+      <div style={{fontSize:10,color:T.textMuted,marginTop:6,textAlign:"center"}}>※ 미달 기준 = 70점 미만 (고정)</div>
     </div>
 
     {loading ? <div style={{textAlign:"center",padding:30,color:T.textMuted}}>로딩 중…</div> :
-     classes.length === 0 ? <div style={{textAlign:"center",padding:30,color:T.textMuted}}>해당 조건의 시험 데이터 없음<br/><span style={{fontSize:11}}>(시험을 학생들이 제출한 후에 표시됩니다)</span></div> :
-     classes.map((c, i) => {
-       const lowStudents = (c.students||[]).filter(s=>s.score<lowThreshold);
-       return (
-        <div key={i} style={{...S.card, marginBottom:12}}>
-          {/* 헤더 */}
-          <div style={{borderBottom:`1px solid ${T.border}`,paddingBottom:8,marginBottom:10}}>
-            <div style={{fontSize:15,fontWeight:700,color:T.text}}>📘 {c.subject} {c.grade} {c.level}반 · {c.examType}</div>
-            <div style={{fontSize:11,color:T.textMuted,marginTop:3}}>
-              {c.teacher?<>👤 {c.teacher} 선생님 · </>:null}
-              📅 {c.date} · 응시 {c.total}명
-            </div>
-          </div>
-          {/* 요약 통계 */}
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:10}}>
-            <div style={{textAlign:"center",padding:"8px 4px",background:T.bg,borderRadius:6}}>
-              <div style={{fontSize:10,color:T.textMuted}}>평균</div>
-              <div style={{fontSize:18,fontWeight:700,color:scoreColor(c.avg)}}>{c.avg}점</div>
-            </div>
-            <div style={{textAlign:"center",padding:"8px 4px",background:T.bg,borderRadius:6}}>
-              <div style={{fontSize:10,color:T.textMuted}}>최고</div>
-              <div style={{fontSize:18,fontWeight:700,color:T.accent}}>{c.max}점</div>
-            </div>
-            <div style={{textAlign:"center",padding:"8px 4px",background:T.bg,borderRadius:6}}>
-              <div style={{fontSize:10,color:T.textMuted}}>최저</div>
-              <div style={{fontSize:18,fontWeight:700,color:T.danger}}>{c.min}점</div>
-            </div>
-          </div>
-          {/* 만점/미달 뱃지 */}
-          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
-            {c.perfectCount>0&&<span style={{fontSize:11,padding:"4px 8px",background:T.goldPale,color:T.goldDeep,borderRadius:6,fontWeight:600}}>🏆 만점자 {c.perfectCount}명</span>}
-            {lowStudents.length>0&&<span style={{fontSize:11,padding:"4px 8px",background:T.dangerLight,color:T.danger,borderRadius:6,fontWeight:600}}>⚠️ {lowThreshold}점 미만 {lowStudents.length}명</span>}
-          </div>
-          {/* 학생별 성적 */}
-          <div style={{marginBottom:10}}>
-            <div style={{fontSize:12,color:T.textMuted,marginBottom:6,fontWeight:600}}>학생별 성적 (점수 낮은 순)</div>
-            <div style={{display:"flex",flexDirection:"column",gap:3}}>
-              {(c.students||[]).map((s,si)=>(
-                <div key={si} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:s.score<lowThreshold?T.dangerLight:s.score===100?T.goldPale:T.bg,borderRadius:6,fontSize:12}}>
-                  <span style={{minWidth:32,fontSize:11,fontWeight:600,color:T.textMuted}}>#{s.rank}</span>
-                  <span style={{minWidth:60,fontWeight:600,color:T.text}}>{s.name||"?"}</span>
-                  <span style={{minWidth:50,fontWeight:700,color:scoreColor(s.score)}}>{s.score}점</span>
-                  <span style={{flex:1,color:T.textSub,fontSize:11,wordBreak:"break-all"}}>
-                    {s.wrongQs && s.wrongQs.length>0
-                      ? <>❌ {s.wrongQs.join(", ")}</>
-                      : <span style={{color:T.accent}}>✓ 전부 정답</span>}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-          {/* 어려운 문항 Top3 */}
-          {c.hardest && c.hardest.length>0 && <div style={{marginBottom:10,padding:"8px 10px",background:T.bg,borderRadius:6}}>
-            <div style={{fontSize:11,color:T.textMuted,marginBottom:4,fontWeight:600}}>🔥 어려운 문항 Top {c.hardest.length}</div>
-            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              {c.hardest.map((h,hi)=>(
-                <span key={hi} style={{fontSize:11,padding:"3px 8px",background:h.pct>=70?T.dangerLight:T.white,color:h.pct>=70?T.danger:T.textSub,border:`1px solid ${T.border}`,borderRadius:10}}>
-                  {h.q}번 ({h.wrong}명·{h.pct}%)
-                </span>
-              ))}
-            </div>
-          </div>}
-          {/* 액션 */}
-          <div style={{display:"flex",gap:6}}>
-            <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:1,fontSize:12}}>📥 엑셀 다운로드</button>
-          </div>
-        </div>
-      );
-     })}
+     sortedClasses.length === 0 ? <div style={{textAlign:"center",padding:30,color:T.textMuted}}>해당 조건의 시험 데이터 없음<br/><span style={{fontSize:11}}>(시험을 학생들이 제출한 후에 표시됩니다)</span></div> :
+     dateMode === "range"
+       ? rangeGroups.map((g,i)=>renderRangeCard(g, `rg-${i}`))
+       : renderSingleGrouped()
+    }
   </div>);
 }
 /* ═══ 시험 스케줄 탭 ═══
