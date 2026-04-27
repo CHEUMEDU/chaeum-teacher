@@ -1929,14 +1929,16 @@ function TeachersTab({sheetsUrl, T, S, onChanged}){
    App 에서는 teacherList, 파일 프록시 함수들만 props로 전달.
    */
 /* ═══ [v21.0] AI 답지 검수 — 모달 ═══ */
-function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
+function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDeleted}){
   // 모델별 답안을 한 곳에 모아서 비교 + 선생님 수정 + 확정
   const totalQ = parseInt(item.totalQ||0,10);
-  const mr = item.modelResults || {};
+  const types = item.types || {};
+  // 모델 답안 (재요청 후 overrideMR이 있으면 그걸 사용)
+  const [overrideMR, setOverrideMR] = useState(null);
+  const mr = overrideMR || item.modelResults || {};
   const ga = (mr.gemini && mr.gemini.answers) || {};
   const pa = (mr.gpt && mr.gpt.answers) || {};
   const ca = (mr.claude && mr.claude.answers) || {};
-  const types = item.types || {};
   // 초기 정답: 3개 만장일치인 문항만 자동 채움. 1개라도 다르거나 비어있으면 선생님이 직접 결정.
   const initial = useMemo(()=>{
     const out = {};
@@ -1979,6 +1981,59 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
   const filledCount = Object.values(finalAns).filter(v=>String(v||"").trim()!=="").length;
   const blanks = [];
   for(let q=1;q<=totalQ;q++){if(!String(finalAns[String(q)]||"").trim())blanks.push(q);}
+  // 모델 답안 갱신 / 액션 진행 상태
+  const [retrying, setRetrying] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const aiRetry = async ()=>{
+    if(!confirm("불일치 문항을 AI에게 다시 요청하고 다수결로 채울까요?\n(현재 입력된 답은 다수결 결정으로 덮어씁니다.)")) return;
+    setRetrying(true);
+    try{
+      const res = await fetch(sheetsUrl,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain;charset=utf-8"},
+        body: JSON.stringify({action:"ai_retry_mismatches", rowIndex: item.rowIndex})
+      });
+      const d = await res.json();
+      if(d.result==="success"){
+        // 다수결 결과로 finalAns 업데이트
+        setFinalAns(prev=>{
+          const next = {...prev};
+          Object.keys(d.majorityFinal||{}).forEach(k=>{ next[k] = d.majorityFinal[k]; });
+          return next;
+        });
+        // 모델 결과도 업데이트 (UI 갱신용)
+        if(d.modelResults) setOverrideMR(d.modelResults);
+        const decided = Object.keys(d.majorityFinal||{}).length;
+        const remain = (d.stillMismatch||[]).length;
+        alert(`✅ 재요청 완료\n다수결로 결정: ${decided}개\n여전히 불일치: ${remain}개\n\n남은 불일치는 답지 보면서 직접 입력하세요.`);
+      } else {
+        alert("재요청 실패: "+(d.message||""));
+      }
+    }catch(e){
+      alert("네트워크 오류: "+String(e));
+    }finally{setRetrying(false);}
+  };
+  const removeReview = async ()=>{
+    if(!confirm("이 검수 항목을 정답목록에서 완전히 삭제할까요?\n(되돌릴 수 없습니다)")) return;
+    setDeleting(true);
+    try{
+      const res = await fetch(sheetsUrl,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain;charset=utf-8"},
+        body: JSON.stringify({action:"delete_review", rowIndex: item.rowIndex, deletedBy: item.teacher||""})
+      });
+      const d = await res.json();
+      if(d.result==="success"){
+        alert("🗑 삭제 완료");
+        onDeleted && onDeleted(item.rowIndex);
+        onClose();
+      } else {
+        alert("삭제 실패: "+(d.message||""));
+      }
+    }catch(e){
+      alert("네트워크 오류: "+String(e));
+    }finally{setDeleting(false);}
+  };
   const submit = async ()=>{
     if(blanks.length>0){
       if(!confirm(`아직 ${blanks.length}개 문항이 비어있습니다.\n비어있는 문항: ${blanks.slice(0,10).join(", ")}${blanks.length>10?"...":""}\n\n그래도 확정할까요?`))return;
@@ -2056,7 +2111,15 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
               </div>
             )}
           </div>
-          <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+          <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+            <button onClick={aiRetry} disabled={retrying} title="불일치 문항만 AI에게 다시 요청해서 다수결로 채웁니다" style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:`1px solid ${T.gold}`,background:T.white,color:T.goldDark,cursor:retrying?"wait":"pointer",fontFamily:"inherit"}}>
+              {retrying?"⏳ 재요청 중...":"🔄 불일치 재요청"}
+            </button>
+            <button onClick={removeReview} disabled={deleting} title="이 검수 항목을 정답목록에서 삭제" style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:deleting?"wait":"pointer",fontFamily:"inherit"}}>
+              {deleting?"⏳":"🗑 삭제"}
+            </button>
+            <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+          </div>
         </div>
         {/* 본문: 좌측 답지 PDF + 우측 답안 비교 */}
         <div style={{flex:1,display:"flex",overflow:"hidden"}}>
@@ -2094,19 +2157,70 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
                 <tbody>
                   {visibleQs.map(q=>{
                     const k=String(q);
-                    const g=String(ga[k]||"-");
-                    const p=String(pa[k]||"-");
-                    const c=String(ca[k]||"-");
+                    const g=String(ga[k]||"");
+                    const p=String(pa[k]||"");
+                    const c=String(ca[k]||"");
                     const isMis = needReviewSet.has(q);
-                    const isSubj = (types[k]||"")==="sa" || (types[k]||"")==="sub";
+                    // 주관식 자동 감지: types에 sa/sub 표시 OR 모델 답안에 긴 텍스트(5자 이상 비숫자)가 있으면 주관식 처리
+                    const explicitSubj = (types[k]||"")==="sa" || (types[k]||"")==="sub";
+                    const longText = [g,p,c].some(v=>v && v.length>=5 && !/^[1-9](\s*,\s*[1-9])*$/.test(v.trim()));
+                    const isSubj = explicitSubj || longText;
+                    // 다수결 후보 계산 — 정규화 후 동일한 답이 2개 이상이면 추천
+                    const norm = s=>String(s||"").replace(/[①②③④⑤]/g,m=>({"①":"1","②":"2","③":"3","④":"4","⑤":"5"})[m])
+                                                  .replace(/[‘’]/g,"'").replace(/[“”]/g,'"')
+                                                  .replace(/\s*\(\s*\d+\s*\)\s*/g," / ").replace(/[;\n\r]+/g," / ")
+                                                  .replace(/\s+/g," ").trim().replace(/[.\s]+$/,"").toLowerCase();
+                    const nG=norm(g), nP=norm(p), nC=norm(c);
+                    const counts = {};
+                    [[nG,g],[nP,p],[nC,c]].forEach(([n,raw])=>{
+                      if(n && n!=="?") counts[n] = counts[n] ? {...counts[n], n: counts[n].n+1} : {raw, n:1};
+                    });
+                    let majorityRaw = "";
+                    Object.values(counts).forEach(v=>{ if(v.n>=2 && (!majorityRaw || v.n>(counts[norm(majorityRaw)]?.n||0))) majorityRaw = v.raw; });
+                    const renderModelCell = (raw, color) => {
+                      const display = raw || "-";
+                      const isShort = !raw || raw.length<=10;
+                      return (
+                        <button
+                          type="button"
+                          disabled={!raw || raw==="?"}
+                          onClick={()=>setQ(q, raw)}
+                          title={raw ? `클릭하면 최종정답에 "${raw}" 입력` : ""}
+                          style={{
+                            width:"100%",minHeight:28,padding:"4px 6px",border:"none",
+                            background:"transparent",color:color,fontWeight:600,
+                            cursor:(!raw||raw==="?")?"default":"pointer",
+                            fontSize:isShort?13:11,
+                            textAlign:isShort?"center":"left",
+                            wordBreak:"break-word",whiteSpace:"pre-wrap",
+                            fontFamily:"inherit"
+                          }}>
+                          {display}
+                        </button>
+                      );
+                    };
                     return (
                       <tr key={q} style={{background: isMis?"#fff5f0":T.white}}>
-                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",fontWeight:700,color:isMis?T.danger:T.textSub}}>{q}{isSubj&&<span style={{fontSize:9,color:T.textMuted,display:"block"}}>주관식</span>}</td>
-                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",color:"#0d8aff"}}>{g}</td>
-                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",color:"#10a37f"}}>{p}</td>
-                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",color:"#ca8a04"}}>{c}</td>
-                        <td style={{padding:"4px",border:`1px solid ${T.border}`}}>
-                          <input value={finalAns[k]||""} onChange={e=>setQ(q,e.target.value)} placeholder={isSubj?"답 입력":"1~5"} style={{width:"100%",padding:"4px 6px",fontSize:12,border:`1.5px solid ${isMis?T.danger:T.border}`,borderRadius:6,fontFamily:"inherit",background:isMis?"#fffbf6":T.white,fontWeight:isMis?700:500,textAlign:isSubj?"left":"center"}}/>
+                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",fontWeight:700,color:isMis?T.danger:T.textSub,verticalAlign:"top"}}>{q}{isSubj&&<span style={{fontSize:9,color:T.textMuted,display:"block"}}>주관식</span>}</td>
+                        <td style={{padding:0,border:`1px solid ${T.border}`,verticalAlign:"top"}}>{renderModelCell(g,"#0d8aff")}</td>
+                        <td style={{padding:0,border:`1px solid ${T.border}`,verticalAlign:"top"}}>{renderModelCell(p,"#10a37f")}</td>
+                        <td style={{padding:0,border:`1px solid ${T.border}`,verticalAlign:"top"}}>{renderModelCell(c,"#ca8a04")}</td>
+                        <td style={{padding:"4px",border:`1px solid ${T.border}`,verticalAlign:"top"}}>
+                          {isSubj ? (
+                            <textarea value={finalAns[k]||""} onChange={e=>setQ(q,e.target.value)} placeholder="답 입력 (위 모델 답안 클릭 가능)" rows={Math.max(1,Math.ceil((finalAns[k]||"").length/40))} style={{width:"100%",padding:"4px 6px",fontSize:12,border:`1.5px solid ${isMis?T.danger:T.border}`,borderRadius:6,fontFamily:"inherit",background:isMis?"#fffbf6":T.white,fontWeight:isMis?700:500,textAlign:"left",resize:"vertical",minHeight:28}}/>
+                          ) : (
+                            <input value={finalAns[k]||""} onChange={e=>setQ(q,e.target.value)} placeholder="1~5" style={{width:"100%",padding:"4px 6px",fontSize:13,border:`1.5px solid ${isMis?T.danger:T.border}`,borderRadius:6,fontFamily:"inherit",background:isMis?"#fffbf6":T.white,fontWeight:isMis?700:500,textAlign:"center"}}/>
+                          )}
+                          {isMis && majorityRaw && (
+                            <button
+                              type="button"
+                              onClick={()=>setQ(q, majorityRaw)}
+                              style={{marginTop:4,width:"100%",padding:"3px 6px",fontSize:10,fontWeight:700,
+                                background:"#fff3cd",color:"#855700",border:"1px solid #ffc107",
+                                borderRadius:4,cursor:"pointer",fontFamily:"inherit"}}>
+                              👥 다수결: "{majorityRaw.length>20?majorityRaw.substring(0,20)+"...":majorityRaw}" 적용
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -2133,11 +2247,13 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
     </div>
   );
 }
-function ReviewListModal({sheetsUrl, T, S, onClose}){
+function ReviewListModal({sheetsUrl, T, S, onClose, currentTeacher}){
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [selected, setSelected] = useState(null);
+  // 본인 것만 보기 (현재 로그인 선생님이 있으면 기본 ON)
+  const [onlyMine, setOnlyMine] = useState(!!currentTeacher);
   const load = useCallback(()=>{
     setLoading(true); setErr("");
     fetch(`${sheetsUrl}?action=list_review_pending`)
@@ -2147,18 +2263,43 @@ function ReviewListModal({sheetsUrl, T, S, onClose}){
       }).catch(()=>setErr("네트워크 오류")).finally(()=>setLoading(false));
   },[sheetsUrl]);
   useEffect(()=>{ load(); },[load]);
+  // 항목별 삭제
+  const deleteItem = async (rowIndex, ev)=>{
+    if(ev) ev.stopPropagation();
+    if(!confirm("이 검수 항목을 삭제할까요? (되돌릴 수 없습니다)")) return;
+    try{
+      const res = await fetch(sheetsUrl,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain;charset=utf-8"},
+        body: JSON.stringify({action:"delete_review", rowIndex, deletedBy: currentTeacher||""})
+      });
+      const d = await res.json();
+      if(d.result==="success"){ load(); }
+      else alert("삭제 실패: "+(d.message||""));
+    }catch(e){ alert("네트워크 오류: "+String(e)); }
+  };
   if(selected){
-    return <ReviewDetailModal item={selected} sheetsUrl={sheetsUrl} T={T} S={S} onClose={()=>setSelected(null)} onConfirmed={()=>{ setSelected(null); load(); }}/>;
+    return <ReviewDetailModal item={selected} sheetsUrl={sheetsUrl} T={T} S={S} onClose={()=>setSelected(null)} onConfirmed={()=>{ setSelected(null); load(); }} onDeleted={()=>{ setSelected(null); load(); }}/>;
   }
+  // 필터링
+  const filteredItems = onlyMine && currentTeacher
+    ? items.filter(it=>String(it.teacher||"").trim() === currentTeacher.trim())
+    : items;
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
       <div style={{background:T.white,width:"100%",maxWidth:900,maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",borderRadius:12}} onClick={e=>e.stopPropagation()}>
         <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.goldPale}}>
           <div>
             <div style={{fontSize:16,fontWeight:800,color:T.text}}>🔍 AI 검수 대기 목록</div>
-            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>3중 만장일치에 실패한 답안 {items.length}건</div>
+            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>{onlyMine && currentTeacher ? `${currentTeacher} 선생님 ` : "전체 "}검수 대기 {filteredItems.length}건 / 전체 {items.length}건</div>
           </div>
-          <div style={{display:"flex",gap:6}}>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            {currentTeacher && (
+              <label style={{fontSize:11,fontWeight:700,color:T.textSub,cursor:"pointer",display:"flex",alignItems:"center",gap:4,padding:"6px 10px",background:T.white,borderRadius:6,border:`1px solid ${T.border}`}}>
+                <input type="checkbox" checked={onlyMine} onChange={e=>setOnlyMine(e.target.checked)}/>
+                본인 것만
+              </label>
+            )}
             <button onClick={load} style={{...S.btnO,padding:"6px 12px"}}>🔄 새로고침</button>
             <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
           </div>
@@ -2166,16 +2307,16 @@ function ReviewListModal({sheetsUrl, T, S, onClose}){
         <div style={{flex:1,overflow:"auto",padding:14}}>
           {loading && <div style={{padding:24,textAlign:"center",color:T.textMuted}}>불러오는 중...</div>}
           {err && <div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{err}</div>}
-          {!loading && !err && items.length===0 && (
+          {!loading && !err && filteredItems.length===0 && (
             <div style={{padding:40,textAlign:"center",color:T.textMuted}}>
               <div style={{fontSize:36,marginBottom:8}}>✨</div>
               <div style={{fontSize:14,fontWeight:600}}>검수 대기 항목이 없습니다.</div>
-              <div style={{fontSize:12,marginTop:4}}>모든 답지가 자동 등록되었습니다.</div>
+              <div style={{fontSize:12,marginTop:4}}>{onlyMine && currentTeacher ? "본인 담당 시험 중 검수 필요한 답지가 없습니다." : "모든 답지가 자동 등록되었습니다."}</div>
             </div>
           )}
-          {!loading && items.length>0 && (
+          {!loading && filteredItems.length>0 && (
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {items.map(it=>(
+              {filteredItems.map(it=>(
                 <div key={it.rowIndex} onClick={()=>setSelected(it)} style={{padding:"12px 14px",border:`1.5px solid ${T.border}`,borderRadius:10,background:T.white,cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.15s"}}
                   onMouseEnter={e=>{e.currentTarget.style.borderColor=T.goldDark;e.currentTarget.style.background=T.goldPale;}}
                   onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.background=T.white;}}>
@@ -2187,6 +2328,7 @@ function ReviewListModal({sheetsUrl, T, S, onClose}){
                     <div style={{fontSize:18,fontWeight:800,color:T.danger}}>{it.mismatchCount}</div>
                     <div style={{fontSize:10,color:T.textMuted}}>불일치</div>
                   </div>
+                  <button onClick={(e)=>deleteItem(it.rowIndex, e)} title="삭제" style={{padding:"4px 8px",fontSize:12,fontWeight:700,borderRadius:4,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}}>🗑</button>
                   <div style={{fontSize:18,color:T.goldDark,marginLeft:6}}>›</div>
                 </div>
               ))}
@@ -2197,7 +2339,132 @@ function ReviewListModal({sheetsUrl, T, S, onClose}){
     </div>
   );
 }
-function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
+// [v21.1] 확정 답지 조회 모달 (AUTO_OK + MANUAL_CONFIRMED)
+function ConfirmedAnswersModal({sheetsUrl, T, S, onClose, currentTeacher}){
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [days, setDays] = useState(30);
+  const [onlyMine, setOnlyMine] = useState(!!currentTeacher);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const load = useCallback(()=>{
+    setLoading(true); setErr("");
+    const teacherParam = (onlyMine && currentTeacher) ? `&teacher=${encodeURIComponent(currentTeacher)}` : "";
+    fetch(`${sheetsUrl}?action=list_confirmed_answers&days=${days}${teacherParam}`)
+      .then(r=>r.json()).then(d=>{
+        if(d.result==="success") setItems(d.items||[]);
+        else setErr(d.message||"조회 실패");
+      }).catch(()=>setErr("네트워크 오류")).finally(()=>setLoading(false));
+  },[sheetsUrl, days, onlyMine, currentTeacher]);
+  useEffect(()=>{ load(); },[load]);
+  const openDetail = async (it)=>{
+    setDetailLoading(true);
+    try{
+      const r = await fetch(`${sheetsUrl}?action=get_confirmed_detail&rowIndex=${it.rowIndex}`);
+      const d = await r.json();
+      if(d.result==="success") setDetail(d);
+      else alert("상세 조회 실패: "+(d.message||""));
+    }catch(e){ alert("네트워크 오류: "+String(e)); }
+    finally{ setDetailLoading(false); }
+  };
+  if(detail){
+    const ans = detail.answers||{};
+    const types = detail.types||{};
+    const ks = Object.keys(ans).sort((a,b)=>parseInt(a,10)-parseInt(b,10));
+    const startNum = parseInt(detail.startNumber||1,10);
+    return (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setDetail(null)}>
+        <div style={{background:T.white,width:"100%",maxWidth:700,maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",borderRadius:12}} onClick={e=>e.stopPropagation()}>
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.goldPale}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:800,color:T.text}}>📖 {detail.subject} {detail.grade} {detail.level} ({detail.examType})</div>
+              <div style={{fontSize:11,color:T.textSub,marginTop:2}}>👨‍🏫 {detail.teacher||"-"} · 📅 {detail.date} · {detail.totalQ}문제 · 시작번호 {startNum} · 상태 {detail.status==="AUTO_OK"?"✅ 자동확정":"✋ 수동확정"}</div>
+            </div>
+            <button onClick={()=>setDetail(null)} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+          </div>
+          <div style={{flex:1,overflow:"auto",padding:14}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
+              <thead style={{position:"sticky",top:0,background:T.goldPale}}>
+                <tr><th style={{padding:6,border:`1px solid ${T.border}`,width:80}}>문항</th><th style={{padding:6,border:`1px solid ${T.border}`,width:60}}>유형</th><th style={{padding:6,border:`1px solid ${T.border}`}}>정답</th></tr>
+              </thead>
+              <tbody>
+                {ks.map(k=>{
+                  const isSubj = (types[k]||"")==="sa" || (types[k]||"")==="sub" || (String(ans[k]||"").length>=5 && !/^[1-9](\s*,\s*[1-9])*$/.test(String(ans[k]||"").trim()));
+                  const displayNum = startNum > 1 ? `${k} (원본: ${startNum + parseInt(k,10) - 1})` : k;
+                  return (
+                    <tr key={k}>
+                      <td style={{padding:6,border:`1px solid ${T.border}`,textAlign:"center",fontWeight:700,color:T.textSub}}>{displayNum}</td>
+                      <td style={{padding:6,border:`1px solid ${T.border}`,textAlign:"center",color:T.textMuted,fontSize:11}}>{isSubj?"주관식":"객관식"}</td>
+                      <td style={{padding:6,border:`1px solid ${T.border}`,fontWeight:600,color:T.goldDark,wordBreak:"break-word"}}>{ans[k]||"(미입력)"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={onClose}>
+      <div style={{background:T.white,width:"100%",maxWidth:900,maxHeight:"90vh",overflow:"hidden",display:"flex",flexDirection:"column",borderRadius:12}} onClick={e=>e.stopPropagation()}>
+        <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.goldPale}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:800,color:T.text}}>📖 확정 답지 조회</div>
+            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>최근 {days}일 · {onlyMine && currentTeacher ? `${currentTeacher} 선생님 ` : "전체 "}{items.length}건</div>
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <select value={days} onChange={e=>setDays(parseInt(e.target.value,10))} style={{padding:"6px 8px",fontSize:12,fontWeight:700,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,fontFamily:"inherit"}}>
+              <option value={7}>최근 7일</option>
+              <option value={30}>최근 30일</option>
+              <option value={90}>최근 90일</option>
+              <option value={365}>최근 1년</option>
+            </select>
+            {currentTeacher && (
+              <label style={{fontSize:11,fontWeight:700,color:T.textSub,cursor:"pointer",display:"flex",alignItems:"center",gap:4,padding:"6px 10px",background:T.white,borderRadius:6,border:`1px solid ${T.border}`}}>
+                <input type="checkbox" checked={onlyMine} onChange={e=>setOnlyMine(e.target.checked)}/>
+                본인 것만
+              </label>
+            )}
+            <button onClick={load} style={{...S.btnO,padding:"6px 12px"}}>🔄</button>
+            <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+          </div>
+        </div>
+        <div style={{flex:1,overflow:"auto",padding:14}}>
+          {(loading || detailLoading) && <div style={{padding:24,textAlign:"center",color:T.textMuted}}>불러오는 중...</div>}
+          {err && <div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{err}</div>}
+          {!loading && !err && items.length===0 && (
+            <div style={{padding:40,textAlign:"center",color:T.textMuted}}>
+              <div style={{fontSize:36,marginBottom:8}}>📭</div>
+              <div style={{fontSize:14,fontWeight:600}}>확정된 답지가 없습니다.</div>
+            </div>
+          )}
+          {!loading && items.length>0 && (
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {items.map(it=>(
+                <div key={it.rowIndex} onClick={()=>openDetail(it)} style={{padding:"10px 12px",border:`1px solid ${T.border}`,borderRadius:8,background:T.white,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=T.goldDark;e.currentTarget.style.background=T.goldPale;}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.background=T.white;}}>
+                  <div style={{fontSize:11,fontWeight:700,padding:"2px 6px",borderRadius:4,background:it.status==="AUTO_OK"?"#e6f7ee":"#fff3cd",color:it.status==="AUTO_OK"?"#0a7d3a":"#855700"}}>
+                    {it.status==="AUTO_OK"?"✅ 자동":"✋ 수동"}
+                  </div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700,color:T.text}}>{it.subject} {it.grade} {it.level} <span style={{color:T.textSub,fontWeight:500}}>· {it.examType}{it.setType?" ("+it.setType+")":""}</span></div>
+                    <div style={{fontSize:10,color:T.textMuted,marginTop:1}}>👨‍🏫 {it.teacher||"-"} · 📅 {it.date} · {it.totalQ}문제 · 답안 {it.answerCount}개</div>
+                  </div>
+                  <div style={{fontSize:16,color:T.goldDark}}>›</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview, currentTeacher}){
   const todayIsoStr=()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
   const [dashDate, setDashDate] = useState(todayIsoStr());
   const [dashData, setDashData] = useState(null);
@@ -2209,6 +2476,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   // [v21.0] AI 검수 대기 카운트 + 모달
   const [reviewCount, setReviewCount] = useState(0);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [confirmedModalOpen, setConfirmedModalOpen] = useState(false);
   const toggleFiles = (k)=>setOpenFiles(p=>({...p,[k]:!p[k]}));
   const loadReviewCount = useCallback(()=>{
     fetch(`${sheetsUrl}?action=list_review_pending`)
@@ -2235,7 +2503,12 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   const isDashToday=dashDate===todayIsoStr();
   const dashDateLabel=(()=>{const m=dashDate.match(/(\d{4})-(\d{2})-(\d{2})/);return m?`${parseInt(m[2])}/${parseInt(m[3])}`:"";})();
   return(<div style={S.wrap} className="fade-up">
-    <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📊</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1><p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p></div>
+    <div style={{textAlign:"center",padding:"20px 0 12px",position:"relative"}}>
+      <div style={{fontSize:36,marginBottom:4}}>📊</div>
+      <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1>
+      <p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p>
+      <button onClick={()=>setConfirmedModalOpen(true)} style={{position:"absolute",top:20,right:0,padding:"8px 14px",fontSize:12,fontWeight:700,borderRadius:8,border:`1px solid ${T.gold}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>📖 확정 답지 조회</button>
+    </div>
     {/* [v21.0] AI 검수 대기 배너 */}
     {reviewCount > 0 && (
       <div onClick={()=>setReviewModalOpen(true)} style={{padding:"12px 16px",borderRadius:10,background:"linear-gradient(135deg, #FFF3D0 0%, #FFE5A0 100%)",border:`2px solid ${T.goldDark}`,marginBottom:10,cursor:"pointer",display:"flex",alignItems:"center",gap:10,transition:"all 0.15s"}}
@@ -2250,7 +2523,8 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
         <div style={{fontSize:20,color:T.goldDark}}>›</div>
       </div>
     )}
-    {reviewModalOpen && <ReviewListModal sheetsUrl={sheetsUrl} T={T} S={S} onClose={()=>{setReviewModalOpen(false);loadReviewCount();}}/>}
+    {reviewModalOpen && <ReviewListModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>{setReviewModalOpen(false);loadReviewCount();}}/>}
+    {confirmedModalOpen && <ConfirmedAnswersModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>setConfirmedModalOpen(false)}/>}
     {/* 날짜 선택 + 새로고침 */}
     <div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -2939,7 +3213,7 @@ export default function App(){
         <button style={S.btnG} onClick={goToMode}>다음 →</button>
       </div>)}
       {/* ═══ 오늘의 현황 대시보드 — 별도 컴포넌트 ═══ */}
-      {screen==="home"&&tab==="dashboard"&&(<DashboardTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
+      {screen==="home"&&tab==="dashboard"&&(<DashboardTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview} currentTeacher={teacher}/>)}
       {/* ═══ 스케줄 관리 탭 — 별도 컴포넌트 ═══ */}
       {screen==="home"&&tab==="schedule"&&(<ScheduleTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
       {/* ═══ 선생님 관리 탭 — 카테고리(관리자/국어/영어/수학) CRUD ═══ */}
@@ -2981,14 +3255,15 @@ export default function App(){
             <input style={S.chInp} placeholder="직접" value={customQ} onChange={e=>setCustomQ(e.target.value.replace(/[^0-9]/g,""))} onFocus={()=>setTotalQ(0)}/>
           </div>
         </div>
-        {/* 시작번호 설정 */}
+        {/* 시작번호 설정 — 직접 입력 모드만 (PDF 업로드 모드는 AI 자동 추출) */}
         <div style={S.card}>
           <div style={S.secLabel}>시작 번호 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(시험지 첫 번호가 1이 아닌 경우)</span></div>
-          <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
             <input type="number" min="1" value={startNum} onChange={e=>setStartNum(Math.max(1,parseInt(e.target.value)||1))} style={{...S.chInp,width:100,textAlign:"center",fontSize:16,fontWeight:700}} placeholder="1"/>
             <span style={{fontSize:12,color:T.textSub}}>번부터 시작</span>
             {startNum>1&&<span style={{fontSize:11,color:T.accent,fontWeight:600}}>→ OMR에 {startNum}(1), {startNum+1}(2)... 표시</span>}
           </div>
+          <div style={{fontSize:10,color:T.textMuted,marginTop:4}}>💡 PDF 업로드 모드는 AI가 답지에서 시작번호를 자동 인식합니다.</div>
         </div>
         {/* 시험지/정답지 파일 업로드 (선택) — 실장님 프린트용 */}
         <div style={S.card}>
@@ -3061,26 +3336,15 @@ export default function App(){
                   <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차, 중간고사 등) — 선택`} value={rd.label||""} onChange={e=>updateRound(ri,"label",e.target.value)}/>
                   {rounds.length>1&&(<button onClick={()=>setRounds(p=>p.filter((_,j)=>j!==ri))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                 </div>
-                {/* ★ v17: 전체 문항수 / 시작 번호 / 끝 번호 — Claude 분석 정확도용 */}
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:8}}>
-                  <div>
+                {/* v21.1: 전체 문항수만 입력 (시작번호는 AI가 자동 추출) */}
+                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-end"}}>
+                  <div style={{flex:"0 0 140px"}}>
                     <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:3}}>전체 문항수</div>
                     <input type="number" min="1" value={rd.totalQ||30} onChange={e=>updateRound(ri,"totalQ",e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border}`,fontSize:13,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
                   </div>
-                  <div>
-                    <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:3}}>시작 번호</div>
-                    <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateRound(ri,"startNum",e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border}`,fontSize:13,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                  <div style={{flex:1,fontSize:10,color:T.textMuted,fontWeight:600,lineHeight:1.5,paddingBottom:6}}>
+                    💡 시작번호는 AI가 답지에서 자동 인식합니다 (201번부터 시작 등도 OK)
                   </div>
-                  <div>
-                    <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:3}}>끝 번호</div>
-                    <input type="number" min="1" value={rd.endNum||30} onChange={e=>updateRound(ri,"endNum",e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border}`,fontSize:13,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
-                  </div>
-                </div>
-                <div style={{fontSize:10,color:((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?T.accent:T.danger,fontWeight:600,lineHeight:1.4,marginBottom:8}}>
-                  {((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?
-                    `✓ ${rd.startNum||1}번 ~ ${rd.endNum||30}번 · 총 ${rd.totalQ||30}문항`:
-                    `⚠ 끝번호(${rd.endNum||0}) - 시작번호(${rd.startNum||1}) + 1 = ${(parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1} ≠ 문항수(${rd.totalQ||0})`}
-                  {(parseInt(rd.startNum)||1)>1&&<span style={{color:T.textMuted,fontWeight:500,marginLeft:6}}>💡 다른 문제집/모의고사에서 발췌한 경우 시작번호를 수정하세요</span>}
                 </div>
                 <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                 <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
@@ -3103,25 +3367,15 @@ export default function App(){
                         <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차) — 선택`} value={rd.label||""} onChange={e=>updateClassRound(cls.name,ri,"label",e.target.value)}/>
                         {(classRounds[cls.name]||[]).length>1&&(<button onClick={()=>setClassRounds(p=>({...p,[cls.name]:(p[cls.name]||[]).filter((_,j)=>j!==ri)}))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                       </div>
-                      {/* ★ v17: 전체 문항수 / 시작 번호 / 끝 번호 — Claude 분석 정확도용 */}
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:6}}>
-                        <div>
+                      {/* v21.1: 전체 문항수만 입력 (시작번호는 AI가 자동 추출) */}
+                      <div style={{display:"flex",gap:6,marginBottom:6,alignItems:"flex-end"}}>
+                        <div style={{flex:"0 0 120px"}}>
                           <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:2}}>전체 문항수</div>
                           <input type="number" min="1" value={rd.totalQ||30} onChange={e=>updateClassRound(cls.name,ri,"totalQ",e.target.value)} style={{width:"100%",padding:"5px 6px",borderRadius:5,border:`1px solid ${T.border}`,fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
                         </div>
-                        <div>
-                          <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:2}}>시작 번호</div>
-                          <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateClassRound(cls.name,ri,"startNum",e.target.value)} style={{width:"100%",padding:"5px 6px",borderRadius:5,border:`1px solid ${T.border}`,fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
+                        <div style={{flex:1,fontSize:10,color:T.textMuted,fontWeight:600,lineHeight:1.4,paddingBottom:4}}>
+                          💡 시작번호는 AI가 자동 인식
                         </div>
-                        <div>
-                          <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:2}}>끝 번호</div>
-                          <input type="number" min="1" value={rd.endNum||30} onChange={e=>updateClassRound(cls.name,ri,"endNum",e.target.value)} style={{width:"100%",padding:"5px 6px",borderRadius:5,border:`1px solid ${T.border}`,fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
-                        </div>
-                      </div>
-                      <div style={{fontSize:10,color:((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?T.accent:T.danger,fontWeight:600,lineHeight:1.4,marginBottom:6}}>
-                        {((parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1===(parseInt(rd.totalQ)||0))?
-                          `✓ ${rd.startNum||1}~${rd.endNum||30}번 (총 ${rd.totalQ||30}문항)`:
-                          `⚠ 끝-시작+1=${(parseInt(rd.endNum)||0)-(parseInt(rd.startNum)||1)+1} ≠ 문항수(${rd.totalQ||0})`}
                       </div>
                       <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                       <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
