@@ -40,7 +40,7 @@ export default async function handler(req) {
 
   const t0 = Date.now();
 
-  const PER_MODEL_TIMEOUT_MS = 25000;
+  const PER_MODEL_TIMEOUT_MS = 27000;
   const tasks = [
     callWithTimeout('gemini', () => callGemini(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS),
     callWithTimeout('gpt',    () => callGpt(pdfBase64, examInfo),    PER_MODEL_TIMEOUT_MS),
@@ -159,7 +159,7 @@ async function callGpt(pdfBase64, examInfo) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return { error: 'OPENAI_API_KEY 미설정' };
   const payload = {
-    model: 'gpt-4.1',
+    model: 'gpt-4o',
     messages: [{
       role: 'user',
       content: [
