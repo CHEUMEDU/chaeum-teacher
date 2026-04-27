@@ -42,8 +42,8 @@ export default async function handler(req) {
 
   const PER_MODEL_TIMEOUT_MS = 27000;
   const tasks = [
-    callWithTimeout('gemini', () => callGemini(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS),
-    callWithTimeout('claude', () => callClaude(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS)
+    callWithTimeout('gemini', () => callWithRetry('gemini', () => callGemini(pdfBase64, examInfo)), PER_MODEL_TIMEOUT_MS),
+    callWithTimeout('claude', () => callWithRetry('claude', () => callClaude(pdfBase64, examInfo)), PER_MODEL_TIMEOUT_MS)
   ];
 
   const settled = await Promise.allSettled(tasks);
@@ -80,6 +80,27 @@ async function callWithTimeout(model, fn, timeoutMs) {
     fn(),
     new Promise((_, reject) => setTimeout(() => reject(new Error(model + ' 타임아웃 (' + timeoutMs + 'ms)')), timeoutMs))
   ]);
+}
+
+async function callWithRetry(name, fn) {
+  const result1 = await fn();
+  if (!result1 || !result1.error) return result1;
+  const errStr = String(result1.error || '').toLowerCase();
+  const isTransient = /\b(503|529|502|504|429|overload|timeout|rate.?limit|temporarily)/i.test(errStr);
+  if (!isTransient) return result1;
+  await new Promise(r => setTimeout(r, 1500));
+  const result2 = await fn();
+  if (!result2 || !result2.error) {
+    result2.attempts = 2;
+    result2.firstError = result1.error;
+    return result2;
+  }
+  return {
+    error: result2.error,
+    rawHttp: result2.rawHttp,
+    attempts: 2,
+    firstError: result1.error
+  };
 }
 
 function buildExtractPrompt(examInfo) {
