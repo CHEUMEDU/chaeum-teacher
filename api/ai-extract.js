@@ -162,7 +162,7 @@ async function callClaude(pdfBase64, examInfo) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return { error: 'ANTHROPIC_API_KEY 미설정' };
   const payload = {
-    model: 'claude-sonnet-4-5',
+    model: 'claude-sonnet-4-5-20250929',
     max_tokens: 8000,
     messages: [{
       role: 'user',
