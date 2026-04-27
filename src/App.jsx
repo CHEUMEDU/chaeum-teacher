@@ -2467,13 +2467,14 @@ function ConfirmedAnswersModal({sheetsUrl, T, S, onClose, currentTeacher}){
                   </div>
                   <button onClick={async(e)=>{
                     e.stopPropagation();
-                    if(!confirm(`"${it.subject} ${it.grade} ${it.level} (${it.examType})" 답지를 삭제하시겠습니까?\n\n⚠️ 삭제 후에는 복구할 수 없습니다.`))return;
+                    if(!confirm(`"${it.subject} ${it.grade} ${it.level} (${it.examType})" 답지를 삭제하시겠습니까?\n\n⚠️ 학생앱에서도 즉시 사라집니다. 복구 불가능.`))return;
                     try{
-                      const r=await fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+                      // ★ Content-Type: text/plain 으로 CORS preflight 회피 (다른 POST 호출과 동일 패턴)
+                      const r=await fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},
                         body:JSON.stringify({action:"delete_review",rowIndex:it.rowIndex,deletedBy:currentTeacher||""})});
                       const d=await r.json();
                       if(d.result==="success"){
-                        alert("삭제 완료");
+                        alert("✅ 삭제 완료\n학생앱에서도 즉시 검색 안 됩니다.");
                         load();
                       }else{
                         alert("삭제 실패: "+(d.message||""));
