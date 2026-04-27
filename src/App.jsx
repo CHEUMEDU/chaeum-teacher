@@ -2449,17 +2449,32 @@ function ConfirmedAnswersModal({sheetsUrl, T, S, onClose, currentTeacher}){
           {!loading && items.length>0 && (
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {items.map(it=>(
-                <div key={it.rowIndex} onClick={()=>openDetail(it)} style={{padding:"10px 12px",border:`1px solid ${T.border}`,borderRadius:8,background:T.white,cursor:"pointer",display:"flex",alignItems:"center",gap:10}}
+                <div key={it.rowIndex} style={{padding:"10px 12px",border:`1px solid ${T.border}`,borderRadius:8,background:T.white,display:"flex",alignItems:"center",gap:10}}
                   onMouseEnter={e=>{e.currentTarget.style.borderColor=T.goldDark;e.currentTarget.style.background=T.goldPale;}}
                   onMouseLeave={e=>{e.currentTarget.style.borderColor=T.border;e.currentTarget.style.background=T.white;}}>
                   <div style={{fontSize:11,fontWeight:700,padding:"2px 6px",borderRadius:4,background:it.status==="AUTO_OK"?"#e6f7ee":"#fff3cd",color:it.status==="AUTO_OK"?"#0a7d3a":"#855700"}}>
                     {it.status==="AUTO_OK"?"✅ 자동":"✋ 수동"}
                   </div>
-                  <div style={{flex:1}}>
+                  <div style={{flex:1,cursor:"pointer"}} onClick={()=>openDetail(it)}>
                     <div style={{fontSize:13,fontWeight:700,color:T.text}}>{it.subject} {it.grade} {it.level} <span style={{color:T.textSub,fontWeight:500}}>· {it.examType}{it.setType?" ("+it.setType+")":""}</span></div>
                     <div style={{fontSize:10,color:T.textMuted,marginTop:1}}>👨‍🏫 {it.teacher||"-"} · 📅 {it.date} · {it.totalQ}문제 · 답안 {it.answerCount}개</div>
                   </div>
-                  <div style={{fontSize:16,color:T.goldDark}}>›</div>
+                  <button onClick={async(e)=>{
+                    e.stopPropagation();
+                    if(!confirm(`"${it.subject} ${it.grade} ${it.level} (${it.examType})" 답지를 삭제하시겠습니까?\n\n⚠️ 삭제 후에는 복구할 수 없습니다.`))return;
+                    try{
+                      const r=await fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"application/json"},
+                        body:JSON.stringify({action:"delete_review",rowIndex:it.rowIndex,deletedBy:currentTeacher||""})});
+                      const d=await r.json();
+                      if(d.result==="success"){
+                        alert("삭제 완료");
+                        load();
+                      }else{
+                        alert("삭제 실패: "+(d.message||""));
+                      }
+                    }catch(err){alert("네트워크 오류: "+String(err));}
+                  }} style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}} title="삭제">🗑</button>
+                  <div onClick={()=>openDetail(it)} style={{fontSize:16,color:T.goldDark,cursor:"pointer"}}>›</div>
                 </div>
               ))}
             </div>
@@ -2985,12 +3000,12 @@ export default function App(){
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           for(const cls of classes){
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:parseInt(rd.totalQ)||30,startNumber:parseInt(rd.startNum)||1,endNumber:parseInt(rd.endNum)||30})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0})});
             // [v21.0] AI 검수 task 등록 (첫 답지 1개 사용)
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:parseInt(rd.totalQ)||30, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:parseInt(rd.startNum)||1 },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0 },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -3019,11 +3034,11 @@ export default function App(){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:parseInt(rd.totalQ)||30,startNumber:parseInt(rd.startNum)||1,endNumber:parseInt(rd.endNum)||30})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0})});
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:parseInt(rd.totalQ)||30, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:parseInt(rd.startNum)||1 },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0 },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -3369,15 +3384,9 @@ export default function App(){
                   <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차, 중간고사 등) — 선택`} value={rd.label||""} onChange={e=>updateRound(ri,"label",e.target.value)}/>
                   {rounds.length>1&&(<button onClick={()=>setRounds(p=>p.filter((_,j)=>j!==ri))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                 </div>
-                {/* v21.1: 전체 문항수만 입력 (시작번호는 AI가 자동 추출) */}
-                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"flex-end"}}>
-                  <div style={{flex:"0 0 140px"}}>
-                    <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:3}}>전체 문항수</div>
-                    <input type="number" min="1" value={rd.totalQ||30} onChange={e=>updateRound(ri,"totalQ",e.target.value)} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border}`,fontSize:13,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
-                  </div>
-                  <div style={{flex:1,fontSize:10,color:T.textMuted,fontWeight:600,lineHeight:1.5,paddingBottom:6}}>
-                    💡 시작번호는 AI가 답지에서 자동 인식합니다 (201번부터 시작 등도 OK)
-                  </div>
+                {/* v21.5: 문항수/시작번호 모두 AI가 자동 인식 (입력 불필요) */}
+                <div style={{padding:"8px 10px",marginBottom:8,borderRadius:6,background:T.accentLight+"55",fontSize:10,color:T.accent,fontWeight:600,lineHeight:1.5}}>
+                  🤖 문항수와 시작번호는 AI가 답지에서 자동 인식합니다 (201번부터 시작 등도 OK)
                 </div>
                 <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                 <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
@@ -3400,15 +3409,9 @@ export default function App(){
                         <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차) — 선택`} value={rd.label||""} onChange={e=>updateClassRound(cls.name,ri,"label",e.target.value)}/>
                         {(classRounds[cls.name]||[]).length>1&&(<button onClick={()=>setClassRounds(p=>({...p,[cls.name]:(p[cls.name]||[]).filter((_,j)=>j!==ri)}))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                       </div>
-                      {/* v21.1: 전체 문항수만 입력 (시작번호는 AI가 자동 추출) */}
-                      <div style={{display:"flex",gap:6,marginBottom:6,alignItems:"flex-end"}}>
-                        <div style={{flex:"0 0 120px"}}>
-                          <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:2}}>전체 문항수</div>
-                          <input type="number" min="1" value={rd.totalQ||30} onChange={e=>updateClassRound(cls.name,ri,"totalQ",e.target.value)} style={{width:"100%",padding:"5px 6px",borderRadius:5,border:`1px solid ${T.border}`,fontSize:12,fontWeight:700,textAlign:"center",fontFamily:"inherit",boxSizing:"border-box"}}/>
-                        </div>
-                        <div style={{flex:1,fontSize:10,color:T.textMuted,fontWeight:600,lineHeight:1.4,paddingBottom:4}}>
-                          💡 시작번호는 AI가 자동 인식
-                        </div>
+                      {/* v21.5: 문항수/시작번호 모두 AI가 자동 인식 (입력 불필요) */}
+                      <div style={{padding:"6px 8px",marginBottom:6,borderRadius:5,background:T.accentLight+"55",fontSize:10,color:T.accent,fontWeight:600,lineHeight:1.4}}>
+                        🤖 문항수와 시작번호는 AI가 자동 인식
                       </div>
                       <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                       <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
