@@ -1937,18 +1937,17 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
   const pa = (mr.gpt && mr.gpt.answers) || {};
   const ca = (mr.claude && mr.claude.answers) || {};
   const types = item.types || {};
-  // 초기 정답: 만장일치 문항은 자동, 불일치 문항은 빈칸
+  // 초기 정답: 3개 만장일치인 문항만 자동 채움. 1개라도 다르거나 비어있으면 선생님이 직접 결정.
   const initial = useMemo(()=>{
     const out = {};
+    const norm = s=>String(s||"").replace(/[①②③④⑤]/g,m=>({"①":"1","②":"2","③":"3","④":"4","⑤":"5"})[m]).trim();
     for(let q=1;q<=totalQ;q++){
       const k=String(q);
-      const g=String(ga[k]||"").trim();
-      const p=String(pa[k]||"").trim();
-      const c=String(ca[k]||"").trim();
-      // 정규화 비교
-      const norm = s=>String(s||"").replace(/[①②③④⑤]/g,m=>({"①":"1","②":"2","③":"3","④":"4","⑤":"5"})[m]).trim();
-      if(norm(g) && norm(g)===norm(p) && norm(p)===norm(c)){
-        out[k]=norm(g);
+      const g=norm(ga[k]);
+      const p=norm(pa[k]);
+      const c=norm(ca[k]);
+      if(g && g===p && p===c){
+        out[k]=g;
       } else {
         out[k]="";
       }
@@ -1960,7 +1959,13 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfErr, setPdfErr] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [showAll, setShowAll] = useState(false);
+  // 기본은 "결정 필요" 문항만 보여주기 (자동 채워진 건 숨김)
+  // 단, 자동 채움이 0개면 답지를 보면서 다 입력해야 하므로 전체 보기 ON
+  const initialShowAll = useMemo(()=>{
+    const filledInit = Object.values(initial).filter(v=>String(v||"").trim()!=="").length;
+    return filledInit === 0;
+  },[JSON.stringify(initial)]);
+  const [showAll, setShowAll] = useState(initialShowAll);
   useEffect(()=>{
     if(!item.folderId){setPdfErr("폴더ID 없음 (직접 입력 모드)");return;}
     setPdfLoading(true); setPdfErr("");
@@ -2002,20 +2007,54 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
       alert("네트워크 오류: "+String(e));
     }finally{setSubmitting(false);}
   };
-  // 표시할 문항: 불일치만 보거나 전체 보기
-  const mismatchSet = new Set((item.mismatches||[]).map(m=>m.q));
+  // 표시할 문항: "선생님 결정 필요"한 문항(=initial이 빈칸)만, 또는 전체 보기
+  const needReviewQs = [];
+  for(let q=1;q<=totalQ;q++){
+    if(!String(initial[String(q)]||"").trim()) needReviewQs.push(q);
+  }
+  const needReviewSet = new Set(needReviewQs);
   const visibleQs = [];
   for(let q=1;q<=totalQ;q++){
-    if(showAll || mismatchSet.has(q)) visibleQs.push(q);
+    if(showAll || needReviewSet.has(q)) visibleQs.push(q);
   }
+  // 헤더용 모델 상태 (실패 사유 + 시도 횟수 같이 표시)
+  const modelDiagnostics = ['gemini','gpt','claude'].map(m=>{
+    const r = (item.modelResults||{})[m] || {};
+    const label = ({gemini:"Gemini",gpt:"GPT",claude:"Claude"}[m]);
+    return {
+      key: m, label,
+      ok: !r.error,
+      error: r.error || "",
+      attempts: r.attempts || 0,
+      answerCount: Object.keys(r.answers||{}).length
+    };
+  });
+  const failedDiag = modelDiagnostics.filter(d=>!d.ok);
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",zIndex:9999,display:"flex",alignItems:"stretch",justifyContent:"center",padding:0}} onClick={onClose}>
       <div style={{background:T.white,width:"100%",maxWidth:1400,height:"100vh",overflow:"hidden",display:"flex",flexDirection:"column"}} onClick={e=>e.stopPropagation()}>
         {/* 헤더 */}
         <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.goldPale}}>
-          <div>
+          <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:16,fontWeight:800,color:T.text}}>🔍 AI 검수 — {item.subject} {item.grade} {item.level} ({item.examType})</div>
-            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>👨‍🏫 {item.teacher||"-"} · 📅 {item.date} · 📝 {totalQ}문제 · ❌ 불일치 {item.mismatchCount||0}개</div>
+            <div style={{fontSize:12,color:T.textSub,marginTop:2}}>👨‍🏫 {item.teacher||"-"} · 📅 {item.date} · 📝 {totalQ}문제 · ✅ 자동 채움 {filledCount}개 · ⚠️ 결정 필요 {needReviewQs.length}개</div>
+            <div style={{fontSize:11,marginTop:6,display:"flex",gap:8,flexWrap:"wrap"}}>
+              {modelDiagnostics.map(d=>(
+                <span key={d.key} title={d.error||""} style={{
+                  padding:"2px 8px",borderRadius:10,fontWeight:700,
+                  background: d.ok ? "#e6f7ee" : "#ffecec",
+                  color: d.ok ? "#0a7d3a" : T.danger,
+                  border: `1px solid ${d.ok ? "#9fdfb6" : "#f5b1b1"}`
+                }}>
+                  {d.ok ? "✅" : "❌"} {d.label} {d.ok ? `(${d.answerCount}문항)` : `(${d.attempts}회 시도)`}
+                </span>
+              ))}
+            </div>
+            {failedDiag.length>0 && (
+              <div style={{fontSize:11,color:T.danger,marginTop:4,wordBreak:"break-all"}}>
+                {failedDiag.map(d=>`▸ ${d.label}: ${d.error}`).join(" | ")}
+              </div>
+            )}
           </div>
           <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
         </div>
@@ -2058,7 +2097,7 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed}){
                     const g=String(ga[k]||"-");
                     const p=String(pa[k]||"-");
                     const c=String(ca[k]||"-");
-                    const isMis = mismatchSet.has(q);
+                    const isMis = needReviewSet.has(q);
                     const isSubj = (types[k]||"")==="sa" || (types[k]||"")==="sub";
                     return (
                       <tr key={q} style={{background: isMis?"#fff5f0":T.white}}>
