@@ -164,11 +164,11 @@ async function callGemini(pdfBase64, examInfo) {
         { inline_data: { mime_type: 'application/pdf', data: pdfBase64 } }
       ]
     }],
-    generationConfig: {
+        generationConfig: {
       temperature: 0,
-      responseMimeType: 'application/json'
+      responseMimeType: 'application/json',
+      thinkingConfig: { thinkingBudget: 0 }
     }
-  };
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
