@@ -4,6 +4,11 @@ import { useState, useCallback, useEffect, useMemo } from "react";
    신규: 선생님 이름, 반별 인원, 오늘의 현황 대시보드
    ============================================================ */
 const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4s02vNmncvteesBn3875WDF3lO176nc4YzAKj7B6zOJVECQO/exec";
+// v21.3: AI 검수를 Vercel Edge Function 으로 이동 (GAS URL Fetch 한도 우회)
+// - 같은 Vercel 도메인이면 상대경로 "/api/ai-extract"
+// - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
+// - 빈 문자열 ""이면 GAS 호출로 폴백
+const AI_EXTRACT_URL = "/api/ai-extract";
 const SUBJECTS=["영어","국어","수학"];
 const GRADES=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
 const LV_LEVELS=["SB","B","I","A","SA","전체"];
@@ -2795,21 +2800,57 @@ export default function App(){
   // [v21.0] AI 답지 자동 검수 상태
   const[aiRunning,setAiRunning]=useState(false);
   const[aiResults,setAiResults]=useState([]); // [{label, unanimous, mismatchCount, rowIndex, error}]
-  // AI 검수 호출 헬퍼 — POST cors + text/plain (preflight 회피)
+  // v21.3: AI 검수 호출 — Vercel Edge Function 우선, 실패 시 GAS 폴백
+  // 1) Vercel /api/ai-extract 로 PDF 보내서 3개 AI 응답 받기 (GAS 데이터 한도 우회)
+  // 2) 받은 응답을 GAS 로 보내 검수/저장 (action=ai_extract_answers + aiResults)
+  // 3) Vercel 호출 실패 시 → 기존 GAS 직접 호출 방식으로 폴백
   const callAiExtract = async (answerFile, examInfo) => {
     if(!answerFile) return null;
     try {
       const base64 = await fileToBase64(answerFile);
+      // ── 1단계: Vercel 에서 AI 추출 ──
+      let aiResults = null;
+      let usedVercel = false;
+      if (AI_EXTRACT_URL) {
+        try {
+          const vRes = await fetch(AI_EXTRACT_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pdfBase64: base64,
+              examInfo: {
+                subject: examInfo.subject || "",
+                grade: examInfo.grade || "",
+                level: examInfo.level || "",
+                examType: examInfo.examType || "",
+                totalQuestions: examInfo.totalQuestions || examInfo.totalQ || 0
+              }
+            })
+          });
+          if (vRes.ok) {
+            const vJson = await vRes.json();
+            if (vJson && vJson.ok && vJson.results) {
+              aiResults = vJson.results;
+              usedVercel = true;
+            }
+          }
+        } catch(vErr) {
+          // Vercel 실패 — GAS 폴백
+          console.warn("[AI] Vercel 호출 실패, GAS 폴백:", vErr);
+        }
+      }
+      // ── 2단계: GAS 로 결과 저장 ──
+      const gasBody = usedVercel
+        ? { action: "ai_extract_answers", aiResults, ...examInfo }
+        : { action: "ai_extract_answers", answerFileBase64: base64, ...examInfo };
       const res = await fetch(SHEETS_URL, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({
-          action: "ai_extract_answers",
-          answerFileBase64: base64,
-          ...examInfo
-        })
+        body: JSON.stringify(gasBody)
       });
-      return await res.json();
+      const data = await res.json();
+      if (data && data.result === "success") data._aiSource = usedVercel ? "vercel" : "gas";
+      return data;
     } catch(e) {
       return { result: "error", message: String(e) };
     }
