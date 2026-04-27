@@ -2785,10 +2785,11 @@ export default function App(){
     return{...p,[clsName]:arr};
   });
   const[memo,setMemo]=useState("");
-  // 주관식 힌트 (업로드 모드)
-  const[subjMode,setSubjMode]=useState("none"); // none | mixed | all
-  const[subjRanges,setSubjRanges]=useState(""); // "21-30, 45, 50-55"
-  const[objRanges,setObjRanges]=useState("");   // "1-20, 31-44"
+  // v21.2: 업로드 모드는 AI가 객관식·주관식을 자동 판별 → state 는 호환성용으로만 유지
+  // (수동입력은 직접입력 화면에서 문항별 객/주 토글 사용)
+  const[subjMode,setSubjMode]=useState("auto"); // auto | direct (직접입력 시)
+  const[subjRanges,setSubjRanges]=useState("");
+  const[objRanges,setObjRanges]=useState("");
   // 상태
   const[saving,setSaving]=useState(false);const[done,setDone]=useState(false);const[error,setError]=useState("");
   // [v21.0] AI 답지 자동 검수 상태
@@ -2928,11 +2929,6 @@ export default function App(){
       if(active.length===0)return alert("시험지·정답지 파일을 최소 1개 이상 올려주세요.");
       const missingAns=active.find(r=>r.answerFiles.length===0);
       if(missingAns)return alert(`정답지가 없습니다.\n정답지를 올려주세요 (Claude 분석 필수).`);
-      // 주관식 번호 범위 경고
-      if(subjMode==="mixed" && subjRanges){
-        const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
-        if(maxNum>200){if(!confirm(`주관식 번호에 ${maxNum}번이 포함되어 있습니다. 문항수를 초과한 것 아닌가요?\n그래도 진행하시겠습니까?`))return;}
-      }
       // 파일명 휴리스틱
       for(const rd of active){
         const suspAns=rd.answerFiles.find(f=>/(시험지|문제지|problem|question|quiz)/i.test(f.name)&&!/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
@@ -2972,10 +2968,6 @@ export default function App(){
         if(active.length===0)return alert(`"${cls.name}" 반에 최소 1개의 시험지·정답지를 업로드하세요.`);
         const missingAns=active.find(r=>r.answerFiles.length===0);
         if(missingAns)return alert(`"${cls.name}"에 정답지가 없습니다.`);
-      }
-      if(subjMode==="mixed" && subjRanges){
-        const maxNum=Math.max(...subjRanges.match(/\d+/g)?.map(Number)||[0]);
-        if(maxNum>200){if(!confirm(`주관식 번호에 ${maxNum}번이 포함되어 있습니다. 문항수를 초과한 것 아닌가요?\n그래도 진행하시겠습니까?`))return;}
       }
       setSaving(true);setError("");
       try{
@@ -3076,7 +3068,7 @@ export default function App(){
     }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("none");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
   return(
     <div style={S.app} className="app-shell">
@@ -3391,38 +3383,13 @@ export default function App(){
             <div style={{fontSize:12,color:T.textSub,lineHeight:1.7}}>1. 드라이브에 저장됩니다.<br/>2. Claude가 정답지를 분석하여 정답을 추출합니다.<br/>3. 학생 앱에서 시험 선택 시 <b>차수</b>가 표시됩니다.</div>
           </div>
         </div>
-        {/* 주관식 힌트 입력 */}
-        <div style={S.card}>
-          <div style={S.secLabel}>주관식 문항 힌트 <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:4}}>(Claude 분석 정확도↑)</span></div>
-          <div style={{fontSize:12,color:T.textSub,lineHeight:1.6,marginBottom:10}}>시험에 주관식이 섞여 있으면 꼭 알려주세요. 특히 <b>수학/서술형</b>은 필수예요.</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:subjMode==="none"?0:12}}>
-            {[
-              {v:"none",label:"전체 객관식 (5지선다)",desc:"1~5번 중 하나 선택"},
-              {v:"mixed",label:"객관식 + 주관식 혼합",desc:"일부 문항이 주관식"},
-              {v:"all",label:"전체 주관식",desc:"서술형/단답형만"}
-            ].map(o=>{const a=subjMode===o.v;return(
-              <button key={o.v} onClick={()=>setSubjMode(o.v)} style={{padding:"12px 14px",borderRadius:10,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldLight:T.white,cursor:"pointer",fontFamily:"inherit",textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
-                <div style={{width:18,height:18,borderRadius:"50%",border:`2px solid ${a?T.goldDark:T.border}`,flex:"0 0 auto",display:"flex",alignItems:"center",justifyContent:"center"}}>{a&&<div style={{width:8,height:8,borderRadius:"50%",background:T.goldDark}}/>}</div>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:700,color:a?T.goldDeep:T.text}}>{o.label}</div>
-                  <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{o.desc}</div>
-                </div>
-              </button>
-            );})}
+        {/* v21.2: 객관식·주관식 자동 판별 안내 (선생님 입력 불필요) */}
+        <div style={{padding:"12px 14px",borderRadius:10,background:T.accentLight,border:`1px solid ${T.accent}40`,marginBottom:14}}>
+          <div style={{fontSize:12,fontWeight:700,color:T.accent,marginBottom:4}}>🤖 객관식·주관식은 AI가 답지에서 자동 판별합니다</div>
+          <div style={{fontSize:11,color:T.textSub,lineHeight:1.6}}>
+            Gemini·GPT·Claude 3개 AI가 각 문항을 보고 <b>① 답이 1~5 숫자면 객관식</b>, <b>② 텍스트면 주관식</b>으로 분류합니다.<br/>
+            잘못 판별되면 검수 화면에서 직접 수정할 수 있어요.
           </div>
-          {subjMode==="mixed"&&(<div style={{padding:"12px 14px",borderRadius:10,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
-            <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📍 주관식 문항 번호 (선택)</div>
-            <div style={{fontSize:11,color:T.textSub,lineHeight:1.6,marginBottom:10}}>
-              주관식 번호만 입력하면 <b>나머지는 자동으로 객관식</b>으로 처리돼요.<br/>
-              모르면 비워두셔도 OK — Claude가 정답지를 보고 추정합니다.
-            </div>
-            <div>
-              <input style={S.inp} placeholder="예: 21-30, 41-45" value={subjRanges} onChange={e=>setSubjRanges(e.target.value)}/>
-            </div>
-            <div style={{fontSize:10,color:T.textMuted,marginTop:8,lineHeight:1.5}}>
-              💡 쉼표 구분, 범위는 하이픈. 예: <code>21-30, 45, 50-55</code>
-            </div>
-          </div>)}
         </div>
         <div style={S.card}>
           <div style={S.label}>메모 (선택사항) <span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:6}}>📊 오늘의 현황 대시보드에 표시됩니다 (실장님/교사 참고용)</span></div>
