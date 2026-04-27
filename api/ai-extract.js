@@ -1,5 +1,6 @@
 // ============================================================
 // 채움학원 — AI 답지 자동 검수 API (Vercel Edge Function)
+// 플랜 2: Gemini 2.5 Flash + Claude Sonnet 4.5 (GPT 제거)
 // ============================================================
 
 export const config = { runtime: 'edge' };
@@ -36,22 +37,20 @@ export default async function handler(req) {
   };
 
   if (!pdfBase64) return jsonResponse({ ok: false, error: 'pdfBase64 missing' }, 400);
-  if (!examInfo.totalQuestions) return jsonResponse({ ok: false, error: 'examInfo.totalQuestions missing' }, 400);
 
   const t0 = Date.now();
 
   const PER_MODEL_TIMEOUT_MS = 27000;
   const tasks = [
     callWithTimeout('gemini', () => callGemini(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS),
-    callWithTimeout('gpt',    () => callGpt(pdfBase64, examInfo),    PER_MODEL_TIMEOUT_MS),
     callWithTimeout('claude', () => callClaude(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS)
   ];
 
   const settled = await Promise.allSettled(tasks);
   const results = {
     gemini: settled[0].status === 'fulfilled' ? settled[0].value : { error: errMsg(settled[0]) },
-    gpt:    settled[1].status === 'fulfilled' ? settled[1].value : { error: errMsg(settled[1]) },
-    claude: settled[2].status === 'fulfilled' ? settled[2].value : { error: errMsg(settled[2]) }
+    gpt:    { error: 'GPT 비활성화 (PDF OCR 부정확으로 제외)' },
+    claude: settled[1].status === 'fulfilled' ? settled[1].value : { error: errMsg(settled[1]) }
   };
 
   return jsonResponse({
@@ -85,6 +84,9 @@ async function callWithTimeout(model, fn, timeoutMs) {
 
 function buildExtractPrompt(examInfo) {
   const totalQ = parseInt(examInfo.totalQuestions || examInfo.totalQ || 0, 10);
+  const totalLine = totalQ > 0
+    ? '- 총 문항수: 약 ' + totalQ + '문제 (참고용 — PDF에서 직접 확인하세요)'
+    : '- 총 문항수: PDF에서 직접 식별하세요 (1번부터 마지막 번호까지 빠짐없이)';
   return [
     '당신은 시험 답지(정답지) OCR 전문가입니다.',
     '이 PDF는 학생이 푸는 시험지가 아니라, 선생님이 보는 정답지입니다.',
@@ -95,7 +97,7 @@ function buildExtractPrompt(examInfo) {
     '- 학년: ' + (examInfo.grade || ''),
     '- 레벨/교재: ' + (examInfo.level || ''),
     '- 시험명: ' + (examInfo.examType || ''),
-    '- 총 문항수: ' + totalQ + '문제',
+    totalLine,
     '- 문항별 객관식·주관식 여부는 답지를 보고 직접 판별하세요',
     '',
     '## 절대 규칙',
@@ -109,13 +111,14 @@ function buildExtractPrompt(examInfo) {
     '   - "mc" (객관식): 답이 1~5 중 하나(또는 "2,3" 같은 복수정답)인 경우',
     '   - "sa" (주관식): 답이 단어/구절/문장/숫자식 등 텍스트인 경우',
     '   - 판단 근거는 답의 형태입니다. "③" 만 있으면 mc, "happy" 면 sa.',
+    '8. **문항 수는 PDF가 결정**: 답지에 보이는 모든 문항 번호를 빠짐없이 추출하세요. 답이 안 보이는 번호는 "?"로.',
     '',
     '## 응답 형식 — 반드시 이 JSON만 출력 (마크다운 코드블록 금지)',
-    '{"startNumber": 1, "answers": {"1": "정답", ..., "' + totalQ + '": "정답"}, "types": {"1": "mc 또는 sa", ..., "' + totalQ + '": "mc 또는 sa"}, "notes": ""}',
+    '{"startNumber": 1, "answers": {"1": "정답", "2": "정답", ...}, "types": {"1": "mc 또는 sa", "2": "mc 또는 sa", ...}, "notes": ""}',
     '',
     '**중요**:',
     '- answers 와 types 의 key 는 동일하게, 답지에 표기된 실제 문항 번호 사용',
-    '- 총 ' + totalQ + '개 문항을 빠짐없이 포함',
+    '- PDF에 보이는 모든 문항을 빠짐없이 포함 (1번부터 마지막 번호까지)',
     '- startNumber 가 확실치 않으면 1 로 기록',
     '- types 판단이 어려우면 답이 1~5 숫자만 있을 때 mc, 그 외는 sa'
   ].join('\n');
@@ -155,47 +158,12 @@ async function callGemini(pdfBase64, examInfo) {
   return parseModelOutput('gemini', answersText);
 }
 
-async function callGpt(pdfBase64, examInfo) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { error: 'OPENAI_API_KEY 미설정' };
-  const payload = {
-    model: 'o3',
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'text', text: buildExtractPrompt(examInfo) },
-        { type: 'file', file: { filename: 'answer.pdf', file_data: 'data:application/pdf;base64,' + pdfBase64 } }
-      ]
-    }],
-    response_format: { type: 'json_object' },
-    max_completion_tokens: 4000,
-    reasoning_effort: 'low'
-  };
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + apiKey
-    },
-    body: JSON.stringify(payload)
-  });
-  const text = await res.text();
-  if (!res.ok) return { error: 'gpt HTTP ' + res.status, rawHttp: text.substring(0, 800) };
-  let json;
-  try { json = JSON.parse(text); } catch (e) { return { error: 'gpt json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
-  const ch = (json.choices || [])[0];
-  let answersText = '';
-  if (ch && ch.message) answersText = ch.message.content || '';
-  if (!answersText) return { error: 'gpt 빈 응답 (finish_reason=' + (ch && ch.finish_reason || '?') + ')', rawHttp: text.substring(0, 800) };
-  return parseModelOutput('gpt', answersText);
-}
-
 async function callClaude(pdfBase64, examInfo) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return { error: 'ANTHROPIC_API_KEY 미설정' };
   const payload = {
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 4000,
+    model: 'claude-sonnet-4-5',
+    max_tokens: 8000,
     messages: [{
       role: 'user',
       content: [
