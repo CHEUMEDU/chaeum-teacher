@@ -159,7 +159,7 @@ async function callGpt(pdfBase64, examInfo) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return { error: 'OPENAI_API_KEY 미설정' };
   const payload = {
-    model: 'gpt-4o',
+    model: 'o3',
     messages: [{
       role: 'user',
       content: [
@@ -168,8 +168,8 @@ async function callGpt(pdfBase64, examInfo) {
       ]
     }],
     response_format: { type: 'json_object' },
-    temperature: 0,
-    max_tokens: 4000
+    max_completion_tokens: 4000,
+    reasoning_effort: 'low'
   };
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
