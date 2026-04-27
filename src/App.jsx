@@ -1944,7 +1944,9 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
   const ga = (mr.gemini && mr.gemini.answers) || {};
   const pa = (mr.gpt && mr.gpt.answers) || {};
   const ca = (mr.claude && mr.claude.answers) || {};
-  // 초기 정답: 3개 만장일치인 문항만 자동 채움. 1개라도 다르거나 비어있으면 선생님이 직접 결정.
+  // 초기 정답: 활성 모델 모두 일치한 문항만 자동 채움.
+  // ★ v21.5: GPT 비활성화 감지 — 활성 모델만 일치 검증 (Gemini=Claude 면 OK)
+  const gptDisabled = !!(mr.gpt && mr.gpt.error && String(mr.gpt.error).indexOf("비활성화") >= 0);
   const initial = useMemo(()=>{
     const out = {};
     const norm = s=>String(s||"").replace(/[①②③④⑤]/g,m=>({"①":"1","②":"2","③":"3","④":"4","⑤":"5"})[m]).trim();
@@ -1953,14 +1955,18 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
       const g=norm(ga[k]);
       const p=norm(pa[k]);
       const c=norm(ca[k]);
-      if(g && g===p && p===c){
+      // GPT 비활성화 → Gemini=Claude 만 확인. 활성이면 3개 모두 일치 필요
+      const matched = gptDisabled
+        ? !!(g && c && g===c)
+        : !!(g && g===p && p===c);
+      if(matched){
         out[k]=g;
       } else {
         out[k]="";
       }
     }
     return out;
-  },[totalQ, JSON.stringify(ga), JSON.stringify(pa), JSON.stringify(ca)]);
+  },[totalQ, JSON.stringify(ga), JSON.stringify(pa), JSON.stringify(ca), gptDisabled]);
   const [finalAns, setFinalAns] = useState(initial);
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfLoading, setPdfLoading] = useState(false);
