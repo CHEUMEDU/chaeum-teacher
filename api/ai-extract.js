@@ -1,0 +1,319 @@
+// ============================================================
+// 채움학원 — AI 답지 자동 검수 API (Vercel Edge Function)
+// ------------------------------------------------------------
+// 배치 위치: 프로젝트 루트의 /api/ai-extract.js  (Vercel 자동 인식)
+// Edge Runtime: 30초 타임아웃, 메모리 128MB (무료 Hobby 플랜 충분)
+//
+// 환경변수 (Vercel 대시보드 → Project → Settings → Environment Variables):
+//   GEMINI_API_KEY    — Google AI Studio (https://aistudio.google.com/apikey)
+//   OPENAI_API_KEY    — OpenAI (https://platform.openai.com/api-keys)
+//   ANTHROPIC_API_KEY — Anthropic (https://console.anthropic.com/settings/keys)
+//
+// 호출 방식 (브라우저 또는 GAS):
+//   POST https://<your-vercel-app>/api/ai-extract
+//   Content-Type: application/json
+//   Body: { "pdfBase64": "...", "examInfo": {subject, grade, level, examType, totalQuestions} }
+//
+// 응답:
+//   { "ok": true, "results": { "gemini": {...}, "gpt": {...}, "claude": {...} } }
+//   또는 { "ok": false, "error": "..." }
+// ============================================================
+
+export const config = { runtime: 'edge' };
+
+// CORS 헤더 (브라우저에서 직접 호출 가능하도록)
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Content-Type': 'application/json; charset=utf-8'
+};
+
+export default async function handler(req) {
+  // OPTIONS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+  if (req.method !== 'POST') {
+    return jsonResponse({ ok: false, error: 'POST only' }, 405);
+  }
+
+  let body;
+  try {
+    body = await req.json();
+  } catch (e) {
+    return jsonResponse({ ok: false, error: 'Invalid JSON: ' + String(e) }, 400);
+  }
+
+  const pdfBase64 = stripDataUrl(body.pdfBase64 || body.answerFileBase64 || body.base64 || '');
+  const examInfo = body.examInfo || {
+    subject: body.subject,
+    grade: body.grade,
+    level: body.level,
+    examType: body.examType,
+    totalQuestions: body.totalQuestions || body.totalQ || 0
+  };
+
+  if (!pdfBase64) return jsonResponse({ ok: false, error: 'pdfBase64 missing' }, 400);
+  if (!examInfo.totalQuestions) return jsonResponse({ ok: false, error: 'examInfo.totalQuestions missing' }, 400);
+
+  const t0 = Date.now();
+
+  // 3개 AI를 병렬 호출 — 각각 독립적으로 타임아웃 처리
+  const PER_MODEL_TIMEOUT_MS = 25000; // 25초 (Edge 30초 한도 안에서 여유)
+  const tasks = [
+    callWithTimeout('gemini', () => callGemini(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS),
+    callWithTimeout('gpt',    () => callGpt(pdfBase64, examInfo),    PER_MODEL_TIMEOUT_MS),
+    callWithTimeout('claude', () => callClaude(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS)
+  ];
+
+  const settled = await Promise.allSettled(tasks);
+  const results = {
+    gemini: settled[0].status === 'fulfilled' ? settled[0].value : { error: errMsg(settled[0]) },
+    gpt:    settled[1].status === 'fulfilled' ? settled[1].value : { error: errMsg(settled[1]) },
+    claude: settled[2].status === 'fulfilled' ? settled[2].value : { error: errMsg(settled[2]) }
+  };
+
+  return jsonResponse({
+    ok: true,
+    results: results,
+    elapsedMs: Date.now() - t0
+  });
+}
+
+// ───────────────────────────────────────────────
+// 유틸
+// ───────────────────────────────────────────────
+
+function jsonResponse(obj, status = 200) {
+  return new Response(JSON.stringify(obj), { status, headers: CORS_HEADERS });
+}
+
+function stripDataUrl(s) {
+  if (!s) return '';
+  if (s.indexOf(',') >= 0) return s.split(',').pop();
+  return s;
+}
+
+function errMsg(settled) {
+  if (settled && settled.reason) return String(settled.reason.message || settled.reason);
+  return 'unknown error';
+}
+
+async function callWithTimeout(model, fn, timeoutMs) {
+  return await Promise.race([
+    fn(),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(model + ' 타임아웃 (' + timeoutMs + 'ms)')), timeoutMs))
+  ]);
+}
+
+// ───────────────────────────────────────────────
+// 프롬프트 — 답지 OCR + types 자동 판별
+// ───────────────────────────────────────────────
+
+function buildExtractPrompt(examInfo) {
+  const totalQ = parseInt(examInfo.totalQuestions || examInfo.totalQ || 0, 10);
+  return [
+    '당신은 시험 답지(정답지) OCR 전문가입니다.',
+    '이 PDF는 학생이 푸는 시험지가 아니라, 선생님이 보는 정답지입니다.',
+    'PDF 안에 이미 정답이 표시되어 있습니다. 그것을 찾아 그대로 옮기면 됩니다.',
+    '',
+    '## 시험 정보',
+    '- 과목: ' + (examInfo.subject || ''),
+    '- 학년: ' + (examInfo.grade || ''),
+    '- 레벨/교재: ' + (examInfo.level || ''),
+    '- 시험명: ' + (examInfo.examType || ''),
+    '- 총 문항수: ' + totalQ + '문제',
+    '- 문항별 객관식·주관식 여부는 답지를 보고 직접 판별하세요',
+    '',
+    '## 절대 규칙',
+    '1. 절대로 문제를 읽고 답을 추론하지 마세요. 오직 답지에 표기된 정답만 옮기세요.',
+    '2. 정답이 보이지 않거나 모호하면 "?" 로 표시하세요. 추측 금지.',
+    '3. 객관식 답이 ①②③④⑤ 형태라면 1,2,3,4,5 숫자로 변환하세요.',
+    '4. 복수정답(예: ②와 ③ 둘 다 정답)은 "2,3" 형태로.',
+    '5. 주관식 답은 답지에 적힌 그대로 (영어 문장이면 영어, 한글이면 한글).',
+    '6. **시작 번호 식별**: 답지 첫 문항이 1이 아닐 수도 있습니다. PDF의 첫 번째 정답 번호를 그대로 startNumber 로 기록하세요.',
+    '7. **객관식·주관식 자동 판별 (필수)**: 각 문항을 다음 기준으로 분류해서 types 객체에 기록하세요.',
+    '   - "mc" (객관식): 답이 1~5 중 하나(또는 "2,3" 같은 복수정답)인 경우',
+    '   - "sa" (주관식): 답이 단어/구절/문장/숫자식 등 텍스트인 경우',
+    '   - 판단 근거는 답의 형태입니다. "③" 만 있으면 mc, "happy" 면 sa.',
+    '',
+    '## 응답 형식 — 반드시 이 JSON만 출력 (마크다운 코드블록 금지)',
+    '{"startNumber": 1, "answers": {"1": "정답", ..., "' + totalQ + '": "정답"}, "types": {"1": "mc 또는 sa", ..., "' + totalQ + '": "mc 또는 sa"}, "notes": ""}',
+    '',
+    '**중요**:',
+    '- answers 와 types 의 key 는 동일하게, 답지에 표기된 실제 문항 번호 사용',
+    '- 총 ' + totalQ + '개 문항을 빠짐없이 포함',
+    '- startNumber 가 확실치 않으면 1 로 기록',
+    '- types 판단이 어려우면 답이 1~5 숫자만 있을 때 mc, 그 외는 sa'
+  ].join('\n');
+}
+
+// ───────────────────────────────────────────────
+// Gemini 2.5 Flash (무료)
+// ───────────────────────────────────────────────
+
+async function callGemini(pdfBase64, examInfo) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return { error: 'GEMINI_API_KEY 미설정' };
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+  const payload = {
+    contents: [{
+      parts: [
+        { text: buildExtractPrompt(examInfo) },
+        { inline_data: { mime_type: 'application/pdf', data: pdfBase64 } }
+      ]
+    }],
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: 'application/json'
+    }
+  };
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  if (!res.ok) return { error: 'gemini HTTP ' + res.status, rawHttp: text.substring(0, 800) };
+  let json;
+  try { json = JSON.parse(text); } catch (e) { return { error: 'gemini json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
+  let answersText = '';
+  const cand = (json.candidates || [])[0];
+  if (cand && cand.content && cand.content.parts) {
+    answersText = cand.content.parts.map(p => p.text || '').join('');
+  }
+  return parseModelOutput('gemini', answersText);
+}
+
+// ───────────────────────────────────────────────
+// GPT-4.1 (PDF 멀티모달)
+// ───────────────────────────────────────────────
+
+async function callGpt(pdfBase64, examInfo) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return { error: 'OPENAI_API_KEY 미설정' };
+  const payload = {
+    model: 'gpt-4.1',
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: buildExtractPrompt(examInfo) },
+        { type: 'file', file: { filename: 'answer.pdf', file_data: 'data:application/pdf;base64,' + pdfBase64 } }
+      ]
+    }],
+    response_format: { type: 'json_object' },
+    temperature: 0,
+    max_tokens: 4000
+  };
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + apiKey
+    },
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  if (!res.ok) return { error: 'gpt HTTP ' + res.status, rawHttp: text.substring(0, 800) };
+  let json;
+  try { json = JSON.parse(text); } catch (e) { return { error: 'gpt json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
+  const ch = (json.choices || [])[0];
+  let answersText = '';
+  if (ch && ch.message) answersText = ch.message.content || '';
+  if (!answersText) return { error: 'gpt 빈 응답 (finish_reason=' + (ch && ch.finish_reason || '?') + ')', rawHttp: text.substring(0, 800) };
+  return parseModelOutput('gpt', answersText);
+}
+
+// ───────────────────────────────────────────────
+// Claude Haiku 4.5 (PDF document)
+// ───────────────────────────────────────────────
+
+async function callClaude(pdfBase64, examInfo) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { error: 'ANTHROPIC_API_KEY 미설정' };
+  const payload = {
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 4000,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+        { type: 'text', text: buildExtractPrompt(examInfo) }
+      ]
+    }]
+  };
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  if (!res.ok) return { error: 'claude HTTP ' + res.status, rawHttp: text.substring(0, 800) };
+  let json;
+  try { json = JSON.parse(text); } catch (e) { return { error: 'claude json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
+  const blocks = json.content || [];
+  const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
+  return parseModelOutput('claude', answersText);
+}
+
+// ───────────────────────────────────────────────
+// AI 응답 파싱 (GAS _parseAiResponse_ 와 동일 로직)
+// ───────────────────────────────────────────────
+
+function parseModelOutput(model, raw) {
+  try {
+    let answersText = String(raw || '').trim();
+    answersText = answersText.replace(/^```(?:json)?\s*/m, '').replace(/```\s*$/m, '').trim();
+    const parsed = JSON.parse(answersText);
+    let startNum = parseInt(parsed.startNumber, 10);
+    if (!startNum || isNaN(startNum) || startNum < 1) startNum = 1;
+    const rawAns = parsed.answers || {};
+    const rawTypes = parsed.types || {};
+    const normAns = {};
+    const normTypes = {};
+    const origMap = {};
+    const keys = Object.keys(rawAns);
+    const numKeys = keys.map(k => parseInt(k, 10)).filter(n => !isNaN(n));
+    if (numKeys.length === keys.length && numKeys.length > 0) {
+      numKeys.sort((a, b) => a - b);
+      for (let i = 0; i < numKeys.length; i++) {
+        const origK = String(numKeys[i]);
+        const newK = String(i + 1);
+        normAns[newK] = rawAns[origK];
+        normTypes[newK] = normalizeTypeToken(rawTypes[origK], rawAns[origK]);
+        origMap[newK] = numKeys[i];
+      }
+      if (startNum === 1 && numKeys[0] !== 1) startNum = numKeys[0];
+    } else {
+      Object.keys(rawAns).forEach(k => {
+        normAns[k] = rawAns[k];
+        normTypes[k] = normalizeTypeToken(rawTypes[k], rawAns[k]);
+      });
+    }
+    return {
+      answers: normAns,
+      types: normTypes,
+      startNumber: startNum,
+      origNumberMap: origMap,
+      notes: parsed.notes || '',
+      raw: answersText.substring(0, 2000)
+    };
+  } catch (e) {
+    return { error: model + ' 파싱: ' + String(e), raw: String(raw || '').substring(0, 500) };
+  }
+}
+
+function normalizeTypeToken(typeVal, answerVal) {
+  const t = String(typeVal || '').toLowerCase().trim();
+  if (t === 'mc' || t === 'obj' || t === '객관식' || t === 'multiple_choice') return 'mc';
+  if (t === 'sa' || t === 'subj' || t === '주관식' || t === 'subjective' || t === 'essay') return 'sa';
+  const ans = String(answerVal == null ? '' : answerVal).trim();
+  if (!ans || ans === '?') return 'mc';
+  if (/^\s*[1-5](\s*[,;\/]\s*[1-5])*\s*$/.test(ans)) return 'mc';
+  return 'sa';
+}
