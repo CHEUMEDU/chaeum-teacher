@@ -1,27 +1,9 @@
 // ============================================================
 // 채움학원 — AI 답지 자동 검수 API (Vercel Edge Function)
-// ------------------------------------------------------------
-// 배치 위치: 프로젝트 루트의 /api/ai-extract.js  (Vercel 자동 인식)
-// Edge Runtime: 30초 타임아웃, 메모리 128MB (무료 Hobby 플랜 충분)
-//
-// 환경변수 (Vercel 대시보드 → Project → Settings → Environment Variables):
-//   GEMINI_API_KEY    — Google AI Studio (https://aistudio.google.com/apikey)
-//   OPENAI_API_KEY    — OpenAI (https://platform.openai.com/api-keys)
-//   ANTHROPIC_API_KEY — Anthropic (https://console.anthropic.com/settings/keys)
-//
-// 호출 방식 (브라우저 또는 GAS):
-//   POST https://<your-vercel-app>/api/ai-extract
-//   Content-Type: application/json
-//   Body: { "pdfBase64": "...", "examInfo": {subject, grade, level, examType, totalQuestions} }
-//
-// 응답:
-//   { "ok": true, "results": { "gemini": {...}, "gpt": {...}, "claude": {...} } }
-//   또는 { "ok": false, "error": "..." }
 // ============================================================
 
 export const config = { runtime: 'edge' };
 
-// CORS 헤더 (브라우저에서 직접 호출 가능하도록)
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -30,7 +12,6 @@ const CORS_HEADERS = {
 };
 
 export default async function handler(req) {
-  // OPTIONS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
@@ -59,8 +40,7 @@ export default async function handler(req) {
 
   const t0 = Date.now();
 
-  // 3개 AI를 병렬 호출 — 각각 독립적으로 타임아웃 처리
-  const PER_MODEL_TIMEOUT_MS = 25000; // 25초 (Edge 30초 한도 안에서 여유)
+  const PER_MODEL_TIMEOUT_MS = 25000;
   const tasks = [
     callWithTimeout('gemini', () => callGemini(pdfBase64, examInfo), PER_MODEL_TIMEOUT_MS),
     callWithTimeout('gpt',    () => callGpt(pdfBase64, examInfo),    PER_MODEL_TIMEOUT_MS),
@@ -80,10 +60,6 @@ export default async function handler(req) {
     elapsedMs: Date.now() - t0
   });
 }
-
-// ───────────────────────────────────────────────
-// 유틸
-// ───────────────────────────────────────────────
 
 function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: CORS_HEADERS });
@@ -106,10 +82,6 @@ async function callWithTimeout(model, fn, timeoutMs) {
     new Promise((_, reject) => setTimeout(() => reject(new Error(model + ' 타임아웃 (' + timeoutMs + 'ms)')), timeoutMs))
   ]);
 }
-
-// ───────────────────────────────────────────────
-// 프롬프트 — 답지 OCR + types 자동 판별
-// ───────────────────────────────────────────────
 
 function buildExtractPrompt(examInfo) {
   const totalQ = parseInt(examInfo.totalQuestions || examInfo.totalQ || 0, 10);
@@ -149,10 +121,6 @@ function buildExtractPrompt(examInfo) {
   ].join('\n');
 }
 
-// ───────────────────────────────────────────────
-// Gemini 2.5 Flash (무료)
-// ───────────────────────────────────────────────
-
 async function callGemini(pdfBase64, examInfo) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return { error: 'GEMINI_API_KEY 미설정' };
@@ -164,11 +132,12 @@ async function callGemini(pdfBase64, examInfo) {
         { inline_data: { mime_type: 'application/pdf', data: pdfBase64 } }
       ]
     }],
-        generationConfig: {
+    generationConfig: {
       temperature: 0,
       responseMimeType: 'application/json',
       thinkingConfig: { thinkingBudget: 0 }
     }
+  };
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -185,10 +154,6 @@ async function callGemini(pdfBase64, examInfo) {
   }
   return parseModelOutput('gemini', answersText);
 }
-
-// ───────────────────────────────────────────────
-// GPT-4.1 (PDF 멀티모달)
-// ───────────────────────────────────────────────
 
 async function callGpt(pdfBase64, examInfo) {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -225,10 +190,6 @@ async function callGpt(pdfBase64, examInfo) {
   return parseModelOutput('gpt', answersText);
 }
 
-// ───────────────────────────────────────────────
-// Claude Haiku 4.5 (PDF document)
-// ───────────────────────────────────────────────
-
 async function callClaude(pdfBase64, examInfo) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return { error: 'ANTHROPIC_API_KEY 미설정' };
@@ -260,10 +221,6 @@ async function callClaude(pdfBase64, examInfo) {
   const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
   return parseModelOutput('claude', answersText);
 }
-
-// ───────────────────────────────────────────────
-// AI 응답 파싱 (GAS _parseAiResponse_ 와 동일 로직)
-// ───────────────────────────────────────────────
 
 function parseModelOutput(model, raw) {
   try {
