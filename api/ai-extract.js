@@ -4,47 +4,43 @@
 // ============================================================
 // 버전 이력
 // ─────────────────────────────────────────
-// v22.1 (2026-04-28)  — Vercel Edge → Node Runtime 전환 (타임아웃 25초 → 60초)
-//   · 답지 PDF가 길어도 Gemini 처리 가능 (이전: 25초 초과 시 타임아웃)
-//   · 모델별 타임아웃: 27초 → 50초 (10초 여유)
-//   · maxDuration: 60초 (Vercel Hobby plan 무료 한도)
+// v22.2 (2026-04-28)  — Node Runtime Express-style 로 전환 (작동 복구)
+//   · 이전 (v22.1): Web API (new Response) 사용 → Node Runtime 에서 빈 응답
+//   · 변경: req/res Express-style 로 변환 → 60초 한도 정상 작동
+//   · maxDuration: 60초
 //
-// v22.0 (2026-04-28)  — GPT 완전 제거 (코드 자체 삭제)
-//
-// v21.5 (2026-04-27)  — 플랜 2 채택 (Gemini Flash + Claude Sonnet)
-//
-// 호출 방법:
-//   POST { pdfBase64, examInfo: {subject, grade, level, examType, totalQuestions} }
-//   → 응답 { ok: true, results: { gemini: {...}, gpt: {error}, claude: {...} } }
-//   ※ gpt 키는 항상 "비활성화" 에러 반환 (GAS 호환용)
+// v22.0  — GPT 완전 제거 (PDF OCR 부정확)
+//   · 활성 모델: Gemini 2.5 Flash + Claude Sonnet 4.5
 // ============================================================
 
-// ★ v22.1: Edge Runtime 제거 → Node Runtime 자동 사용 (60초 한도)
 export const maxDuration = 60;
 
-const VERSION = "v22.1";
+const VERSION = "v22.2";
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
-  'Content-Type': 'application/json; charset=utf-8'
+  'Access-Control-Allow-Headers': 'Content-Type'
 };
 
-export default async function handler(req) {
+export default async function handler(req, res) {
+  Object.keys(CORS_HEADERS).forEach(k => res.setHeader(k, CORS_HEADERS[k]));
+
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
+    res.status(204).end();
+    return;
   }
   if (req.method !== 'POST') {
-    return jsonResponse({ ok: false, error: 'POST only', version: VERSION }, 405);
+    res.status(405).json({ ok: false, error: 'POST only', version: VERSION });
+    return;
   }
 
-  let body;
-  try {
-    body = await req.json();
-  } catch (e) {
-    return jsonResponse({ ok: false, error: 'Invalid JSON: ' + String(e), version: VERSION }, 400);
+  let body = req.body;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); }
+    catch (e) { res.status(400).json({ ok: false, error: 'Invalid JSON: ' + String(e), version: VERSION }); return; }
   }
+  if (!body) body = {};
 
   const pdfBase64 = stripDataUrl(body.pdfBase64 || body.answerFileBase64 || body.base64 || '');
   const examInfo = body.examInfo || {
@@ -55,13 +51,16 @@ export default async function handler(req) {
     totalQuestions: body.totalQuestions || body.totalQ || 0
   };
 
-  if (!pdfBase64) return jsonResponse({ ok: false, error: 'pdfBase64 missing', version: VERSION }, 400);
+  if (!pdfBase64) {
+    res.status(400).json({ ok: false, error: 'pdfBase64 missing', version: VERSION });
+    return;
+  }
 
   const t0 = Date.now();
 
-  // ★ v22.1: 모델별 타임아웃 27초 → 50초 (Node Runtime 60초 한도 안에서 10초 여유)
+  // ★ v22.2: 모델별 타임아웃 50초 (Node Runtime 60초 한도 안에서 10초 여유)
   const PER_MODEL_TIMEOUT_MS = 50000;
-  // ★ v22.0: GPT 호출 함수 자체를 제거. Gemini + Claude 만 사용.
+  // ★ v22.0: Gemini + Claude 만 사용
   const tasks = [
     callWithTimeout('gemini', () => callWithRetry('gemini', () => callGemini(pdfBase64, examInfo)), PER_MODEL_TIMEOUT_MS),
     callWithTimeout('claude', () => callWithRetry('claude', () => callClaude(pdfBase64, examInfo)), PER_MODEL_TIMEOUT_MS)
@@ -70,21 +69,16 @@ export default async function handler(req) {
   const settled = await Promise.allSettled(tasks);
   const results = {
     gemini: settled[0].status === 'fulfilled' ? settled[0].value : { error: errMsg(settled[0]) },
-    // ★ GPT 키는 GAS 호환을 위해 항상 비활성화 에러 반환 (실제 호출 X)
     gpt:    { error: 'GPT 비활성화 (PDF OCR 부정확으로 v22.0에서 코드 삭제)' },
     claude: settled[1].status === 'fulfilled' ? settled[1].value : { error: errMsg(settled[1]) }
   };
 
-  return jsonResponse({
+  res.status(200).json({
     ok: true,
     results: results,
     elapsedMs: Date.now() - t0,
     version: VERSION
   });
-}
-
-function jsonResponse(obj, status = 200) {
-  return new Response(JSON.stringify(obj), { status, headers: CORS_HEADERS });
 }
 
 function stripDataUrl(s) {
@@ -185,13 +179,13 @@ async function callGemini(pdfBase64, examInfo) {
       thinkingConfig: { thinkingBudget: 0 }
     }
   };
-  const res = await fetch(url, {
+  const r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-  const text = await res.text();
-  if (!res.ok) return { error: 'gemini HTTP ' + res.status, rawHttp: text.substring(0, 800) };
+  const text = await r.text();
+  if (!r.ok) return { error: 'gemini HTTP ' + r.status, rawHttp: text.substring(0, 800) };
   let json;
   try { json = JSON.parse(text); } catch (e) { return { error: 'gemini json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
   let answersText = '';
@@ -216,7 +210,7 @@ async function callClaude(pdfBase64, examInfo) {
       ]
     }]
   };
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -225,16 +219,14 @@ async function callClaude(pdfBase64, examInfo) {
     },
     body: JSON.stringify(payload)
   });
-  const text = await res.text();
-  if (!res.ok) return { error: 'claude HTTP ' + res.status, rawHttp: text.substring(0, 800) };
+  const text = await r.text();
+  if (!r.ok) return { error: 'claude HTTP ' + r.status, rawHttp: text.substring(0, 800) };
   let json;
   try { json = JSON.parse(text); } catch (e) { return { error: 'claude json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
   const blocks = json.content || [];
   const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
   return parseModelOutput('claude', answersText);
 }
-
-// ★ v22.0: callGpt 함수 완전 제거됨
 
 function parseModelOutput(model, raw) {
   try {
