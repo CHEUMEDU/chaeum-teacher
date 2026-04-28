@@ -4,17 +4,18 @@
 // ============================================================
 // 버전 이력
 // ─────────────────────────────────────────
-// v22.2 (2026-04-28)  — Node Runtime Express-style 로 전환
-//   · 이전 (v22.1): Web API (new Response) 사용 → Node Runtime 에서 빈 응답
-//   · 변경: req/res Express-style 로 변환 → 60초 한도 정상 작동
-//   · maxDuration: 60초 (Vercel Hobby 무료 한도)
+// v22.3 (2026-04-28)
+//   · 빈칸 N개(파이프 |) 자동 분리 채점 + 평균 점수
+//   · 점수 재계산: AI score 와 deductions 합산 불일치 시 deductions 우선
+//   · 문법 설명(grammarTip) 추가: 학생 학습용 1-2문장 팁
 //
+// v22.2  — Node Runtime Express-style 전환 (60초 한도)
 // v22.0  — 5단계 채점 + 배치 모드
 // ============================================================
 
 export const maxDuration = 60;
 
-const VERSION = "v22.2";
+const VERSION = "v22.3";
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -58,6 +59,19 @@ const GRADING_RUBRIC = `
 3. 빈칸은 무조건 0점
 4. 모호하면 학생에게 관대하게
 5. 동의어 인정
+6. ★ 중요: deductions 합계와 score 가 정확히 일치해야 함 (100 + 합계 = score)
+
+## 응답 필드 (필수)
+- "q": 문항 번호
+- "score": 0~100 점수
+- "category": "A" / "B" / "C" / "D" / "E"
+- "deductions": [{type, amount, reason}, ...] (빈 배열 가능)
+- "reasoning": 채점 사유 (간략하게 1-2문장)
+- "grammarTip": ★ 학생 학습용 문법/구문 팁 (1-2문장)
+   · 학생이 틀린 부분에 대한 명확한 문법 설명
+   · 예시: "비교급은 'more 형용사' 또는 '-er', 최상급은 'most 형용사' 또는 '-est' 형태입니다. 'popular' 같은 긴 형용사는 'most popular'를 사용합니다."
+   · 정답인 경우 빈 문자열 ""
+   · 학생 수준 (중1~고3) 에 맞춰 쉽게 설명
 `;
 
 export default async function handler(req, res) {
@@ -128,39 +142,153 @@ export default async function handler(req, res) {
   res.status(200).json({ ok: true, result, version: VERSION });
 }
 
-// 배치 채점
+// ★ v22.3: 정답에 (1)(2)(3) 패턴 있으면 파이프(|) 형태로 변환
+function normalizeMultiBlank(s) {
+  if (!s || typeof s !== 'string') return s;
+  if (s.indexOf('|') !== -1) return s;
+  if (/\(\d+\)\s*/.test(s)) {
+    const parts = s.split(/\(\d+\)\s*/).filter(p => p.trim()).map(p => p.trim());
+    if (parts.length > 1) return parts.join('|');
+  }
+  if (/\([A-Za-z]\)\s*/.test(s)) {
+    const parts = s.split(/\([A-Za-z]\)\s*/).filter(p => p.trim()).map(p => p.trim());
+    if (parts.length > 1) return parts.join('|');
+  }
+  return s;
+}
+
+// ★ v22.3: 빈칸 분리 + 평균 채점 + 점수 정확 + 문법 설명
 async function handleBatchGrade(items) {
-  const results = [];
-  const needAi = [];
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i] || {};
+  const expanded = [];      // AI에 보낼 단위 (빈칸별로 분리됨)
+  const subQGroups = {};    // 원본 q → 분리된 subQ 목록
+  const fastResults = [];   // Gemini 호출 안 해도 되는 결과 (빈칸/완전일치)
+
+  // 1단계: 빈칸 분리 + 빠른 처리
+  items.forEach(it => {
     const sa = String(it.studentAnswer || '').trim();
     const ca = String(it.correctAnswer || '').trim();
-    const qNum = it.q || (i + 1);
-    if (!sa) {
-      results.push({ q: qNum, score: 0, category: "E", deductions: [{ type: "미답", amount: -100, reason: "빈칸" }], reasoning: "빈칸 — 0점" });
-      continue;
+    const caNorm = normalizeMultiBlank(ca);
+    const qNum = it.q;
+    const hasMultiBlank = sa.indexOf('|') !== -1 || caNorm.indexOf('|') !== -1;
+
+    if (hasMultiBlank) {
+      // 빈칸별 분리 채점
+      const sParts = sa.split('|').map(s => s.trim());
+      const cParts = caNorm.split('|').map(s => s.trim());
+      const total = cParts.length;
+      subQGroups[qNum] = [];
+      for (let i = 0; i < total; i++) {
+        const subQId = qNum + '_' + (i + 1);
+        const sP = sParts[i] || '';
+        const cP = cParts[i] || '';
+        // 빠른 처리 (빈칸/완전일치)
+        if (!sP) {
+          fastResults.push({ q: subQId, parentQ: qNum, blank: i+1, score: 0, category: "E", deductions: [{type:"미답",amount:-100,reason:"이 빈칸 미입력"}], reasoning: "빈칸 — 0점", grammarTip: "" });
+          subQGroups[qNum].push(subQId);
+          continue;
+        }
+        if (!cP) {
+          fastResults.push({ q: subQId, parentQ: qNum, blank: i+1, score: 100, category: "A", deductions: [], reasoning: "정답 미설정", grammarTip: "" });
+          subQGroups[qNum].push(subQId);
+          continue;
+        }
+        if (quickEqual(sP, cP)) {
+          fastResults.push({ q: subQId, parentQ: qNum, blank: i+1, score: 100, category: "A", deductions: [], reasoning: "완전정답", grammarTip: "" });
+          subQGroups[qNum].push(subQId);
+          continue;
+        }
+        // AI 채점 필요
+        expanded.push({ q: subQId, parentQ: qNum, blank: i+1, studentAnswer: sP, correctAnswer: cP, questionContext: it.questionContext || '' });
+        subQGroups[qNum].push(subQId);
+      }
+    } else {
+      // 단일 빈칸
+      if (!sa) {
+        fastResults.push({ q: qNum, score: 0, category: "E", deductions: [{type:"미답",amount:-100,reason:"빈칸"}], reasoning: "빈칸 — 0점", grammarTip: "" });
+        return;
+      }
+      if (!ca) {
+        fastResults.push({ q: qNum, score: 100, category: "A", deductions: [], reasoning: "정답 미설정 → 입력만 확인", grammarTip: "" });
+        return;
+      }
+      if (quickEqual(sa, ca)) {
+        fastResults.push({ q: qNum, score: 100, category: "A", deductions: [], reasoning: "완전정답", grammarTip: "" });
+        return;
+      }
+      expanded.push({ q: qNum, studentAnswer: sa, correctAnswer: ca, questionContext: it.questionContext || '' });
     }
-    if (!ca) {
-      results.push({ q: qNum, score: 100, category: "A", deductions: [], reasoning: "정답 미설정 → 입력만 확인 (100점 부여)" });
-      continue;
-    }
-    if (quickEqual(sa, ca)) {
-      results.push({ q: qNum, score: 100, category: "A", deductions: [], reasoning: "완전정답 (대소문자/공백/문장부호 차이만)" });
-      continue;
-    }
-    needAi.push({ q: qNum, studentAnswer: sa, correctAnswer: ca, questionContext: it.questionContext || '' });
+  });
+
+  // 2단계: AI 채점 필요한 것만 한 번에 호출
+  let aiResults = [];
+  if (expanded.length > 0) {
+    aiResults = await gradeBatchViaGemini(expanded);
   }
-  if (needAi.length > 0) {
-    const aiResults = await gradeBatchViaGemini(needAi);
-    needAi.forEach(item => {
-      const found = aiResults.find(r => String(r.q) === String(item.q));
-      if (found) results.push(found);
-      else results.push({ q: item.q, score: 0, category: "ERROR", deductions: [], reasoning: "AI 응답에서 이 문항을 찾지 못함" });
-    });
-  }
-  results.sort((a, b) => Number(a.q) - Number(b.q));
-  return { ok: true, results, version: VERSION };
+  const allResults = [...fastResults, ...aiResults];
+
+  // 3단계: 결과 합치기 (멀티블랭크는 평균)
+  const finalResults = [];
+  items.forEach(it => {
+    const qNum = it.q;
+    if (subQGroups[qNum]) {
+      // 빈칸별 결과 합치기
+      const subResults = subQGroups[qNum].map(sq =>
+        allResults.find(r => String(r.q) === String(sq))
+      ).filter(Boolean);
+
+      if (subResults.length === 0) {
+        finalResults.push({ q: qNum, score: 0, category: "ERROR", deductions: [], reasoning: "빈칸 채점 실패", grammarTip: "" });
+        return;
+      }
+
+      // 평균 점수
+      const avgScore = Math.round(subResults.reduce((s, r) => s + r.score, 0) / subResults.length);
+
+      // 빈칸별 deductions 모두 합치기 (각 deduction에 빈칸 번호 표시)
+      const allDeductions = [];
+      subResults.forEach((r, i) => {
+        (r.deductions || []).forEach(d => {
+          allDeductions.push({ ...d, blank: r.blank || (i + 1) });
+        });
+      });
+
+      // 채점 사유 합치기
+      const reasoning = subResults.map((r, i) => '(' + (r.blank || (i+1)) + ') ' + r.reasoning).join(' / ');
+
+      // 문법 설명 합치기 (빈 문자열 제외)
+      const grammarTips = subResults.map((r, i) => {
+        const tip = String(r.grammarTip || '').trim();
+        return tip ? '(' + (r.blank || (i+1)) + ') ' + tip : '';
+      }).filter(Boolean).join('\n');
+
+      finalResults.push({
+        q: qNum,
+        score: avgScore,
+        category: avgScore === 100 ? 'A' : avgScore === 0 ? 'E' : 'MULTI',
+        deductions: allDeductions,
+        reasoning: reasoning,
+        grammarTip: grammarTips,
+        blanks: subResults.map((r, i) => ({
+          index: r.blank || (i + 1),
+          score: r.score,
+          deductions: r.deductions || [],
+          reasoning: r.reasoning,
+          grammarTip: r.grammarTip || ''
+        }))
+      });
+    } else {
+      // 단일 빈칸
+      const result = allResults.find(r => String(r.q) === String(qNum));
+      if (result) {
+        finalResults.push(result);
+      } else {
+        finalResults.push({ q: qNum, score: 0, category: "ERROR", deductions: [], reasoning: "AI 응답에서 이 문항을 찾지 못함", grammarTip: "" });
+      }
+    }
+  });
+
+  finalResults.sort((a, b) => Number(a.q) - Number(b.q));
+  return { ok: true, results: finalResults, version: VERSION };
 }
 
 // Gemini 배치 호출
@@ -177,8 +305,10 @@ async function gradeBatchViaGemini(items) {
     `\n\n## 채점 대상 (${items.length}개 문항)\n\n${promptItems}\n\n` +
     `## 응답 형식 (JSON 배열만 출력 — 마크다운 코드블록 금지)\n` +
     `[\n` +
-    items.map(it => `  {"q": ${it.q}, "score": 95, "category": "B", "deductions": [{"type":"...", "amount":-5, "reason":"..."}], "reasoning": "..."}`).join(',\n') +
-    `\n]\n\n각 문항을 위 채점 기준대로 평가해 ${items.length}개 항목 JSON 배열로만 응답하세요.`;
+    items.map(it => `  {"q": "${it.q}", "score": 95, "category": "B", "deductions": [{"type":"...", "amount":-5, "reason":"..."}], "reasoning": "...", "grammarTip": "..."}`).join(',\n') +
+    `\n]\n\n각 문항을 위 채점 기준대로 평가해 ${items.length}개 항목 JSON 배열로만 응답하세요.\n` +
+    `★ 중요: deductions 합계와 score 가 정확히 일치 (100 + 합계 = score, 0 미만은 0)\n` +
+    `★ grammarTip: 학생이 이해할 수 있는 1-2문장 문법/구문 설명 (정답이면 "")`;
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
   try {
     const r = await fetch(url, {
@@ -240,16 +370,29 @@ async function parseBatchResponse(r, items) {
       let score = parseInt(p.score, 10);
       if (isNaN(score) || score < 0) score = 0;
       if (score > 100) score = 100;
+      // ★ v22.3: deductions 합산으로 점수 재계산 (AI score 와 차이 5점 이상 시 deductions 우선)
+      const deductions = Array.isArray(p.deductions) ? p.deductions : [];
+      const totalDeduction = deductions.reduce((s, d) => s + Math.abs(Number(d.amount) || 0), 0);
+      const calculatedScore = Math.max(0, 100 - totalDeduction);
+      if (Math.abs(score - calculatedScore) > 5) {
+        // AI 점수와 deductions 합산이 5점 이상 차이 → deductions 합산을 신뢰
+        score = calculatedScore;
+      }
+      // 메타 필드 보존 (parentQ, blank — 빈칸 분리 채점 시 사용)
+      const orig = items.find(it => String(it.q) === String(p.q));
       return {
         q: p.q,
+        parentQ: orig ? orig.parentQ : undefined,
+        blank: orig ? orig.blank : undefined,
         score: score,
         category: String(p.category || "?").toUpperCase(),
-        deductions: Array.isArray(p.deductions) ? p.deductions : [],
-        reasoning: String(p.reasoning || '')
+        deductions: deductions,
+        reasoning: String(p.reasoning || ''),
+        grammarTip: String(p.grammarTip || '')  // ★ v22.3 추가
       };
     });
   } catch (e) {
-    return items.map(it => ({ q: it.q, score: 0, category: "ERROR", deductions: [], reasoning: "응답 파싱 실패: " + String(e) }));
+    return items.map(it => ({ q: it.q, parentQ: it.parentQ, blank: it.blank, score: 0, category: "ERROR", deductions: [], reasoning: "응답 파싱 실패: " + String(e), grammarTip: "" }));
   }
 }
 
