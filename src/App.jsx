@@ -2822,6 +2822,7 @@ export default function App(){
   // [v21.0] AI 답지 자동 검수 상태
   const[aiRunning,setAiRunning]=useState(false);
   const[aiResults,setAiResults]=useState([]); // [{label, unanimous, mismatchCount, rowIndex, error}]
+  const[aiTasks,setAiTasks]=useState([]); // ★ v21.6: 원본 task 보관 (재검수 버튼용)
   // v21.3: AI 검수 호출 — Vercel Edge Function 우선, 실패 시 GAS 폴백
   // 1) Vercel /api/ai-extract 로 PDF 보내서 3개 AI 응답 받기 (GAS 데이터 한도 우회)
   // 2) 받은 응답을 GAS 로 보내 검수/저장 (action=ai_extract_answers + aiResults)
@@ -3058,13 +3059,17 @@ export default function App(){
     }
   };
   // [v21.0] AI 검수 task 일괄 실행 (병렬 호출)
+  // ★ v21.5: Gemini 분당 15회 한도(429) 방지 — 2개씩 묶어 호출 + 청크 간 4초 대기
+  // ★ v21.6: 원본 tasks 보관 — 재검수 버튼이 동일 file/examInfo로 다시 호출
   const runAiExtractTasks = async (tasks) => {
+    setAiTasks(tasks); // 원본 보관 (재검수용)
     setAiRunning(true);
     setAiResults(tasks.map(t=>({label:t.label, status:"pending"})));
-    // 병렬 호출 (최대 4개씩 묶어서 — GAS rate limit 회피)
-    const CHUNK=4;
+    const CHUNK=2; // 4 → 2 로 감소 (Gemini rate limit 여유)
     const allResults=[];
     for(let i=0; i<tasks.length; i+=CHUNK){
+      // 첫 청크 아니면 청크 사이 4초 대기 — 분당 한도 회복 시간
+      if(i>0) await new Promise(r=>setTimeout(r,4000));
       const chunk = tasks.slice(i, i+CHUNK);
       const chunkResults = await Promise.all(chunk.map(async (t,idx)=>{
         const r = await callAiExtract(t.file, t.examInfo);
@@ -3076,6 +3081,50 @@ export default function App(){
       setAiResults(prev=>{
         const next=[...prev];
         chunkResults.forEach((cr,k)=>{ next[i+k]=cr; });
+        return next;
+      });
+    }
+    setAiRunning(false);
+  };
+  // ★ v21.6: 단일 task 재검수 — error/mismatch 행에서 호출
+  // 같은 PDF로 Gemini+Claude 다시 돌려서 정답 재추출.
+  // 이전 PENDING 행이 시트에 남아있어도 새 행이 추가되어 최신 결과로 덮어씀.
+  const retryAiTask = async (idx) => {
+    const t = aiTasks[idx];
+    if(!t || !t.file){
+      alert("재검수할 답지 정보가 사라졌습니다.\n페이지 새로고침 후 \"검수 대기\" 카드에서 \"🔄 불일치 재요청\" 버튼을 사용하세요.");
+      return;
+    }
+    // 해당 항목만 pending 으로 표시 (다른 항목은 그대로)
+    setAiResults(prev=>{
+      const next=[...prev];
+      next[idx]={label:t.label, status:"pending"};
+      return next;
+    });
+    setAiRunning(true);
+    try{
+      const r = await callAiExtract(t.file, t.examInfo);
+      setAiResults(prev=>{
+        const next=[...prev];
+        if(!r){
+          next[idx]={label:t.label, status:"error", error:"호출 실패"};
+        }else if(r.result==="success"){
+          next[idx]={
+            label:t.label,
+            status:r.unanimous?"ok":"mismatch",
+            unanimous:r.unanimous,
+            mismatchCount:r.mismatchCount,
+            rowIndex:r.rowIndex
+          };
+        }else{
+          next[idx]={label:t.label, status:"error", error:r.message||"알 수 없음"};
+        }
+        return next;
+      });
+    }catch(e){
+      setAiResults(prev=>{
+        const next=[...prev];
+        next[idx]={label:t.label, status:"error", error:String(e)};
         return next;
       });
     }
@@ -3131,7 +3180,7 @@ export default function App(){
     }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
   return(
     <div style={S.app} className="app-shell">
@@ -3480,19 +3529,29 @@ export default function App(){
                 {aiRunning&&<span style={{fontSize:11,fontWeight:600,color:T.textMuted}}>진행 중... ({aiResults.filter(r=>r.status&&r.status!=="pending").length}/{aiResults.length})</span>}
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                {aiResults.map((r,i)=>(
-                  <div key={i} style={{padding:"8px 10px",borderRadius:8,background:r.status==="ok"?T.accentLight:r.status==="mismatch"?"#fff5f0":r.status==="error"?T.dangerLight:T.borderLight,fontSize:12,display:"flex",alignItems:"center",gap:8}}>
-                    <div style={{flex:1,fontWeight:600,color:T.text}}>{r.label}</div>
+                {aiResults.map((r,i)=>{
+                  const canRetry = (r.status==="error"||r.status==="mismatch") && !aiRunning && aiTasks[i] && aiTasks[i].file;
+                  return(
+                  <div key={i} style={{padding:"8px 10px",borderRadius:8,background:r.status==="ok"?T.accentLight:r.status==="mismatch"?"#fff5f0":r.status==="error"?T.dangerLight:T.borderLight,fontSize:12,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                    <div style={{flex:1,minWidth:140,fontWeight:600,color:T.text}}>{r.label}</div>
                     {r.status==="pending"&&<span style={{color:T.textMuted}}>⏳ 분석 중...</span>}
                     {r.status==="ok"&&<span style={{color:T.accent,fontWeight:700}}>✅ 만장일치 자동 등록</span>}
                     {r.status==="mismatch"&&<span style={{color:"#d97706",fontWeight:700}}>⚠️ 불일치 {r.mismatchCount}개 (검수 필요)</span>}
-                    {r.status==="error"&&<span style={{color:T.danger,fontWeight:700}}>❌ {r.error||"오류"}</span>}
+                    {r.status==="error"&&<span style={{color:T.danger,fontWeight:700,wordBreak:"break-all",fontSize:11}}>❌ {r.error||"오류"}</span>}
+                    {canRetry&&(
+                      <button onClick={()=>retryAiTask(i)} title="같은 PDF로 AI 재검수 (Gemini + Claude 다시 호출)"
+                        style={{padding:"5px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",background:r.status==="error"?T.danger:"#d97706",color:T.white,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                        🔄 재검수
+                      </button>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
-              {!aiRunning&&aiResults.some(r=>r.status==="mismatch")&&(
-                <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,textAlign:"center"}}>
-                  📋 "오늘의 현황" 탭 → AI 검수 대기 카드에서 검수하세요
+              {!aiRunning&&aiResults.some(r=>r.status==="mismatch"||r.status==="error")&&(
+                <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,lineHeight:1.6}}>
+                  💡 <b>실패/불일치 항목</b>은 위 <b>🔄 재검수</b> 버튼으로 즉시 다시 시도할 수 있어요.<br/>
+                  여전히 안 풀리면 <b>"오늘의 현황" 탭 → AI 검수 대기</b> 카드에서 직접 답안을 입력해 확정하세요.
                 </div>
               )}
             </div>
