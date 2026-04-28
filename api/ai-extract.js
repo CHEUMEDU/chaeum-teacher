@@ -1,13 +1,15 @@
 // ============================================================
-// 채움학원 — AI 답지 자동 검수 API (Vercel Edge Function)
+// 채움학원 — AI 답지 자동 검수 API (Vercel Serverless Function)
 // 파일 경로: chaeum-teacher/api/ai-extract.js
 // ============================================================
 // 버전 이력
 // ─────────────────────────────────────────
+// v22.1 (2026-04-28)  — Vercel Edge → Node Runtime 전환 (타임아웃 25초 → 60초)
+//   · 답지 PDF가 길어도 Gemini 처리 가능 (이전: 25초 초과 시 타임아웃)
+//   · 모델별 타임아웃: 27초 → 50초 (10초 여유)
+//   · maxDuration: 60초 (Vercel Hobby plan 무료 한도)
+//
 // v22.0 (2026-04-28)  — GPT 완전 제거 (코드 자체 삭제)
-//   · 이전: GPT 호출 함수가 있었지만 결과만 비활성화
-//   · 변경: GPT 관련 코드 자체를 삭제 → 어떤 경로로도 호출 불가
-//   · 활성 모델: Gemini 2.5 Flash + Claude Sonnet 4.5 (2개)
 //
 // v21.5 (2026-04-27)  — 플랜 2 채택 (Gemini Flash + Claude Sonnet)
 //
@@ -17,9 +19,10 @@
 //   ※ gpt 키는 항상 "비활성화" 에러 반환 (GAS 호환용)
 // ============================================================
 
-export const config = { runtime: 'edge' };
+// ★ v22.1: Edge Runtime 제거 → Node Runtime 자동 사용 (60초 한도)
+export const maxDuration = 60;
 
-const VERSION = "v22.0";
+const VERSION = "v22.1";
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -56,7 +59,8 @@ export default async function handler(req) {
 
   const t0 = Date.now();
 
-  const PER_MODEL_TIMEOUT_MS = 27000;
+  // ★ v22.1: 모델별 타임아웃 27초 → 50초 (Node Runtime 60초 한도 안에서 10초 여유)
+  const PER_MODEL_TIMEOUT_MS = 50000;
   // ★ v22.0: GPT 호출 함수 자체를 제거. Gemini + Claude 만 사용.
   const tasks = [
     callWithTimeout('gemini', () => callWithRetry('gemini', () => callGemini(pdfBase64, examInfo)), PER_MODEL_TIMEOUT_MS),
