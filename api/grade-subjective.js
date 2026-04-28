@@ -1,9 +1,13 @@
 // ============================================================
-// 채움학원 — 주관식 답안 자동 채점 API (Vercel Edge Function)
+// 채움학원 — 주관식 답안 자동 채점 API (Vercel Serverless Function)
 // 파일 경로: chaeum-teacher/api/grade-subjective.js
 // ============================================================
 // 버전 이력
 // ─────────────────────────────────────────
+// v22.1 (2026-04-28)  — Vercel Edge → Node Runtime (타임아웃 25초 → 60초)
+//   · 답안 길어도 Gemini 처리 가능
+//   · maxDuration: 60초
+//
 // v22.0 (2026-04-28)  — 정식 출시판
 //   · Gemini 2.5 Flash 단독 사용 (GPT/Claude 미사용)
 //   · 5단계 채점 기준 (A~E)
@@ -17,9 +21,10 @@
 //   → 응답 { ok: true, results: [{q, score, category, deductions, reasoning}, ...] }
 // ============================================================
 
-export const config = { runtime: 'edge' };
+// ★ v22.1: Edge Runtime 제거 → Node Runtime 자동 사용 (60초 한도)
+export const maxDuration = 60;
 
-const VERSION = "v22.0";
+const VERSION = "v22.1";
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
