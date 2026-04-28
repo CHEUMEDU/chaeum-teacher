@@ -1,6 +1,7 @@
 // ============================================================
-// 채움학원 — AI 답지 자동 검수 API (Vercel Edge Function)
-// 플랜 2: Gemini 2.5 Flash + Claude Sonnet 4.5 (GPT 제거)
+// 채움학원 — 주관식 답안 자동 채점 API (Vercel Edge Function)
+// Gemini 2.5 Flash + 5단계 채점 기준 (A~E)
+// ★ v2: 배치 채점 지원 (1학생 = 1회 호출 → 비용 1/5)
 // ============================================================
 
 export const config = { runtime: 'edge' };
@@ -12,6 +13,71 @@ const CORS_HEADERS = {
   'Content-Type': 'application/json; charset=utf-8'
 };
 
+// ============================================================
+// 5단계 채점 기준
+// ============================================================
+const GRADING_RUBRIC = `
+당신은 영어/국어 학원의 주관식 답안 채점 전문가입니다.
+학생 답안을 정답과 비교하여 5단계 기준으로 정확하게 채점하세요.
+
+## 5단계 채점 기준
+
+### A. 감점 없음 (100점 — 완전정답)
+- 정답과 100% 일치
+- 대소문자 차이만 있음 (apple ↔ Apple)
+- 마침표·쉼표·물음표 차이만 있음 (end. ↔ end)
+- 앞뒤 공백 차이만 있음 ("  apple  " ↔ "apple")
+- 축약형/완전형 차이만 있음 (don't ↔ do not)
+- 영/미 표기 차이만 있음 (colour ↔ color)
+
+### B. 경미한 오류 (-5% ~ -10%)
+- 관사 차이 (a/an/the 누락 또는 혼동): -5%
+- 동사 수일치 (is↔are, was↔were): -5%
+- 단복수 일치 (book ↔ books): -5%
+- 명사 가산/불가산 (a water ↔ water): -5%
+- 1~2글자 철자 오타 (recieve → receive): -10%
+- 대명사 격 오류 (her↔she, him↔he): -10%
+- 전치사 오류 (with↔by↔for↔in↔on): -10%
+- 부사/형용사 혼동 (good↔well, hard↔hardly): -10%
+- 형태소 오류 (-ing↔-ed, 분사 외): -10%
+- 잉여 단어 1개 추가: -10%
+
+### C. 중간 오류 (-15% ~ -20%)
+- 사역동사 혼동 (had↔made↔let↔got): -15%
+- 어순 변형 (단어는 맞으나 순서 다름): -15%
+- 시제 오류 (go↔went↔gone, will↔would): -15%
+- 태 오류 (능동↔수동, eat↔be eaten): -15%
+- 분사 형태 오류 (broken↔breaking): -15%
+- 관계대명사 오류 (who↔which↔that): -15%
+- 접속사 오류 (and↔but↔or↔so↔because): -15%
+- 비교급/최상급 형태 오류: -15%
+- 조동사 오류 (can↔could↔may↔might↔should): -15%
+- 부정사/동명사 혼동 (to do ↔ doing): -15%
+- 핵심단어 1개 누락: -20%
+- 가정법 형태 오류 (If I were ↔ If I was): -20%
+
+### D. 심각한 오류 (-30% ~ -50%)
+- 의문문 어순 오류: -30%
+- 한국어 직역 (어색한 영어): -30%
+- 의미 변형 (의미 통하나 약간 다름): -30%
+- 핵심단어 2개+ 누락: -40%
+- 핵심 구문 오류 (시제+태+조동사 동시 오류): -50%
+
+### E. 결정적 오류 (-100% — 0점)
+- 파트 완전 누락
+- 미답(빈칸) — 무조건 0점
+- 의미 완전 변형 (정답과 무관)
+- 단답/문장 형식 위반
+
+## 채점 규칙
+
+1. **합산 적용**: 한 답안에 여러 오류가 있으면 감점을 모두 합산.
+2. **최저점 0점 보장**: 답을 쓴 경우 감점 합이 -120%여도 0점 미만 불가.
+3. **빈칸은 무조건 0점**.
+4. **모호하면 학생에게 관대하게**: 명백한 오타 vs. 모르는 단어는 명백한 쪽으로.
+5. **동의어 인정**: "이 단어 써라"고 지정된 게 아니면 동의어도 정답.
+`;
+
 export default async function handler(req) {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -21,245 +87,314 @@ export default async function handler(req) {
   }
 
   let body;
-  try {
-    body = await req.json();
-  } catch (e) {
+  try { body = await req.json(); }
+  catch (e) {
     return jsonResponse({ ok: false, error: 'Invalid JSON: ' + String(e) }, 400);
   }
 
-  const pdfBase64 = stripDataUrl(body.pdfBase64 || body.answerFileBase64 || body.base64 || '');
-  const examInfo = body.examInfo || {
-    subject: body.subject,
-    grade: body.grade,
-    level: body.level,
-    examType: body.examType,
-    totalQuestions: body.totalQuestions || body.totalQ || 0
-  };
+  // ★ v2: 배치 모드 (1학생의 여러 답안을 한 번에 채점)
+  // body.items = [{q, studentAnswer, correctAnswer, questionContext}, ...]
+  if (Array.isArray(body.items) && body.items.length > 0) {
+    return await handleBatchGrade(body.items);
+  }
 
-  if (!pdfBase64) return jsonResponse({ ok: false, error: 'pdfBase64 missing' }, 400);
+  // 단일 모드 (호환성)
+  const studentAnswer = String(body.studentAnswer || '').trim();
+  const correctAnswer = String(body.correctAnswer || '').trim();
+  const questionContext = String(body.questionContext || '').trim();
 
-  const t0 = Date.now();
+  if (!studentAnswer) {
+    return jsonResponse({
+      ok: true,
+      result: {
+        score: 0, category: "E",
+        deductions: [{ type: "미답", amount: -100, reason: "답 미입력" }],
+        reasoning: "빈칸 — 0점"
+      }
+    });
+  }
+  if (!correctAnswer) {
+    return jsonResponse({ ok: false, error: '정답 데이터 없음' }, 400);
+  }
+  if (quickEqual(studentAnswer, correctAnswer)) {
+    return jsonResponse({
+      ok: true,
+      result: {
+        score: 100, category: "A", deductions: [],
+        reasoning: "완전정답 (대소문자/공백/문장부호 차이만)"
+      }
+    });
+  }
+  const isMultiBlank = studentAnswer.indexOf('|') !== -1 || correctAnswer.indexOf('|') !== -1;
+  if (isMultiBlank) {
+    return await gradeMultiBlankSingle(studentAnswer, correctAnswer, questionContext);
+  }
+  const result = await gradeSingleViaGemini(studentAnswer, correctAnswer, questionContext);
+  return jsonResponse({ ok: true, result });
+}
 
-  const PER_MODEL_TIMEOUT_MS = 27000;
-  const tasks = [
-    callWithTimeout('gemini', () => callWithRetry('gemini', () => callGemini(pdfBase64, examInfo)), PER_MODEL_TIMEOUT_MS),
-    callWithTimeout('claude', () => callWithRetry('claude', () => callClaude(pdfBase64, examInfo)), PER_MODEL_TIMEOUT_MS)
-  ];
+// ============================================================
+// ★ v2: 배치 채점 — 1학생의 여러 주관식을 한 번에 처리
+// 1) 빠른 일치 / 빈칸 → Gemini 호출 없이 즉시 결정
+// 2) 나머지만 Gemini 한 번에 묶어서 채점
+// ============================================================
+async function handleBatchGrade(items) {
+  const results = [];
+  const needAi = [];
+  // 1단계: 빠른 처리 (빈칸 / 완전일치)
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i] || {};
+    const sa = String(it.studentAnswer || '').trim();
+    const ca = String(it.correctAnswer || '').trim();
+    const qNum = it.q || (i + 1);
+    if (!sa) {
+      results.push({
+        q: qNum,
+        score: 0, category: "E",
+        deductions: [{ type: "미답", amount: -100, reason: "빈칸" }],
+        reasoning: "빈칸 — 0점"
+      });
+      continue;
+    }
+    if (!ca) {
+      results.push({
+        q: qNum,
+        score: 100, category: "A", deductions: [],
+        reasoning: "정답 미설정 → 입력만 확인 (100점 부여)"
+      });
+      continue;
+    }
+    if (quickEqual(sa, ca)) {
+      results.push({
+        q: qNum,
+        score: 100, category: "A", deductions: [],
+        reasoning: "완전정답 (대소문자/공백/문장부호 차이만)"
+      });
+      continue;
+    }
+    needAi.push({ q: qNum, studentAnswer: sa, correctAnswer: ca, questionContext: it.questionContext || '' });
+  }
+  // 2단계: AI 채점 필요한 것만 한 번에 호출
+  if (needAi.length > 0) {
+    const aiResults = await gradeBatchViaGemini(needAi);
+    // q 매칭해서 results 에 합치기
+    needAi.forEach(item => {
+      const found = aiResults.find(r => String(r.q) === String(item.q));
+      if (found) {
+        results.push(found);
+      } else {
+        results.push({
+          q: item.q,
+          score: 0, category: "ERROR",
+          deductions: [],
+          reasoning: "AI 응답에서 이 문항을 찾지 못함"
+        });
+      }
+    });
+  }
+  // q 번호 순 정렬
+  results.sort((a, b) => Number(a.q) - Number(b.q));
+  return jsonResponse({ ok: true, results });
+}
 
-  const settled = await Promise.allSettled(tasks);
-  const results = {
-    gemini: settled[0].status === 'fulfilled' ? settled[0].value : { error: errMsg(settled[0]) },
-    gpt:    { error: 'GPT 비활성화 (PDF OCR 부정확으로 제외)' },
-    claude: settled[1].status === 'fulfilled' ? settled[1].value : { error: errMsg(settled[1]) }
-  };
+// ============================================================
+// Gemini 배치 호출 — 여러 답안을 한 번에 채점
+// ============================================================
+async function gradeBatchViaGemini(items) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return items.map(it => ({
+      q: it.q,
+      score: 0, category: "ERROR",
+      deductions: [],
+      reasoning: "GEMINI_API_KEY 미설정"
+    }));
+  }
+  const promptItems = items.map((it, i) =>
+    `[문항 ${it.q}]\n학생 답안: "${it.studentAnswer}"\n정답: "${it.correctAnswer}"` +
+    (it.questionContext ? `\n맥락: ${it.questionContext}` : '')
+  ).join('\n\n');
+  const prompt = GRADING_RUBRIC +
+    `\n\n## 채점 대상 (${items.length}개 문항)\n\n${promptItems}\n\n` +
+    `## 응답 형식 (JSON 배열만 출력 — 마크다운 코드블록 금지)\n` +
+    `[\n` +
+    items.map(it =>
+      `  {"q": ${it.q}, "score": 95, "category": "B", "deductions": [{"type":"...", "amount":-5, "reason":"..."}], "reasoning": "..."}`
+    ).join(',\n') +
+    `\n]\n\n` +
+    `각 문항을 위 채점 기준대로 평가해 ${items.length}개 항목 JSON 배열로만 응답하세요.`;
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+          thinkingConfig: { thinkingBudget: 0 },
+          maxOutputTokens: Math.min(8000, 600 * items.length + 1000)
+        }
+      })
+    });
+    if (!res.ok) {
+      const txt = await res.text();
+      // 429 (분당 한도) → 5초 대기 후 1회 재시도
+      if (res.status === 429) {
+        await sleep(5000);
+        const retry = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: prompt }] }],
+            generationConfig: {
+              temperature: 0,
+              responseMimeType: 'application/json',
+              thinkingConfig: { thinkingBudget: 0 },
+              maxOutputTokens: Math.min(8000, 600 * items.length + 1000)
+            }
+          })
+        });
+        if (retry.ok) return await parseBatchResponse(retry, items);
+      }
+      return items.map(it => ({
+        q: it.q,
+        score: 0, category: "ERROR",
+        deductions: [],
+        reasoning: `Gemini HTTP ${res.status} — 분당 호출 한도 초과 가능성. 잠시 후 재시도하세요.`
+      }));
+    }
+    return await parseBatchResponse(res, items);
+  } catch (e) {
+    return items.map(it => ({
+      q: it.q,
+      score: 0, category: "ERROR",
+      deductions: [],
+      reasoning: "Gemini 호출 실패: " + String(e)
+    }));
+  }
+}
 
+// ============================================================
+// Gemini 배치 응답 파싱
+// ============================================================
+async function parseBatchResponse(res, items) {
+  let text = '';
+  try {
+    const json = await res.json();
+    const cand = (json.candidates || [])[0];
+    if (cand && cand.content && cand.content.parts) {
+      text = cand.content.parts.map(p => p.text || '').join('');
+    }
+    text = text.replace(/^```(?:json)?\s*/m, '').replace(/```\s*$/m, '').trim();
+    let parsed = JSON.parse(text);
+    // 배열이 아니면 배열로 감싸기 시도
+    if (!Array.isArray(parsed)) {
+      if (parsed && Array.isArray(parsed.results)) parsed = parsed.results;
+      else if (parsed && Array.isArray(parsed.items)) parsed = parsed.items;
+      else throw new Error("응답이 배열 아님");
+    }
+    return parsed.map(p => {
+      let score = parseInt(p.score, 10);
+      if (isNaN(score) || score < 0) score = 0;
+      if (score > 100) score = 100;
+      return {
+        q: p.q,
+        score: score,
+        category: String(p.category || "?").toUpperCase(),
+        deductions: Array.isArray(p.deductions) ? p.deductions : [],
+        reasoning: String(p.reasoning || '')
+      };
+    });
+  } catch (e) {
+    return items.map(it => ({
+      q: it.q,
+      score: 0, category: "ERROR",
+      deductions: [],
+      reasoning: "응답 파싱 실패: " + String(e) + " | 원본: " + text.substring(0, 100)
+    }));
+  }
+}
+
+// ============================================================
+// 단일 답안 Gemini 채점 (호환용)
+// ============================================================
+async function gradeSingleViaGemini(studentAnswer, correctAnswer, questionContext) {
+  const result = await gradeBatchViaGemini([{
+    q: 1,
+    studentAnswer, correctAnswer, questionContext
+  }]);
+  if (result && result[0]) {
+    const r = result[0];
+    return {
+      score: r.score,
+      category: r.category,
+      deductions: r.deductions,
+      reasoning: r.reasoning
+    };
+  }
+  return { score: 0, category: "ERROR", deductions: [], reasoning: "응답 없음" };
+}
+
+// ============================================================
+// 단일 답안 멀티블랭크 (파이프 |) 채점 — 호환용
+// ============================================================
+async function gradeMultiBlankSingle(studentAnswer, correctAnswer, questionContext) {
+  const studentParts = studentAnswer.split('|').map(s => s.trim());
+  const correctParts = correctAnswer.split('|').map(s => s.trim());
+  const total = correctParts.length;
+  const items = [];
+  for (let i = 0; i < total; i++) {
+    items.push({
+      q: i + 1,
+      studentAnswer: studentParts[i] || '',
+      correctAnswer: correctParts[i] || '',
+      questionContext: questionContext
+    });
+  }
+  const batchRes = await handleBatchGrade(items);
+  const j = await batchRes.json();
+  const blanks = j.results || [];
+  const avgScore = blanks.length > 0
+    ? Math.round(blanks.reduce((s, b) => s + b.score, 0) / blanks.length)
+    : 0;
   return jsonResponse({
     ok: true,
-    results: results,
-    elapsedMs: Date.now() - t0
+    result: {
+      score: avgScore,
+      category: "MULTI",
+      blanks: blanks.map(b => ({
+        index: b.q,
+        studentAnswer: studentParts[b.q - 1] || '',
+        correctAnswer: correctParts[b.q - 1] || '',
+        score: b.score,
+        category: b.category,
+        deductions: b.deductions,
+        reasoning: b.reasoning
+      })),
+      reasoning: `${total}개 빈칸 평균: ${avgScore}점 (` +
+        blanks.map(b => b.score + '점').join(' · ') + ')'
+    }
   });
+}
+
+// ============================================================
+// 헬퍼
+// ============================================================
+function quickEqual(a, b) {
+  const norm = s => String(s || '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[.!?,]+$/, '');
+  return norm(a) === norm(b);
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
 function jsonResponse(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: CORS_HEADERS });
-}
-
-function stripDataUrl(s) {
-  if (!s) return '';
-  if (s.indexOf(',') >= 0) return s.split(',').pop();
-  return s;
-}
-
-function errMsg(settled) {
-  if (settled && settled.reason) return String(settled.reason.message || settled.reason);
-  return 'unknown error';
-}
-
-async function callWithTimeout(model, fn, timeoutMs) {
-  return await Promise.race([
-    fn(),
-    new Promise((_, reject) => setTimeout(() => reject(new Error(model + ' 타임아웃 (' + timeoutMs + 'ms)')), timeoutMs))
-  ]);
-}
-
-async function callWithRetry(name, fn) {
-  const result1 = await fn();
-  if (!result1 || !result1.error) return result1;
-  const errStr = String(result1.error || '').toLowerCase();
-  const isTransient = /\b(503|529|502|504|429|overload|timeout|rate.?limit|temporarily)/i.test(errStr);
-  if (!isTransient) return result1;
-  await new Promise(r => setTimeout(r, 1500));
-  const result2 = await fn();
-  if (!result2 || !result2.error) {
-    result2.attempts = 2;
-    result2.firstError = result1.error;
-    return result2;
-  }
-  return {
-    error: result2.error,
-    rawHttp: result2.rawHttp,
-    attempts: 2,
-    firstError: result1.error
-  };
-}
-
-function buildExtractPrompt(examInfo) {
-  const totalQ = parseInt(examInfo.totalQuestions || examInfo.totalQ || 0, 10);
-  const totalLine = totalQ > 0
-    ? '- 총 문항수: 약 ' + totalQ + '문제 (참고용 — PDF에서 직접 확인하세요)'
-    : '- 총 문항수: PDF에서 직접 식별하세요 (1번부터 마지막 번호까지 빠짐없이)';
-  return [
-    '당신은 시험 답지(정답지) OCR 전문가입니다.',
-    '이 PDF는 학생이 푸는 시험지가 아니라, 선생님이 보는 정답지입니다.',
-    'PDF 안에 이미 정답이 표시되어 있습니다. 그것을 찾아 그대로 옮기면 됩니다.',
-    '',
-    '## 시험 정보',
-    '- 과목: ' + (examInfo.subject || ''),
-    '- 학년: ' + (examInfo.grade || ''),
-    '- 레벨/교재: ' + (examInfo.level || ''),
-    '- 시험명: ' + (examInfo.examType || ''),
-    totalLine,
-    '- 문항별 객관식·주관식 여부는 답지를 보고 직접 판별하세요',
-    '',
-    '## 절대 규칙',
-    '1. 절대로 문제를 읽고 답을 추론하지 마세요. 오직 답지에 표기된 정답만 옮기세요.',
-    '2. 정답이 보이지 않거나 모호하면 "?" 로 표시하세요. 추측 금지.',
-    '3. 객관식 답이 ①②③④⑤ 형태라면 1,2,3,4,5 숫자로 변환하세요.',
-    '4. 복수정답(예: ②와 ③ 둘 다 정답)은 "2,3" 형태로.',
-    '5. 주관식 답은 답지에 적힌 그대로 (영어 문장이면 영어, 한글이면 한글).',
-    '6. **시작 번호 식별**: 답지 첫 문항이 1이 아닐 수도 있습니다. PDF의 첫 번째 정답 번호를 그대로 startNumber 로 기록하세요.',
-    '7. **객관식·주관식 자동 판별 (필수)**: 각 문항을 다음 기준으로 분류해서 types 객체에 기록하세요.',
-    '   - "mc" (객관식): 답이 1~5 중 하나(또는 "2,3" 같은 복수정답)인 경우',
-    '   - "sa" (주관식): 답이 단어/구절/문장/숫자식 등 텍스트인 경우',
-    '   - 판단 근거는 답의 형태입니다. "③" 만 있으면 mc, "happy" 면 sa.',
-    '8. **문항 수는 PDF가 결정**: 답지에 보이는 모든 문항 번호를 빠짐없이 추출하세요. 답이 안 보이는 번호는 "?"로.',
-    '',
-    '## 응답 형식 — 반드시 이 JSON만 출력 (마크다운 코드블록 금지)',
-    '{"startNumber": 1, "answers": {"1": "정답", "2": "정답", ...}, "types": {"1": "mc 또는 sa", "2": "mc 또는 sa", ...}, "notes": ""}',
-    '',
-    '**중요**:',
-    '- answers 와 types 의 key 는 동일하게, 답지에 표기된 실제 문항 번호 사용',
-    '- PDF에 보이는 모든 문항을 빠짐없이 포함 (1번부터 마지막 번호까지)',
-    '- startNumber 가 확실치 않으면 1 로 기록',
-    '- types 판단이 어려우면 답이 1~5 숫자만 있을 때 mc, 그 외는 sa'
-  ].join('\n');
-}
-
-async function callGemini(pdfBase64, examInfo) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return { error: 'GEMINI_API_KEY 미설정' };
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
-  const payload = {
-    contents: [{
-      parts: [
-        { text: buildExtractPrompt(examInfo) },
-        { inline_data: { mime_type: 'application/pdf', data: pdfBase64 } }
-      ]
-    }],
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      thinkingConfig: { thinkingBudget: 0 }
-    }
-  };
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  const text = await res.text();
-  if (!res.ok) return { error: 'gemini HTTP ' + res.status, rawHttp: text.substring(0, 800) };
-  let json;
-  try { json = JSON.parse(text); } catch (e) { return { error: 'gemini json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
-  let answersText = '';
-  const cand = (json.candidates || [])[0];
-  if (cand && cand.content && cand.content.parts) {
-    answersText = cand.content.parts.map(p => p.text || '').join('');
-  }
-  return parseModelOutput('gemini', answersText);
-}
-
-async function callClaude(pdfBase64, examInfo) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { error: 'ANTHROPIC_API_KEY 미설정' };
-  const payload = {
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 8000,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-        { type: 'text', text: buildExtractPrompt(examInfo) }
-      ]
-    }]
-  };
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify(payload)
-  });
-  const text = await res.text();
-  if (!res.ok) return { error: 'claude HTTP ' + res.status, rawHttp: text.substring(0, 800) };
-  let json;
-  try { json = JSON.parse(text); } catch (e) { return { error: 'claude json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
-  const blocks = json.content || [];
-  const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
-  return parseModelOutput('claude', answersText);
-}
-
-function parseModelOutput(model, raw) {
-  try {
-    let answersText = String(raw || '').trim();
-    answersText = answersText.replace(/^```(?:json)?\s*/m, '').replace(/```\s*$/m, '').trim();
-    const parsed = JSON.parse(answersText);
-    let startNum = parseInt(parsed.startNumber, 10);
-    if (!startNum || isNaN(startNum) || startNum < 1) startNum = 1;
-    const rawAns = parsed.answers || {};
-    const rawTypes = parsed.types || {};
-    const normAns = {};
-    const normTypes = {};
-    const origMap = {};
-    const keys = Object.keys(rawAns);
-    const numKeys = keys.map(k => parseInt(k, 10)).filter(n => !isNaN(n));
-    if (numKeys.length === keys.length && numKeys.length > 0) {
-      numKeys.sort((a, b) => a - b);
-      for (let i = 0; i < numKeys.length; i++) {
-        const origK = String(numKeys[i]);
-        const newK = String(i + 1);
-        normAns[newK] = rawAns[origK];
-        normTypes[newK] = normalizeTypeToken(rawTypes[origK], rawAns[origK]);
-        origMap[newK] = numKeys[i];
-      }
-      if (startNum === 1 && numKeys[0] !== 1) startNum = numKeys[0];
-    } else {
-      Object.keys(rawAns).forEach(k => {
-        normAns[k] = rawAns[k];
-        normTypes[k] = normalizeTypeToken(rawTypes[k], rawAns[k]);
-      });
-    }
-    return {
-      answers: normAns,
-      types: normTypes,
-      startNumber: startNum,
-      origNumberMap: origMap,
-      notes: parsed.notes || '',
-      raw: answersText.substring(0, 2000)
-    };
-  } catch (e) {
-    return { error: model + ' 파싱: ' + String(e), raw: String(raw || '').substring(0, 500) };
-  }
-}
-
-function normalizeTypeToken(typeVal, answerVal) {
-  const t = String(typeVal || '').toLowerCase().trim();
-  if (t === 'mc' || t === 'obj' || t === '객관식' || t === 'multiple_choice') return 'mc';
-  if (t === 'sa' || t === 'subj' || t === '주관식' || t === 'subjective' || t === 'essay') return 'sa';
-  const ans = String(answerVal == null ? '' : answerVal).trim();
-  if (!ans || ans === '?') return 'mc';
-  if (/^\s*[1-5](\s*[,;\/]\s*[1-5])*\s*$/.test(ans)) return 'mc';
-  return 'sa';
 }
