@@ -2896,7 +2896,9 @@ export default function App(){
                 grade: examInfo.grade || "",
                 level: examInfo.level || "",
                 examType: examInfo.examType || "",
-                totalQuestions: examInfo.totalQuestions || examInfo.totalQ || 0
+                totalQuestions: examInfo.totalQuestions || examInfo.totalQ || 0,
+                // ★ v22.7: 채점 모드 전달 (loose=해석/번역 — AI가 한국어 해석만 추출)
+                gradingMode: examInfo.gradingMode || ""
               }
             })
           });
