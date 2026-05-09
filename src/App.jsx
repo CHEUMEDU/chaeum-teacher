@@ -1308,32 +1308,74 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     });
   }, [classes]);
 
-  // CSV 다운로드 (한 반 카드용)
+  // ★ v23.0: 진짜 CSV 다운로드 — 콤마 구분, UTF-8 BOM, Excel 정상 인식
   const downloadCsv = (c)=>{
-    // ★ v22.9: 깔끔한 양식 (HTML→Excel) + 주관식 답안 상세 포함
-    const esc = (s)=>String(s==null?"":s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+    const csvCell = (s)=>{
+      const v = s===null||s===undefined ? "" : String(s);
+      if (/[",\r\n]/.test(v)) return '"' + v.replace(/"/g,'""') + '"';
+      return v;
+    };
+    const row = (...cells)=>cells.map(csvCell).join(",");
+    const out = [];
+    out.push(row("채움학원 — 반별 성적표"));
+    out.push(row(""));
+    out.push(row("과목","학년","반","시험명","날짜","선생님","응시"));
+    out.push(row(c.subject||"", c.grade||"", c.level||"", c.examType||"", c.date||"", c.teacher||"", String(c.total||0)));
+    out.push(row(""));
+    out.push(row("[ 시험 결과 요약 ]"));
+    out.push(row("평균","최고","최저","만점자","70점 미만","응시"));
+    out.push(row(`${c.avg}점`, `${c.max}점`, `${c.min}점`, `${c.perfectCount||0}명`, `${c.lowCount||0}명`, `${c.total}명`));
+    out.push(row(""));
+    out.push(row("[ 학생별 성적 ]"));
+    out.push(row("등수","학생","점수","객관식 오답 (학생답→정답)","주관식 정답","주관식 부분","주관식 오답","비고"));
+    (c.students||[]).forEach(s=>{
+      const objWrongs = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답");
+      const subAll = (s.perQuestion||[]).filter(p=>p.type==="sub");
+      const objLine = objWrongs.length>0
+        ? objWrongs.map(p=>`${p.q}번:${p.studentAns||"빈칸"}→${p.correctAns||"-"}`).join(" / ")
+        : "-";
+      const subOk = subAll.filter(p=>p.verdict==="정답").length;
+      const subPart = subAll.filter(p=>p.verdict==="부분정답").length;
+      const subWrong = subAll.filter(p=>p.verdict==="오답").length;
+      const wrongCnt = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답").length;
+      const note = wrongCnt>0 ? `오답·부분 ${wrongCnt}` : "전부 정답";
+      out.push(row(String(s.rank), s.name||"?", `${s.score}점`, objLine, String(subOk), String(subPart), String(subWrong), note));
+    });
+    out.push(row(""));
+    const subStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
+    if (subStudents.length>0) {
+      out.push(row("[ 주관식 답안 상세 (오답·부분점수) ]"));
+      out.push(row("학생","문항","점수","학생답","정답","AI 채점 사유"));
+      subStudents.forEach(s=>{
+        const subWrongs = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
+        subWrongs.forEach(p=>{
+          out.push(row(s.name||"?", `${p.q}번`, `${p.score}점`, p.studentAns||"(빈칸)", p.correctAns||"-", p.reasoning||""));
+        });
+      });
+      out.push(row(""));
+    }
+    if (c.hardest && c.hardest.length>0) {
+      out.push(row(`[ 어려운 문항 Top ${c.hardest.length} ]`));
+      out.push(row("순위","문항","틀린 학생","비율"));
+      c.hardest.forEach((h,hi)=>{
+        out.push(row(String(hi+1), `${h.q}번`, `${h.wrong}명`, `${h.pct}%`));
+      });
+      out.push(row(""));
+    }
+    out.push(row(`채움학원 자동 채점 시스템 · ${new Date().toLocaleString("ko-KR")}`));
+    const bom = "﻿";
+    const blob = new Blob([bom + out.join("\r\n")], {type:"text/csv;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const fname = `${c.date||""}_${c.subject||""}_${c.grade||""}${c.level||""}반_${c.examType||""}_성적.csv`.replace(/[\\/:*?"<>|]/g,"");
+    document.body.appendChild(a); a.href = url; a.download = fname; a.click(); document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  const _unused_old_csv = (c, esc)=>{
     const lines = [];
-    lines.push('<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">');
-    lines.push('<head>');
-    lines.push('<meta http-equiv="Content-Type" content="text/html; charset=utf-8">');
-    lines.push('<meta name="ProgId" content="Excel.Sheet">');
-    lines.push('<meta name="Generator" content="Microsoft Excel 15">');
-    lines.push('<title>반별 성적표</title>');
-    lines.push('<!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>반별성적</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->');
-    lines.push('<style>');
-    lines.push('table { border-collapse:collapse; font-family:"Malgun Gothic",sans-serif; font-size:11pt; }');
-    lines.push('th { background:#FFF3D0; color:#8B6914; padding:6pt 8pt; border:1pt solid #C4A878; font-weight:700; }');
-    lines.push('td { padding:5pt 8pt; border:1pt solid #C4A878; vertical-align:top; mso-data-placement:same-cell; }');
-    lines.push('.title { font-size:16pt; font-weight:700; color:#B8860B; padding:8pt; }');
-    lines.push('.meta { font-size:11pt; color:#5C5C5C; padding:4pt 8pt; }');
-    lines.push('.section { font-size:13pt; font-weight:700; color:#8B6914; padding:8pt; background:#FFFBF0; }');
-    lines.push('.score-high { color:#2E7D32; font-weight:700; }');
-    lines.push('.score-mid { color:#B8860B; font-weight:700; }');
-    lines.push('.score-low { color:#C62828; font-weight:700; }');
-    lines.push('.wrong { color:#C62828; }');
-    lines.push('.correct { color:#2E7D32; font-weight:700; }');
-    lines.push('.sub { background:#FFFBF0; }');
-    lines.push('</style></head><body><table>');
+    return lines; // ── 이전 HTML→Excel 코드는 dead code 로 남아있으나 호출되지 않음 ──
+    // eslint-disable-next-line no-unreachable
+    lines.push('<html><body><table>');
     lines.push(`<tr><td colspan="6" class="title">채움학원 — 반별 성적표</td></tr>`);
     lines.push(`<tr><td colspan="6" class="meta"><b>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}</b> | 📅 ${esc(c.date)} | 👨‍🏫 ${esc(c.teacher||"-")} | 응시 ${c.total}명</td></tr>`);
     lines.push(`<tr><td colspan="6" class="section">📊 시험 결과 요약</td></tr>`);
@@ -1383,42 +1425,51 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     const fname = `${c.date||""}_${c.subject||""}_${c.grade||""}${c.level||""}반_${c.examType||""}_성적.csv`.replace(/[\\/:*?"<>|]/g,"");
     a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
   };
-  // ★ v22.9: Word(.doc) 다운로드 — Word 정상 인식 메타태그 추가
+  // ★ v23.0: 성적표 보기·인쇄 — 새 탭에서 깔끔한 인쇄용 페이지 (Ctrl+P → PDF/인쇄, Word 복사 가능)
+  // 기존 HTML→Word(.doc) 방식은 Word 365 보안 정책으로 "손상된 파일" 오류 → 새 탭 인쇄 방식으로 교체
   const downloadWord = (c)=>{
     const esc = (s)=>String(s||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     const lines = [];
-    // ★ v22.9: Word MHT 형식 — Word가 정확히 인식하는 헤더
-    lines.push('<html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">');
-    lines.push('<head>');
-    lines.push('<meta http-equiv="Content-Type" content="text/html; charset=utf-8">');
-    lines.push('<meta name="ProgId" content="Word.Document">');
-    lines.push('<meta name="Generator" content="Microsoft Word 15">');
-    lines.push('<meta name="Originator" content="Microsoft Word 15">');
-    lines.push('<title>반별 성적표</title>');
-    lines.push('<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml><![endif]-->');
+    lines.push('<!DOCTYPE html><html lang="ko"><head>');
+    lines.push('<meta charset="utf-8">');
+    lines.push(`<title>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)} 성적표</title>`);
     lines.push('<style>');
-    lines.push('@page { size: A4; margin: 2cm; }');
-    lines.push('body { font-family: "Malgun Gothic","Noto Sans KR",sans-serif; color:#1a1a1a; line-height:1.55; }');
+    lines.push('@page { size: A4; margin: 18mm 16mm; }');
+    lines.push('* { box-sizing:border-box; }');
+    lines.push('body { font-family:"Malgun Gothic","Noto Sans KR",sans-serif; color:#1a1a1a; line-height:1.55; margin:0; padding:24px; max-width:920px; margin:0 auto; background:#f5f5f5; }');
+    lines.push('.sheet { background:#fff; padding:32px; border-radius:8px; box-shadow:0 2px 12px rgba(0,0,0,0.08); }');
+    lines.push('.toolbar { background:#fff8e6; border:1px solid #f0d595; border-radius:8px; padding:12px 16px; margin-bottom:16px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }');
+    lines.push('.toolbar button { padding:8px 14px; font-size:13px; font-weight:700; border-radius:6px; border:none; cursor:pointer; font-family:inherit; }');
+    lines.push('.btn-print { background:#B8860B; color:#fff; }');
+    lines.push('.btn-copy { background:#fff; color:#8B6914; border:1px solid #D4A017 !important; }');
+    lines.push('.toolbar .hint { font-size:12px; color:#5C5C5C; margin-left:auto; }');
     lines.push('h1 { color:#B8860B; font-size:22pt; margin:0 0 6pt 0; border-bottom:2pt solid #D4A017; padding-bottom:6pt; }');
-    lines.push('h2 { color:#8B6914; font-size:14pt; margin:18pt 0 8pt 0; padding-bottom:3pt; border-bottom:1pt solid #E8E4DA; }');
+    lines.push('h2 { color:#8B6914; font-size:14pt; margin:20pt 0 8pt 0; padding-bottom:3pt; border-bottom:1pt solid #E8E4DA; }');
     lines.push('table { width:100%; border-collapse:collapse; margin:6pt 0; font-size:11pt; }');
     lines.push('th { background:#FFF3D0; color:#8B6914; padding:6pt 8pt; border:1pt solid #E8D8A0; font-weight:700; }');
-    lines.push('td { padding:5pt 8pt; border:1pt solid #E8E4DA; }');
+    lines.push('td { padding:5pt 8pt; border:1pt solid #E8E4DA; vertical-align:top; }');
     lines.push('.meta { color:#5C5C5C; font-size:11pt; margin-bottom:14pt; }');
-    lines.push('.summary-row td { background:#FFFBF0; }');
+    lines.push('.summary-row td { background:#FFFBF0; text-align:center; }');
     lines.push('.score-high { color:#2E7D32; font-weight:700; }');
     lines.push('.score-mid { color:#B8860B; font-weight:700; }');
     lines.push('.score-low { color:#C62828; font-weight:700; }');
     lines.push('.student-block { margin-top:14pt; padding:10pt; border:1pt solid #E8E4DA; border-radius:4pt; page-break-inside:avoid; }');
     lines.push('.student-head { font-size:12pt; font-weight:700; margin-bottom:6pt; }');
     lines.push('.q-list { margin:4pt 0; font-size:10.5pt; line-height:1.7; }');
-    lines.push('.q-obj-item { display:inline-block; padding:2pt 8pt; margin:2pt 4pt 2pt 0; background:#FFEBEE; color:#C62828; border-radius:3pt; }');
+    lines.push('.q-obj-item { display:inline-block; padding:2pt 8pt; margin:2pt 4pt 2pt 0; background:#FFEBEE; color:#C62828; border-radius:3pt; font-size:10pt; }');
     lines.push('.q-sub-item { margin:6pt 0; padding:6pt 10pt; background:#FFF8E6; border-left:3pt solid #D4A017; }');
     lines.push('.q-sub-wrong { background:#FFEBEE; border-left-color:#C62828; }');
     lines.push('.q-label { color:#8B6914; font-weight:700; }');
     lines.push('.reasoning { color:#5C5C5C; font-size:10pt; margin-top:3pt; font-style:italic; }');
     lines.push('.foot { margin-top:24pt; padding-top:8pt; border-top:1pt solid #E8E4DA; color:#999; font-size:9pt; text-align:center; }');
+    lines.push('@media print { body { background:#fff; padding:0; } .toolbar { display:none !important; } .sheet { box-shadow:none; padding:0; border-radius:0; } }');
     lines.push('</style></head><body>');
+    lines.push('<div class="toolbar">');
+    lines.push('<button class="btn-print" onclick="window.print()">🖨️ 인쇄 / PDF 저장 (Ctrl+P)</button>');
+    lines.push('<button class="btn-copy" onclick="(function(){var r=document.createRange();r.selectNode(document.getElementById(\'sheet\'));window.getSelection().removeAllRanges();window.getSelection().addRange(r);document.execCommand(\'copy\');alert(\'복사되었어요. Word·한글에 붙여넣기(Ctrl+V) 하세요.\');})()">📋 전체 복사 (Word 붙여넣기용)</button>');
+    lines.push('<span class="hint">Ctrl+P → 대상에서 "PDF로 저장" 선택 가능</span>');
+    lines.push('</div>');
+    lines.push('<div id="sheet" class="sheet">');
     lines.push(`<h1>채움학원 — 반별 성적표</h1>`);
     lines.push(`<div class="meta"><b>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}</b><br/>`);
     lines.push(`📅 ${esc(c.date)} &nbsp;&nbsp; 👨‍🏫 ${esc(c.teacher||"-")} &nbsp;&nbsp; 응시: ${c.total}명</div>`);
@@ -1429,7 +1480,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     lines.push('<table><thead><tr><th style="width:50pt">등수</th><th>학생</th><th style="width:60pt">점수</th><th>비고</th></tr></thead><tbody>');
     (c.students||[]).forEach(s=>{
       const cls = s.score>=90?"score-high":s.score>=70?"score-mid":"score-low";
-      const wrongCount = (s.wrongQs||[]).length;
+      const wrongOnly = (s.perQuestion||[]).filter(p=>p.verdict==="오답");
+      const wrongCount = wrongOnly.length || (s.wrongQs||[]).length;
       const partial = (s.perQuestion||[]).filter(p=>p.verdict==="부분정답").length;
       const note = wrongCount>0 ? `틀린 ${wrongCount}문항${partial>0?` · 부분 ${partial}`:""}` : (partial>0 ? `부분점수 ${partial}개` : "전부 정답");
       lines.push(`<tr><td style="text-align:center">${s.rank}</td><td>${esc(s.name||"?")}</td><td class="${cls}" style="text-align:center">${s.score}점</td><td style="font-size:10pt">${esc(note)}</td></tr>`);
@@ -1464,23 +1516,25 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       });
     }
     if (c.hardest && c.hardest.length>0) {
-      lines.push('<h2>🔥 어려운 문항 Top 5</h2>');
-      lines.push('<table><thead><tr><th style="width:80pt">문항</th><th>틀린 학생</th><th style="width:80pt">비율</th></tr></thead><tbody>');
-      c.hardest.forEach(h=>{
-        lines.push(`<tr><td style="text-align:center">${h.q}번</td><td>${h.wrong}명</td><td style="text-align:center">${h.pct}%</td></tr>`);
+      lines.push('<h2>🔥 어려운 문항 Top '+c.hardest.length+'</h2>');
+      lines.push('<table><thead><tr><th style="width:60pt">순위</th><th style="width:80pt">문항</th><th>틀린 학생</th><th style="width:80pt">비율</th></tr></thead><tbody>');
+      c.hardest.forEach((h,hi)=>{
+        lines.push(`<tr><td style="text-align:center">${hi+1}</td><td style="text-align:center"><b>${h.q}번</b></td><td style="text-align:center">${h.wrong}명</td><td style="text-align:center">${h.pct}%</td></tr>`);
       });
       lines.push('</tbody></table>');
     }
     lines.push('<div class="foot">채움학원 자동 채점 시스템 · ' + new Date().toLocaleString("ko-KR") + '</div>');
-    lines.push('</body></html>');
+    lines.push('</div></body></html>');
     const html = lines.join('\n');
-    // ★ v22.9: BOM 제거 + UTF-8 명시 → Word 정상 인식
-    const blob = new Blob([html], {type:"application/vnd.ms-word;charset=utf-8"});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const fname = `${c.date||""}_${c.subject||""}_${c.grade||""}${c.level||""}반_${c.examType||""}_성적표.doc`.replace(/[\\/:*?"<>|]/g,"");
-    document.body.appendChild(a); a.href = url; a.download = fname; a.click(); document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    // 새 탭에서 열기 (사용자가 인쇄/PDF 저장 또는 Word 복사·붙여넣기 가능)
+    const w = window.open("", "_blank");
+    if (w) {
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+    } else {
+      alert("팝업이 차단되었어요. 주소창의 팝업 차단을 해제해 주세요.");
+    }
   };
   // ★ v22.8: 시험지/답지 파일 모달
   const [fileModalOpen, setFileModalOpen] = useState(false);
@@ -1662,8 +1716,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         </div>}
         {/* 액션 — ★ v22.8: Word/CSV 다운로드 + 시험지/답지 파일 모달 */}
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-          <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.goldDark}} title="Word 문서로 다운로드 (성적표 양식)">📄 Word 다운</button>
-          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:80,background:T.accent}} title="엑셀(CSV)로 다운로드">📊 엑셀</button>
+          <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.goldDark}} title="새 탭에서 인쇄용 페이지 열기 (PDF 저장 / Word 복사 가능)">📄 인쇄·PDF</button>
+          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:80,background:T.accent}} title="CSV 다운로드 (Excel에서 바로 열기)">📊 CSV(엑셀)</button>
           <button onClick={()=>openFileModal(c)} disabled={!c.folderId} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:c.folderId?T.blue:T.borderLight,color:c.folderId?T.white:T.textMuted,cursor:c.folderId?"pointer":"not-allowed"}} title={c.folderId?"시험지/답지 파일 보기":"폴더 정보 없음 (직접 입력 모드)"}>📁 시험지·답지</button>
         </div>
       </div>
@@ -1841,7 +1895,6 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                         </div>
                         <button onClick={()=>proxyPreview&&proxyPreview(f.id,f.name)} disabled={!proxyPreview} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
                         <button onClick={()=>proxyDownload&&proxyDownload(f.id,f.name)} disabled={!proxyDownload} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
-                        <a href={`https://drive.google.com/file/d/${f.id}/view`} target="_blank" rel="noopener noreferrer" title="Drive 페이지에서 직접 열기 (실패 시 백업)" style={{padding:"5px 8px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.border}`,background:T.bg,color:T.textSub,cursor:"pointer",textDecoration:"none",fontFamily:"inherit"}}>↗</a>
                       </div>
                       );
                     })}
@@ -1862,7 +1915,6 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                         </div>
                         <button onClick={()=>proxyPreview&&proxyPreview(f.id,f.name)} disabled={!proxyPreview} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
                         <button onClick={()=>proxyDownload&&proxyDownload(f.id,f.name)} disabled={!proxyDownload} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
-                        <a href={`https://drive.google.com/file/d/${f.id}/view`} target="_blank" rel="noopener noreferrer" title="Drive 페이지에서 직접 열기 (실패 시 백업)" style={{padding:"5px 8px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.border}`,background:T.bg,color:T.textSub,cursor:"pointer",textDecoration:"none",fontFamily:"inherit"}}>↗</a>
                       </div>
                       );
                     })}
@@ -1949,137 +2001,10 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     }
   </div>);
 }
-/* ═══ 시험 스케줄 탭 ═══
-   요일별 반복 시험 스케줄 관리 — 독립된 상태 · API만 사용하므로 분리.
-   App과 공유할 필요 있는 건 teacherList 뿐.
-   */
-function ScheduleTab({sheetsUrl, T, S, teacherList}){
-  const [schedule, setSchedule] = useState([]);
-  const [schLoading, setSchLoading] = useState(false);
-  const [schForm, setSchForm] = useState({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});
-  const loadSchedule = useCallback(()=>{
-    setSchLoading(true);
-    fetch(`${sheetsUrl}?action=list_schedule`)
-      .then(r=>r.json())
-      .then(d=>{ if(d.result==="ok") setSchedule(d.schedule||[]); setSchLoading(false); })
-      .catch(()=>setSchLoading(false));
-  }, [sheetsUrl]);
-  useEffect(()=>{ loadSchedule(); }, [loadSchedule]);
-  const saveSchedule = async()=>{
-    const f = schForm;
-    if(!f.day||!f.subject||!f.grade||!f.teacher) return alert("요일/과목/학년/선생님은 필수입니다.");
-    const params = new URLSearchParams({action:"save_schedule",rowIndex:String(f.rowIndex||0),day:f.day,subject:f.subject,grade:f.grade,level:f.level||"",examType:f.examType||"",teacher:f.teacher,time:f.time||"",memo:f.memo||"",active:f.active?"true":"false"});
-    const res = await fetch(`${sheetsUrl}?${params.toString()}`);
-    const d = await res.json();
-    if(d.result==="ok"){
-      setSchForm({rowIndex:0,day:f.day,subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true});
-      loadSchedule();
-    } else alert("저장 실패: "+(d.message||""));
-  };
-  const deleteScheduleRow = async(rowIndex)=>{
-    if(!confirm("삭제하시겠습니까?")) return;
-    const res = await fetch(`${sheetsUrl}?action=delete_schedule&rowIndex=${rowIndex}`);
-    const d = await res.json();
-    if(d.result==="ok") loadSchedule();
-  };
-  return (<div style={S.wrap} className="fade-up">
-    <div style={{textAlign:"center",padding:"20px 0 12px"}}>
-      <div style={{fontSize:36,marginBottom:4}}>🗓️</div>
-      <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 스케줄 관리</h1>
-      <p style={{fontSize:13,color:T.textMuted}}>요일별 반복 시험을 등록 · 매일 20시 #시험지준비 채널 리마인드</p>
-    </div>
-    {/* 등록 폼 */}
-    <div style={S.card}>
-      <div style={S.secLabel}>{schForm.rowIndex?"스케줄 수정":"새 스케줄 등록"}</div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
-        <div>
-          <div style={S.label}>요일 *</div>
-          <select style={S.inp} value={schForm.day} onChange={e=>setSchForm({...schForm,day:e.target.value})}>
-            {["월","화","수","목","금","토","일"].map(d=>(<option key={d} value={d}>{d}</option>))}
-          </select>
-        </div>
-        <div>
-          <div style={S.label}>과목 *</div>
-          <select style={S.inp} value={schForm.subject} onChange={e=>setSchForm({...schForm,subject:e.target.value})}>
-            <option value="">-- 선택 --</option>
-            {["국어","영어","수학","과학","사회"].map(s=>(<option key={s} value={s}>{s}</option>))}
-          </select>
-        </div>
-        <div>
-          <div style={S.label}>학년 *</div>
-          <select style={S.inp} value={schForm.grade} onChange={e=>setSchForm({...schForm,grade:e.target.value})}>
-            <option value="">-- 선택 --</option>
-            {["초5","초6","중1","중2","중3","고1","고2","고3"].map(g=>(<option key={g} value={g}>{g}</option>))}
-          </select>
-        </div>
-        <div>
-          <div style={S.label}>레벨</div>
-          <input style={S.inp} placeholder="예: A반" value={schForm.level} onChange={e=>setSchForm({...schForm,level:e.target.value})}/>
-        </div>
-        <div>
-          <div style={S.label}>시험 종류</div>
-          <input style={S.inp} placeholder="예: 단원평가" value={schForm.examType} onChange={e=>setSchForm({...schForm,examType:e.target.value})}/>
-        </div>
-        <div>
-          <div style={S.label}>선생님 *</div>
-          <select style={S.inp} value={schForm.teacher} onChange={e=>setSchForm({...schForm,teacher:e.target.value})}>
-            <option value="">-- 선택 --</option>
-            {(teacherList||[]).filter(t=>!schForm.subject||t.subject===schForm.subject).map(t=>(<option key={t.name} value={t.name}>{t.name} ({t.subject})</option>))}
-          </select>
-        </div>
-        <div>
-          <div style={S.label}>시험 시간</div>
-          <input type="time" style={S.inp} value={schForm.time} onChange={e=>setSchForm({...schForm,time:e.target.value})}/>
-        </div>
-        <div>
-          <div style={S.label}>활성</div>
-          <select style={S.inp} value={schForm.active?"true":"false"} onChange={e=>setSchForm({...schForm,active:e.target.value==="true"})}>
-            <option value="true">활성 (리마인드 발송)</option>
-            <option value="false">비활성</option>
-          </select>
-        </div>
-      </div>
-      <div style={{marginBottom:10}}>
-        <div style={S.label}>비고</div>
-        <input style={S.inp} placeholder="메모" value={schForm.memo} onChange={e=>setSchForm({...schForm,memo:e.target.value})}/>
-      </div>
-      <div style={{display:"flex",gap:8}}>
-        <button style={{...S.btnG,flex:1}} onClick={saveSchedule}>{schForm.rowIndex?"수정 저장":"+ 등록"}</button>
-        {schForm.rowIndex?(<button style={{padding:"12px 18px",borderRadius:10,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer",fontWeight:700}} onClick={()=>setSchForm({rowIndex:0,day:"월",subject:"",grade:"",level:"",examType:"",teacher:"",time:"",memo:"",active:true})}>취소</button>):null}
-      </div>
-    </div>
-    {/* 스케줄 목록 (요일별 그룹) */}
-    <div style={S.card}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-        <div style={S.secLabel}>등록된 스케줄 ({schedule.length}개)</div>
-        <button onClick={loadSchedule} style={{padding:"6px 12px",fontSize:12,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,cursor:"pointer"}}>🔄 새로고침</button>
-      </div>
-      {schLoading?(<div style={{padding:20,textAlign:"center",color:T.textMuted}}>불러오는 중…</div>):
-        schedule.length===0?(<div style={{padding:20,textAlign:"center",color:T.textMuted,fontSize:13}}>등록된 스케줄이 없습니다.</div>):(
-          ["월","화","수","목","금","토","일"].map(day=>{
-            const list=schedule.filter(s=>s.day===day);
-            if(list.length===0)return null;
-            return(<div key={day} style={{marginBottom:14}}>
-              <div style={{fontSize:14,fontWeight:800,color:T.goldDark,marginBottom:6,paddingBottom:4,borderBottom:`1.5px solid ${T.goldLight}`}}>{day}요일 ({list.length}건)</div>
-              {list.map(s=>(<div key={s.rowIndex} style={{padding:10,marginBottom:6,background:s.active?T.white:"#f5f5f5",border:`1px solid ${T.border}`,borderRadius:8,opacity:s.active?1:0.6}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-                  <div style={{flex:1,fontSize:13,lineHeight:1.5}}>
-                    <div style={{fontWeight:700,color:T.text}}>{s.subject} {s.grade} {s.level} · {s.examType}</div>
-                    <div style={{color:T.textSub,fontSize:12}}>👤 {s.teacher} · 🕐 {s.time||"미정"} {s.memo?" · "+s.memo:""} {!s.active?" · ⏸ 비활성":""}</div>
-                  </div>
-                  <div style={{display:"flex",gap:4}}>
-                    <button onClick={()=>setSchForm({rowIndex:s.rowIndex,day:s.day,subject:s.subject,grade:s.grade,level:s.level||"",examType:s.examType||"",teacher:s.teacher,time:s.time||"",memo:s.memo||"",active:s.active})} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,cursor:"pointer"}}>수정</button>
-                    <button onClick={()=>deleteScheduleRow(s.rowIndex)} style={{padding:"4px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>삭제</button>
-                  </div>
-                </div>
-              </div>))}
-            </div>);
-          })
-        )
-      }
-    </div>
-  </div>);
-}
+/* ═══ 스케줄 탭 — v23.0 에서 제거 ═══
+   DB 연결 후 재구현 예정.
+   이전 코드는 git history 에서 확인 가능.
+*/
 /* ═══ 선생님 관리 탭 — 카테고리별(관리자/국어/영어/수학) CRUD ═══ */
 function TeachersTab({sheetsUrl, T, S, onChanged}){
   // ★ v12.2: 폼 단순화 — 이름만 입력, 과목/슬랙ID/비고 제거
@@ -2806,7 +2731,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   const [dashData, setDashData] = useState(null);
   const [dashLoading, setDashLoading] = useState(false);
   const [dashErr, setDashErr] = useState("");
-  const [schStatus, setSchStatus] = useState(null);
+  // ★ v23.0: schStatus 제거 (스케줄 기능 삭제)
   const [activeSubj, setActiveSubj] = useState(null);
   const [openFiles, setOpenFiles] = useState({}); // {exam_i_j: bool}
   // [v21.0] AI 검수 대기 카운트 + 모달
@@ -2826,8 +2751,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     fetch(`${sheetsUrl}?action=teacher_dashboard&date=${encodeURIComponent(d)}`)
       .then(r=>r.json()).then(d2=>{if(d2.result==="ok"){setDashData(d2);}else{setDashErr(d2.message||"조회 실패");}setDashLoading(false);})
       .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
-    fetch(`${sheetsUrl}?action=schedule_status&date=${encodeURIComponent(d)}`)
-      .then(r=>r.json()).then(d3=>{if(d3.result==="ok")setSchStatus(d3);else setSchStatus(null);}).catch(()=>setSchStatus(null));
+    // ★ v23.0: 스케줄 기능 제거 (DB 연결 후 재구현 예정)
     loadReviewCount();
   }, [dashDate, sheetsUrl, loadReviewCount]);
   useEffect(()=>{ loadDashboard(); }, [loadDashboard]);
@@ -2872,32 +2796,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
         <button onClick={()=>loadDashboard()} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}}>🔄 새로고침</button>
       </div>
     </div>
-    {/* 스케줄 vs 실제 업로드 비교 */}
-    {schStatus&&schStatus.hasSchedules&&schStatus.schedule&&schStatus.schedule.length>0&&(()=>{
-      const cnt={done:0,waiting:0,none:0,extra:0};
-      schStatus.schedule.forEach(s=>{
-        if(s.status==="✅ 완료")cnt.done++;
-        else if(s.status==="⏳ 처리대기")cnt.waiting++;
-        else if(s.status==="📤 파일없음")cnt.none++;
-        else if(s.status==="➕ 스케줄 외")cnt.extra++;
-      });
-      return(<div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-          <div style={{fontSize:13,fontWeight:700,color:T.text}}>📋 스케줄 vs 실제 업로드 ({schStatus.day}요일)</div>
-          <div style={{fontSize:11,color:T.textMuted}}>완료 {cnt.done} · 대기 {cnt.waiting} · 누락 {cnt.none}{cnt.extra?` · 추가 ${cnt.extra}`:""}</div>
-        </div>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
-          {schStatus.schedule.map((s,i)=>{
-            const bg=s.status==="✅ 완료"?"#e8f7ec":s.status==="⏳ 처리대기"?"#fff8e1":s.status==="📤 파일없음"?"#ffebee":"#f3e5f5";
-            return(<div key={i} style={{padding:"7px 9px",fontSize:11,background:bg,borderRadius:6,lineHeight:1.4}}>
-              <div style={{fontWeight:700}}>{s.status}</div>
-              <div style={{color:T.textSub}}>{s.subject} {s.grade} {s.level} {s.examType?"· "+s.examType:""}</div>
-              <div style={{color:T.textMuted,fontSize:10}}>👤 {s.teacher} {s.time?"· "+s.time:""}</div>
-            </div>);
-          })}
-        </div>
-      </div>);
-    })()}
+    {/* ★ v23.0: 스케줄 vs 실제 업로드 비교 섹션 제거 — DB 연결 후 재구현 */}
     {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
     {dashErr&&<div style={{padding:14,background:T.dangerLight,borderRadius:10,color:T.danger,fontSize:13,fontWeight:600,textAlign:"center"}}>{dashErr}</div>}
     {dashData&&!dashLoading&&(()=>{
@@ -3498,12 +3397,8 @@ export default function App(){
       setTimeout(()=>URL.revokeObjectURL(url),1000);
     }catch(err){
       console.error("[proxyDownload]", err);
-      // 마지막 수단: Drive 보기 URL을 새 탭에서 열기 (사용자가 다운로드 가능할 수 있음)
-      const fallback = window.confirm(
-        "다운로드 실패: " + (err.message||err) +
-        "\n\nDrive 페이지에서 직접 열어볼까요?"
-      );
-      if (fallback) window.open(`https://drive.google.com/file/d/${fileId}/view`, "_blank");
+      // ★ v23.0: Drive 직접 링크 fallback 제거 — 권한 없는 사용자에게 빨간 X 페이지 보여주는 원인
+      alert("다운로드 실패\n\n" + (err.message||err) + "\n\n파일이 매우 크면 관리자에게 문의해 주세요.");
     }
   };
   // 미리보기 (구글 계정 없이도 가능 — Blob URL로 새 탭 열기)
@@ -3537,11 +3432,8 @@ export default function App(){
       }
     }catch(err){
       console.error("[proxyPreview]", err);
-      const fallback = window.confirm(
-        "미리보기 실패: " + (err.message||err) +
-        "\n\nDrive 페이지에서 직접 열어볼까요?"
-      );
-      if (fallback) window.open(`https://drive.google.com/file/d/${fileId}/view`, "_blank");
+      // ★ v23.0: Drive 직접 링크 fallback 제거 — 권한 없는 사용자에게 빨간 X 페이지 보여주는 원인
+      alert("미리보기 실패\n\n" + (err.message||err) + "\n\n파일이 매우 크면 관리자에게 문의해 주세요.");
     }
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
@@ -3558,7 +3450,6 @@ export default function App(){
         {[
           {k:"register",label:"📋 시험 등록"},
           {k:"dashboard",label:"📊 오늘의 현황"},
-          {k:"schedule",label:"🗓️ 스케줄"},
           {k:"print",label:"🖨️ 일괄 프린트"},
           {k:"stats",label:"📊 반별 성적"},
           {k:"generator",label:"📚 문제 생성"},
@@ -3707,7 +3598,7 @@ export default function App(){
       {/* ═══ 오늘의 현황 대시보드 — 별도 컴포넌트 ═══ */}
       {screen==="home"&&tab==="dashboard"&&(<DashboardTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview} currentTeacher={teacher}/>)}
       {/* ═══ 스케줄 관리 탭 — 별도 컴포넌트 ═══ */}
-      {screen==="home"&&tab==="schedule"&&(<ScheduleTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
+      {/* ★ v23.0: 스케줄 탭 제거 — DB 연결 후 재구현 예정 */}
       {/* ═══ 선생님 관리 탭 — 카테고리(관리자/국어/영어/수학) CRUD ═══ */}
       {screen==="home"&&tab==="teachers"&&(<TeachersTab sheetsUrl={SHEETS_URL} T={T} S={S} onChanged={setTeacherList}/>)}
       {/* ═══ 모드 선택 ═══ */}
