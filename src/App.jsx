@@ -1245,6 +1245,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [dateMode, setDateMode] = useState("single"); // "single" | "range"
+  // ★ v23.1: 기간 모드 — 시험 종류까지 묶을지(false=같은 examType만), 무시할지(true=반 단위 통합)
+  const [rangeIgnoreExamType, setRangeIgnoreExamType] = useState(true);
   const [date, setDate] = useState(todayStr);
   const [dateFrom, setDateFrom] = useState(todayStr);
   const [dateTo, setDateTo] = useState(todayStr);
@@ -1724,14 +1726,17 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     );
   };
 
-  // ★ 기간 모드: 학생별 누적 흐름 — 같은 반(과목|학년|레벨|시험명)을 묶고 학생별 점수 추세
+  // ★ 기간 모드: 학생별 누적 흐름 — v23.1: rangeIgnoreExamType=true 면 시험명 무시 (반 단위 통합)
   const rangeGroups = useMemo(()=>{
     if(dateMode!=="range") return [];
     const m = {};
     sortedClasses.forEach(c=>{
-      const k = `${c.subject}|${c.grade}|${c.level}|${c.examType}|${c.teacher||""}`;
+      // ★ v23.1: 묶음 키 — 시험명 포함 vs 무시
+      const k = rangeIgnoreExamType
+        ? `${c.subject}|${c.grade}|${c.level}|${c.teacher||""}`
+        : `${c.subject}|${c.grade}|${c.level}|${c.examType}|${c.teacher||""}`;
       if(!m[k]){
-        m[k] = {meta:{subject:c.subject,grade:c.grade,level:c.level,examType:c.examType,teacher:c.teacher}, dateSet:new Set(), byStudent:{}, hardest:{}};
+        m[k] = {meta:{subject:c.subject,grade:c.grade,level:c.level,examType:rangeIgnoreExamType?"전체 시험":c.examType,teacher:c.teacher}, dateSet:new Set(), byStudent:{}, hardest:{}};
       }
       m[k].dateSet.add(c.date);
       (c.students||[]).forEach(s=>{
@@ -1760,7 +1765,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         .sort((a,b)=>b.wrong-a.wrong).slice(0,5);
       return {meta:g.meta, dates, studentRows, hardest, classCount:g.dateSet.size};
     });
-  }, [dateMode, sortedClasses]);
+  }, [dateMode, sortedClasses, rangeIgnoreExamType]);
 
   // ★ 기간 모드 카드 렌더
   const renderRangeCard = (g, key)=>{
@@ -1950,7 +1955,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
           <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...S.inp,width:"100%"}}/>
         </div>
       ) : (
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
+        <>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
           <div>
             <div style={{fontSize:11,color:T.textMuted,marginBottom:3}}>시작</div>
             <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={{...S.inp,width:"100%"}}/>
@@ -1960,6 +1966,22 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
             <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={{...S.inp,width:"100%"}}/>
           </div>
         </div>
+        {/* ★ v23.1: 시험명 무시 토글 — 같은 반의 다양한 시험 종류를 한 흐름으로 묶기 */}
+        <div style={{padding:"8px 12px",background:T.goldPale,borderRadius:8,marginBottom:10,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <span style={{fontSize:12,fontWeight:700,color:T.goldDeep}}>📊 묶음 방식:</span>
+          <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,fontWeight:rangeIgnoreExamType?700:500,color:rangeIgnoreExamType?T.goldDark:T.textSub}}>
+            <input type="radio" checked={rangeIgnoreExamType} onChange={()=>setRangeIgnoreExamType(true)} style={{cursor:"pointer"}}/>
+            반 단위 통합 (시험명 무시)
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,fontWeight:!rangeIgnoreExamType?700:500,color:!rangeIgnoreExamType?T.goldDark:T.textSub}}>
+            <input type="radio" checked={!rangeIgnoreExamType} onChange={()=>setRangeIgnoreExamType(false)} style={{cursor:"pointer"}}/>
+            시험 종류별 분리
+          </label>
+          <span style={{fontSize:10,color:T.textMuted,flexBasis:"100%",lineHeight:1.4}}>
+            {rangeIgnoreExamType ? "💡 같은 반(과목·학년·레벨·선생님)의 모든 시험 종류를 한 줄에 묶어서 흐름 파악" : "각 시험 종류별로 따로 보기"}
+          </span>
+        </div>
+        </>
       )}
       {/* 과목 / 선생님 / 학년 */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:10}}>
@@ -2738,6 +2760,67 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [confirmedModalOpen, setConfirmedModalOpen] = useState(false);
   const toggleFiles = (k)=>setOpenFiles(p=>({...p,[k]:!p[k]}));
+  // ★ v23.1: 정답 보기 모달
+  const [ansModalOpen, setAnsModalOpen] = useState(false);
+  const [ansModalLoading, setAnsModalLoading] = useState(false);
+  const [ansModalData, setAnsModalData] = useState({title:"", err:"", totalQ:0, answers:{}, types:{}, meta:{}});
+  const openAnswerModal = async (ex)=>{
+    setAnsModalOpen(true);
+    setAnsModalLoading(true);
+    setAnsModalData({title:`${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`, err:"", totalQ:0, answers:{}, types:{}, meta:{}});
+    try {
+      const params = new URLSearchParams();
+      if (ex.folderId) params.set("folderId", ex.folderId);
+      else {
+        params.set("subject", ex.subject||"");
+        params.set("grade", ex.grade||"");
+        params.set("level", ex.level||"");
+        params.set("examType", ex.examType||"");
+        params.set("teacher", ex.teacher||"");
+        params.set("date", ex.date||"");
+      }
+      const r = await fetch(`${sheetsUrl}?action=view_answer_key&${params.toString()}`);
+      const d = await r.json();
+      if (d.result === "ok") {
+        setAnsModalData(p=>({...p, totalQ:d.totalQ||0, answers:d.answers||{}, types:d.types||{}, meta:d.meta||{}}));
+      } else {
+        setAnsModalData(p=>({...p, err:d.message||"조회 실패"}));
+      }
+    } catch(e) {
+      setAnsModalData(p=>({...p, err:"네트워크 오류: "+String(e)}));
+    }
+    setAnsModalLoading(false);
+  };
+  // ★ v23.1: 파일 일괄 다운로드 (오늘 모든 시험지/답지)
+  const [batchDlRunning, setBatchDlRunning] = useState(false);
+  const [batchDlProgress, setBatchDlProgress] = useState({done:0, total:0, current:""});
+  const batchDownloadAllFiles = async (allExams)=>{
+    if (batchDlRunning) return;
+    const allFiles = [];
+    allExams.forEach(ex=>{
+      (ex.files||[]).forEach(fl=>{
+        allFiles.push({...fl, examLabel:`${ex.subject||""}_${ex.grade||""}_${ex.level||""}_${ex.examType||""}_${ex.teacher||""}`});
+      });
+    });
+    if (allFiles.length === 0) {
+      alert("다운로드할 파일이 없습니다.");
+      return;
+    }
+    if (!window.confirm(`총 ${allFiles.length}개 파일을 순차적으로 다운로드합니다. 시작할까요?\n(브라우저 팝업/다운로드 차단을 허용해 주세요)`)) return;
+    setBatchDlRunning(true);
+    setBatchDlProgress({done:0, total:allFiles.length, current:""});
+    for (let i=0; i<allFiles.length; i++) {
+      const fl = allFiles[i];
+      setBatchDlProgress({done:i, total:allFiles.length, current:fl.name});
+      try {
+        await proxyDownload(fl.id, `${fl.examLabel}_${fl.name}`);
+        await new Promise(r=>setTimeout(r, 600)); // 브라우저 부하 완화
+      } catch(e) { /* 한 파일 실패는 계속 */ }
+    }
+    setBatchDlProgress({done:allFiles.length, total:allFiles.length, current:""});
+    setBatchDlRunning(false);
+    setTimeout(()=>setBatchDlProgress({done:0,total:0,current:""}), 3000);
+  };
   const loadReviewCount = useCallback(()=>{
     fetch(`${sheetsUrl}?action=list_review_pending`)
       .then(r=>r.json()).then(d=>{
@@ -2784,6 +2867,77 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     )}
     {reviewModalOpen && <ReviewListModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>{setReviewModalOpen(false);loadReviewCount();}}/>}
     {confirmedModalOpen && <ConfirmedAnswersModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>setConfirmedModalOpen(false)}/>}
+    {/* ★ v23.1: 정답 보기 모달 */}
+    {ansModalOpen && (
+      <div onClick={()=>setAnsModalOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:T.white,borderRadius:14,width:"100%",maxWidth:680,maxHeight:"86vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,background:T.goldPale,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:800,color:T.goldDeep}}>🔑 정답 데이터</div>
+              <div style={{fontSize:11,color:T.textSub,marginTop:2}}>{ansModalData.title}</div>
+            </div>
+            <button onClick={()=>setAnsModalOpen(false)} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+          </div>
+          <div style={{flex:1,overflow:"auto",padding:14}}>
+            {ansModalLoading && <div style={{padding:20,textAlign:"center",color:T.textMuted}}>로딩 중...</div>}
+            {ansModalData.err && <div style={{padding:14,background:T.dangerLight,color:T.danger,borderRadius:8,fontSize:13,fontWeight:600,textAlign:"center"}}>{ansModalData.err}</div>}
+            {!ansModalLoading && !ansModalData.err && ansModalData.totalQ > 0 && (()=>{
+              const meta = ansModalData.meta || {};
+              const ans = ansModalData.answers || {};
+              const types = ansModalData.types || {};
+              const startN = meta.startNumber || 1;
+              const total = ansModalData.totalQ || 0;
+              const objs = [], subs = [];
+              for (let i=0; i<total; i++) {
+                const num = String(startN + i);
+                const t = types[num] || types[i+1] || "obj";
+                const a = ans[num] !== undefined ? ans[num] : (ans[i+1] !== undefined ? ans[i+1] : "");
+                if (t === "sub") subs.push({num, ans:a});
+                else objs.push({num, ans:a});
+              }
+              return (
+                <div>
+                  <div style={{padding:"8px 12px",background:T.bg,borderRadius:6,marginBottom:10,fontSize:11,color:T.textSub,display:"flex",gap:12,flexWrap:"wrap"}}>
+                    <span>👨‍🏫 <b>{meta.teacher||"-"}</b></span>
+                    <span>📅 {meta.date||"-"}</span>
+                    <span>📝 총 {total}문항</span>
+                    <span>🅰 객관식 {objs.length}</span>
+                    <span>✍️ 주관식 {subs.length}</span>
+                    {meta.setLabel && <span>📦 {meta.setLabel}</span>}
+                  </div>
+                  {objs.length > 0 && (
+                    <div style={{marginBottom:14}}>
+                      <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:6}}>🅰 객관식 정답 ({objs.length})</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(70px,1fr))",gap:4}}>
+                        {objs.map((q,qi)=>(
+                          <div key={qi} style={{padding:"6px 8px",background:T.goldLight,border:`1px solid ${T.goldMuted}`,borderRadius:6,fontSize:12,textAlign:"center"}}>
+                            <div style={{fontSize:10,color:T.textMuted,fontWeight:600}}>{q.num}번</div>
+                            <div style={{fontSize:14,fontWeight:800,color:T.goldDeep,marginTop:2}}>{q.ans||"-"}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {subs.length > 0 && (
+                    <div>
+                      <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:6}}>✍️ 주관식 정답 ({subs.length})</div>
+                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                        {subs.map((q,qi)=>(
+                          <div key={qi} style={{padding:"7px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,display:"flex",gap:10,alignItems:"flex-start"}}>
+                            <div style={{minWidth:38,fontSize:11,fontWeight:700,color:T.goldDark}}>{q.num}번</div>
+                            <div style={{flex:1,fontSize:12,color:T.text,wordBreak:"break-word"}}>{q.ans||<span style={{color:T.danger}}>(빈칸)</span>}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      </div>
+    )}
     {/* 날짜 선택 + 새로고침 */}
     <div style={{...S.card,padding:"12px 14px",marginBottom:10}}>
       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -2793,7 +2947,16 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
         <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()-1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>← 이전</button>
         <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()+1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>다음 →</button>
         <button onClick={()=>loadDashboard()} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}}>🔄 새로고침</button>
+        {/* ★ v23.1: 파일 일괄 다운로드 (오늘의 모든 시험지/답지) */}
+        <button onClick={()=>batchDownloadAllFiles(dashData?.exams||[])} disabled={batchDlRunning||!dashData||(dashData?.exams||[]).length===0} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:8,border:`1.5px solid ${T.blue}`,background:batchDlRunning?T.borderLight:T.blueLight,color:T.blue,cursor:batchDlRunning?"wait":"pointer",fontFamily:"inherit"}}>
+          {batchDlRunning?`📦 ${batchDlProgress.done}/${batchDlProgress.total}`:"📦 파일 일괄 다운"}
+        </button>
       </div>
+      {batchDlRunning&&batchDlProgress.current&&(
+        <div style={{marginTop:8,padding:"6px 10px",background:T.blueLight,borderRadius:6,fontSize:11,color:T.blue,fontWeight:600}}>
+          ⬇ {batchDlProgress.current} ({batchDlProgress.done+1}/{batchDlProgress.total})
+        </div>
+      )}
     </div>
     {/* ★ v23.0: 스케줄 vs 실제 업로드 비교 섹션 제거 — DB 연결 후 재구현 */}
     {dashLoading&&<div style={{textAlign:"center",padding:40,color:T.textMuted}}>불러오는 중...</div>}
@@ -2922,9 +3085,11 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
                             </div>
                           </div>
                           {/* 메타 칩 */}
-                          <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10,marginBottom:filesArr.length>0?5:0}}>
+                          <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10,marginBottom:5,alignItems:"center"}}>
                             <span style={{padding:"2px 6px",borderRadius:8,background:T.bg,color:T.textSub,fontWeight:600}}>📝 {ex.totalQuestions||0}문항</span>
                             <span style={{padding:"2px 6px",borderRadius:8,background:fileBadge.bg,color:fileBadge.c,fontWeight:700}}>{fileBadge.txt}</span>
+                            {/* ★ v23.1: 정답 보기 버튼 */}
+                            <button onClick={()=>openAnswerModal({...ex, date:dashDate})} style={{marginLeft:"auto",padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}} title="등록된 정답 확인 (관리자/선생님 검토용)">🔑 정답 보기</button>
                           </div>
                           {/* 첨부 파일 (펼침) */}
                           {filesArr.length>0&&(
@@ -3450,7 +3615,6 @@ export default function App(){
         {[
           {k:"register",label:"📋 시험 등록"},
           {k:"dashboard",label:"📊 오늘의 현황"},
-          {k:"print",label:"🖨️ 일괄 프린트"},
           {k:"stats",label:"📊 반별 성적"},
           {k:"generator",label:"📚 문제 생성"},
           {k:"teachers",label:"👥 선생님 관리"}
@@ -3459,7 +3623,7 @@ export default function App(){
         ))}
       </div>)}
       {/* ═══ 일괄 프린트 탭 ═══ */}
-      {screen==="home"&&tab==="print"&&(<PrintTab sheetsUrl={SHEETS_URL} T={T} S={S}/>)}
+      {/* ★ v23.1: 일괄 프린트 탭 제거 — 오늘의 현황의 "파일 일괄 다운로드" 버튼으로 대체 */}
       {/* ═══ 반별 성적 탭 (v20.4) ═══ */}
       {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
       {/* ═══ 문제 생성기 탭 ═══ */}
@@ -3586,10 +3750,18 @@ export default function App(){
             </div>
           </div>
           <div style={{marginBottom:16}}>
-            <div style={S.label}>시험 날짜 / 시간 <span style={{color:T.danger}}>*</span></div>
-            <div style={{display:"flex",gap:8}}>
+            <div style={S.label}>시험 날짜 / 시간 <span style={{color:T.danger}}>*</span><span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:6}}>(주중 5~10시 정각이 보통)</span></div>
+            <div style={{display:"flex",gap:8,marginBottom:6}}>
               <input type="date" style={{...S.dateInp,flex:"1 1 55%"}} value={examDate} onChange={e=>setExamDate(e.target.value)}/>
               <input type="time" style={{...S.dateInp,flex:"1 1 40%",minWidth:0}} value={examTime} onChange={e=>setExamTime(e.target.value)}/>
+            </div>
+            {/* ★ v23.1: 빠른 시간 선택 (자주 쓰는 정각 + 주말 옵션) */}
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {["17:00","18:00","19:00","20:00","21:00","22:00"].map(t=>{
+                const a = examTime===t;
+                return(<button key={t} type="button" onClick={()=>setExamTime(t)} style={{padding:"4px 10px",fontSize:11,fontWeight:700,borderRadius:14,border:`1px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{t}</button>);
+              })}
+              <button type="button" onClick={()=>{const now=new Date();setExamTime(`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`);}} style={{padding:"4px 10px",fontSize:11,fontWeight:700,borderRadius:14,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>🕐 지금</button>
             </div>
           </div>
         </div>
