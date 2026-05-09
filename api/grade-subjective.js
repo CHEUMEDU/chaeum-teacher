@@ -4,18 +4,21 @@
 // ============================================================
 // 버전 이력
 // ─────────────────────────────────────────
-// v22.3 (2026-04-28)
-//   · 빈칸 N개(파이프 |) 자동 분리 채점 + 평균 점수
-//   · 점수 재계산: AI score 와 deductions 합산 불일치 시 deductions 우선
-//   · 문법 설명(grammarTip) 추가: 학생 학습용 1-2문장 팁
+// v22.5 (2026-04-28)
+//   ★ 문법 설명(grammarTip) 톤 변경 — 과외 선생님 반말, 좋은 뉘앙스
+//   ★ 학생 총평(overallComment) 추가 — 이름 + 강점/약점 1~2줄 (반말)
+//   ★ 응답 형식 변경: { ok, results, overallComment, version }
+//   ★ studentName 입력 받기 (총평 개인화)
 //
+// v22.4  — 쉼표 예외 + quickEqual 쉼표 무시
+// v22.3  — 빈칸 분리 + 점수 정확 + 문법 설명
 // v22.2  — Node Runtime Express-style 전환 (60초 한도)
 // v22.0  — 5단계 채점 + 배치 모드
 // ============================================================
 
 export const maxDuration = 60;
 
-const VERSION = "v22.3";
+const VERSION = "v22.7"; // ★ v22.7: gradingMode 추가 (loose=해석/번역, strict=단답형)
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -23,7 +26,7 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type'
 };
 
-// 5단계 채점 기준
+// 5단계 채점 기준 (엄격 — 단어/영작/단답)
 const GRADING_RUBRIC = `
 당신은 영어/국어 학원의 주관식 답안 채점 전문가입니다.
 학생 답안을 정답과 비교하여 5단계 기준으로 정확하게 채점하세요.
@@ -60,18 +63,143 @@ const GRADING_RUBRIC = `
 4. 모호하면 학생에게 관대하게
 5. 동의어 인정
 6. ★ 중요: deductions 합계와 score 가 정확히 일치해야 함 (100 + 합계 = score)
+7. ★ 단순 나열의 쉼표(,) 누락은 감점하지 않음
+   - 예: "balloon, honey, creative" ↔ "balloon honey creative" → 감점 X (단순 나열)
+   - 예: "Pooh, Honey" ↔ "Pooh Honey" → 감점 X
+   - 예: "사과, 배, 포도" ↔ "사과 배 포도" → 감점 X
+   - 단순 명사 나열에서 쉼표는 가독성 도구일 뿐 문법 포인트가 아님
+8. ★ 다음 경우의 쉼표 누락은 감점 (문법적 의미가 있음)
+   - 분사구문 분리 (예: "Walking down the street, I saw a dog")
+   - 부사절/주절 분리 (예: "When I came home, mom was cooking")
+   - 동격 구문 (예: "My friend, John, is here")
+   - 호격 (예: "Hello, Tom")
+   - 학생이 이런 경우 쉼표를 빼면 "문장부호 누락 -5%" 감점
 
 ## 응답 필드 (필수)
 - "q": 문항 번호
 - "score": 0~100 점수
 - "category": "A" / "B" / "C" / "D" / "E"
 - "deductions": [{type, amount, reason}, ...] (빈 배열 가능)
-- "reasoning": 채점 사유 (간략하게 1-2문장)
-- "grammarTip": ★ 학생 학습용 문법/구문 팁 (1-2문장)
-   · 학생이 틀린 부분에 대한 명확한 문법 설명
-   · 예시: "비교급은 'more 형용사' 또는 '-er', 최상급은 'most 형용사' 또는 '-est' 형태입니다. 'popular' 같은 긴 형용사는 'most popular'를 사용합니다."
-   · 정답인 경우 빈 문자열 ""
-   · 학생 수준 (중1~고3) 에 맞춰 쉽게 설명
+- "reasoning": 채점 사유 (간략하게 1-2문장, 반말)
+- "grammarTip": ★ 학생 학습용 문법/구문 팁 (1-3문장)
+
+## ★ grammarTip 작성 규칙 (매우 중요)
+- **반말로 친근하게** 쓰기 (과외 선생님이 학생에게 설명하듯)
+- **좋은 뉘앙스** — 부드럽고 격려하는 톤 (질책 X)
+- 학생이 이해할 수 있는 쉬운 표현
+- 핵심 문법 포인트 1-2개 + 짧은 예시
+- 정답인 경우 빈 문자열 ""
+
+좋은 예시 (이렇게 써):
+- "비교급은 'more~' 또는 '-er', 최상급은 'most~' 또는 '-est' 형태야. 'popular'는 긴 단어니까 'most popular' 로 써주면 돼!"
+- "여기는 분사구문이야. 동사를 -ing 형태로 바꾸면 '~하면서' 의미가 돼. 예) 'Walking down the street' = '거리를 걸어가면서'"
+- "to 부정사가 명사를 꾸밀 때는 '~할' 의미야. 'a movie to watch' = '볼 영화'. 외워두면 영작할 때 편해!"
+
+나쁜 예시 (이렇게 쓰지 마):
+- "오류가 있습니다." (반말 X, 격식체)
+- "당신은 ~를 모르는 것 같습니다." (불쾌한 뉘앙스)
+- 너무 어려운 문법 용어만 나열
+
+## ★ overallComment (학생 총평) 별도 필드 — 응답 마지막에 1개
+- 학생 이름으로 시작 (예: "{학생이름} 학생")
+- 1~2 문장 반말로 친근하게
+- 학생의 강점과 약점을 모두 균형있게 언급
+- 격려 톤 (절대 깎아내리지 말기)
+
+좋은 예시:
+- "유지인 학생, 객관식은 거의 다 맞췄는데 주관식 영작에서 작은 실수가 많았어. 단어 철자랑 시제만 좀 더 신경 쓰면 더 잘 할 수 있어!"
+- "유지인 학생, 시제랑 단복수 부분이 헷갈리는 것 같네. 그래도 의미는 잘 전달했어. 다음엔 'is/are' 같은 동사 변형을 한 번 더 체크해보자!"
+- "유지인 학생, 거의 만점에 가까운 점수야! 정말 잘했어. 한두 개 작은 철자 실수만 더 조심하면 완벽해."
+- "유지인 학생, 이번 시험은 좀 어려웠나봐. 괜찮아, 천천히 하나씩 다시 보자. 특히 비교급/최상급 부분 한 번 더 복습해봐."
+`;
+
+// ★ v22.7: 유연 채점 기준 (해석/번역 — 의역 인정)
+const GRADING_RUBRIC_LOOSE = `
+당신은 영어→한국어 해석/번역 채점 전문가입니다.
+학생 답안과 정답을 비교할 때, 단어 단위가 아니라 **문장 전체의 의미**로 채점하세요.
+
+## ★ 해석 모드 핵심 원칙 (절대 어기지 말 것)
+1. 정답은 모범답안일 뿐, 학생이 의역해도 핵심 의미가 통하면 정답으로 인정
+2. 자연스러운 한국어 표현을 우선시 — 직역 강요하지 않음
+3. **어순/조사 차이는 절대 감점하지 않음** (한국어는 어순 자유)
+4. 동의어/유사 표현 사용 시 정답 인정 (예: "말했다" = "이야기했다" = "언급했다")
+5. 주요 어휘(핵심 명사/동사) 의미가 살아있으면 OK
+
+## 5단계 채점 기준 (해석 모드)
+
+### A. 완전정답 (100점)
+- 핵심 의미 정확 + 주요 어휘 모두 살아있음 (의역 OK)
+- 어순이 다르거나 의역해도 의미 일치하면 100점
+- 예: "그는 학교에 늦게 도착했다고 말했다" = "그가 학교에 늦게 도착했다고 했다" → 둘 다 100점
+
+### B. 거의 정답 (-5% ~ -10%)
+- 의미 정확하지만 매끄럽지 못한 의역
+- 어휘 1개 다른 표현 (의미는 거의 동일)
+- 한국어 표현이 약간 어색
+- 사소한 오타 (1~2글자)
+
+### C. 부분 정답 (-15% ~ -25%)
+- 의미 대체로 통하나 일부 누락 또는 의역 폭이 큼
+- 보조 어휘 1~2개 누락 (핵심은 살아있음)
+- 시제/태가 약간 어색하지만 의미 전달은 됨
+
+### D. 일부 오답 (-30% ~ -50%)
+- 핵심 부분은 맞으나 한 부분 누락 또는 오역
+- 주어/목적어/동사 중 1개가 잘못됨
+- 의미가 부분적으로 변형됨
+
+### E. 오답 (-100%, 0점)
+- 의미가 완전히 다르거나 빈칸
+- 핵심 동사·명사 다수 잘못
+- 문장 의미 전달 실패
+
+## ★ 절대 감점하지 말 것 (★★★ 강조)
+- 어순 차이 ("나는 사과를 먹었다" = "사과를 나는 먹었다")
+- 조사 차이 ("-는/-은/-이/-가/-을/-를")
+- 동의어 사용 ("매우" = "정말" = "아주")
+- 자연스러운 의역 ("happy" → "기쁜" / "행복한")
+- 한국어로 풀어쓴 표현 ("a lot of" → "많은" / "다수의" / "수많은")
+- 줄임/생략 가능한 보조사 차이
+
+## ★ 감점할 것 (★★★ 핵심)
+- 핵심 동사 의미 변형 (예: "달렸다" → "걸었다") → C/D
+- 핵심 명사 누락 (예: "엄마가 사과를" → "엄마가") → C/D
+- 시제 큰 오류 (과거 → 현재로 잘못 해석) → C
+- 부정/긍정 반전 (예: "좋아한다" ↔ "싫어한다") → E
+- 주어/목적어 바뀜 → D
+- 문장 일부 완전 누락 → D/E
+
+## 응답 필드 (필수)
+- "q": 문항 번호
+- "score": 0~100 점수
+- "category": "A" / "B" / "C" / "D" / "E"
+- "deductions": [{type, amount, reason}, ...] (빈 배열 가능)
+- "reasoning": 채점 사유 (1-2문장 반말, 의역 인정 여부 명시)
+- "grammarTip": ★ 학습용 해석/번역 팁 (1-3문장 반말, 정답이면 빈 문자열)
+
+## ★ grammarTip 작성 규칙 (해석 모드)
+- 반말로 친근하게 (과외 선생님이 학생에게 설명하듯)
+- 좋은 뉘앙스 (격려 + 부드러운 조언)
+- 핵심 어휘·구문 1-2개 짚어주기
+- 더 자연스러운 표현 제시
+
+좋은 예시:
+- "의미는 잘 전달했어! 'said'를 '말했다' 대신 '얘기했다'로 의역해도 OK야. 다만 시제가 과거니까 '말한다'(현재)는 피해줘."
+- "'a lot of'는 '많은' 외에도 '수많은', '엄청난' 등으로 다양하게 의역할 수 있어. 한국어로 자연스러운 표현을 골라봐!"
+- "분사구문 'Walking down the street'는 '거리를 걸어가면서' 또는 '거리를 걷다가' 둘 다 정답이야."
+
+나쁜 예시 (해석 모드에서는 쓰지 마):
+- "어순이 다르므로 감점" (★ 어순은 감점 대상 아님)
+- "원문과 정확히 일치해야 함" (★ 의역 허용)
+
+## ★ overallComment (학생 총평) — 응답 마지막에 1개
+- 학생 이름으로 시작
+- 1~2 문장 반말, 격려 톤
+- 해석 능력의 강점·약점 균형있게
+
+좋은 예시:
+- "유지인 학생, 전체적으로 의미는 잘 파악하고 있어! 좀 더 자연스러운 한국어 표현을 익히면 완벽해질 거야."
+- "유지인 학생, 핵심 의미는 잘 잡았는데 보조 단어들을 가끔 빼먹는 것 같아. 문장 전체를 한 번 더 훑어보면 좋겠어."
 `;
 
 export default async function handler(req, res) {
@@ -95,9 +223,13 @@ export default async function handler(req, res) {
   }
   if (!body) body = {};
 
+  // ★ v22.7: gradingMode 추출 (loose=해석/번역, strict=단답형) — 기본값 strict
+  const gradingMode = (String(body.gradingMode || '').toLowerCase() === 'loose') ? 'loose' : 'strict';
+
   // 배치 모드
   if (Array.isArray(body.items) && body.items.length > 0) {
-    const result = await handleBatchGrade(body.items);
+    const studentName = String(body.studentName || '').trim() || '학생';
+    const result = await handleBatchGrade(body.items, studentName, gradingMode);
     res.status(200).json(result);
     return;
   }
@@ -157,8 +289,10 @@ function normalizeMultiBlank(s) {
   return s;
 }
 
-// ★ v22.3: 빈칸 분리 + 평균 채점 + 점수 정확 + 문법 설명
-async function handleBatchGrade(items) {
+// ★ v22.7: gradingMode 추가 — loose(해석/번역)는 의역 허용, strict(단답형)는 정확성 강조
+async function handleBatchGrade(items, studentName, gradingMode) {
+  studentName = studentName || '학생';
+  gradingMode = (String(gradingMode || '').toLowerCase() === 'loose') ? 'loose' : 'strict';
   const expanded = [];      // AI에 보낼 단위 (빈칸별로 분리됨)
   const subQGroups = {};    // 원본 q → 분리된 subQ 목록
   const fastResults = [];   // Gemini 호출 안 해도 되는 결과 (빈칸/완전일치)
@@ -222,7 +356,8 @@ async function handleBatchGrade(items) {
   // 2단계: AI 채점 필요한 것만 한 번에 호출
   let aiResults = [];
   if (expanded.length > 0) {
-    aiResults = await gradeBatchViaGemini(expanded);
+    // ★ v22.7: gradingMode 전달 (loose면 해석 모드, strict면 단답 모드)
+    aiResults = await gradeBatchViaGemini(expanded, gradingMode);
   }
   const allResults = [...fastResults, ...aiResults];
 
@@ -288,27 +423,123 @@ async function handleBatchGrade(items) {
   });
 
   finalResults.sort((a, b) => Number(a.q) - Number(b.q));
-  return { ok: true, results: finalResults, version: VERSION };
+
+  // ★ v22.5: 학생 총평 생성 (Gemini 호출 또는 코드 자동 fallback)
+  let overallComment = '';
+  try {
+    overallComment = await generateOverallComment(studentName, finalResults, items);
+  } catch(e) {
+    overallComment = generateFallbackComment(studentName, finalResults);
+  }
+
+  return { ok: true, results: finalResults, overallComment, version: VERSION };
+}
+
+// ★ v22.5: 학생 총평 — Gemini 한 번 더 호출 (또는 폴백)
+async function generateOverallComment(studentName, results, items) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return generateFallbackComment(studentName, results);
+  if (!results || results.length === 0) return '';
+
+  // 채점 결과 요약 (총평 생성용)
+  const totalScore = Math.round(results.reduce((s, r) => s + (r.score || 0), 0) / results.length);
+  const summary = results.map(r => {
+    const reason = r.reasoning ? r.reasoning.substring(0, 80) : '';
+    return `Q${r.q}: ${r.score}점 (${reason})`;
+  }).join('\n');
+
+  const prompt = `학생 이름: ${studentName}
+학생의 주관식 답안 채점 결과:
+${summary}
+
+평균 점수: ${totalScore}점
+
+★ 위 결과를 보고 학생에게 줄 1~2문장 총평을 작성해주세요.
+
+작성 규칙:
+- "${studentName} 학생," 으로 시작
+- 반말로 친근하게 (과외 선생님이 학생에게 말하듯)
+- 좋은 뉘앙스 (격려 + 부드러운 조언)
+- 강점과 약점을 균형있게 언급
+- 절대 학생을 깎아내리거나 비난하지 말기
+
+좋은 예시:
+"${studentName} 학생, 시제랑 단복수가 좀 헷갈리는 것 같은데 의미 전달은 잘 했어. 'is/are' 같은 동사 변형만 한 번 더 체크하면 더 잘 할 수 있어!"
+
+응답: 총평 1~2문장만 출력 (다른 설명, JSON, 마크다운 없이 텍스트만)`;
+
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.7,
+          thinkingConfig: { thinkingBudget: 0 },
+          maxOutputTokens: 500
+        }
+      })
+    });
+    if (!r.ok) return generateFallbackComment(studentName, results);
+    const json = await r.json();
+    const cand = (json.candidates || [])[0];
+    let text = '';
+    if (cand && cand.content && cand.content.parts) {
+      text = cand.content.parts.map(p => p.text || '').join('');
+    }
+    text = text.trim();
+    if (!text) return generateFallbackComment(studentName, results);
+    return text;
+  } catch(e) {
+    return generateFallbackComment(studentName, results);
+  }
+}
+
+// 코드 자동 폴백 총평 (Gemini 실패 시)
+function generateFallbackComment(studentName, results) {
+  if (!results || results.length === 0) return `${studentName} 학생, 답안 잘 제출했어!`;
+  const total = results.length;
+  const avgScore = Math.round(results.reduce((s, r) => s + (r.score || 0), 0) / total);
+  const perfect = results.filter(r => r.score === 100).length;
+  const zero = results.filter(r => r.score === 0).length;
+  if (avgScore >= 90) {
+    return `${studentName} 학생, 거의 완벽해! 정말 잘했어. 한두 개 작은 실수만 더 조심하면 돼.`;
+  } else if (avgScore >= 70) {
+    return `${studentName} 학생, 잘했어! ${perfect}개는 완벽한데 몇 개 작은 실수가 있네. 틀린 부분 다시 보면서 복습하자.`;
+  } else if (avgScore >= 50) {
+    return `${studentName} 학생, 절반 정도는 맞췄어. 틀린 문제 위주로 좀 더 연습하면 충분해. 화이팅!`;
+  } else {
+    return `${studentName} 학생, 이번엔 좀 어려웠나봐. 괜찮아, 천천히 하나씩 다시 보자!`;
+  }
 }
 
 // Gemini 배치 호출
-async function gradeBatchViaGemini(items) {
+// ★ v22.7: gradingMode 추가 — loose=해석/번역(의역 인정), strict=단답형(엄격)
+async function gradeBatchViaGemini(items, gradingMode) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return items.map(it => ({ q: it.q, score: 0, category: "ERROR", deductions: [], reasoning: "GEMINI_API_KEY 미설정" }));
   }
+  // ★ v22.7: 모드별 채점 기준 분기
+  const isLoose = String(gradingMode || '').toLowerCase() === 'loose';
+  const RUBRIC = isLoose ? GRADING_RUBRIC_LOOSE : GRADING_RUBRIC;
+  const modeLabel = isLoose ? "해석/번역 (의역 인정)" : "단답형/영작 (엄격)";
   const promptItems = items.map((it) =>
     `[문항 ${it.q}]\n학생 답안: "${it.studentAnswer}"\n정답: "${it.correctAnswer}"` +
     (it.questionContext ? `\n맥락: ${it.questionContext}` : '')
   ).join('\n\n');
-  const prompt = GRADING_RUBRIC +
-    `\n\n## 채점 대상 (${items.length}개 문항)\n\n${promptItems}\n\n` +
+  const prompt = RUBRIC +
+    `\n\n## 채점 모드: ${modeLabel}\n` +
+    `## 채점 대상 (${items.length}개 문항)\n\n${promptItems}\n\n` +
     `## 응답 형식 (JSON 배열만 출력 — 마크다운 코드블록 금지)\n` +
     `[\n` +
     items.map(it => `  {"q": "${it.q}", "score": 95, "category": "B", "deductions": [{"type":"...", "amount":-5, "reason":"..."}], "reasoning": "...", "grammarTip": "..."}`).join(',\n') +
     `\n]\n\n각 문항을 위 채점 기준대로 평가해 ${items.length}개 항목 JSON 배열로만 응답하세요.\n` +
     `★ 중요: deductions 합계와 score 가 정확히 일치 (100 + 합계 = score, 0 미만은 0)\n` +
-    `★ grammarTip: 학생이 이해할 수 있는 1-2문장 문법/구문 설명 (정답이면 "")`;
+    `★ grammarTip: 학생이 이해할 수 있는 1-2문장 문법/구문 설명 (정답이면 "")` +
+    (isLoose ? `\n★ 해석 모드: 어순/조사 차이 절대 감점 금지. 의미 통하면 정답.` : '');
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
   try {
     const r = await fetch(url, {
@@ -397,7 +628,7 @@ async function parseBatchResponse(r, items) {
 }
 
 async function gradeSingleViaGemini(studentAnswer, correctAnswer, questionContext) {
-  const result = await gradeBatchViaGemini([{ q: 1, studentAnswer, correctAnswer, questionContext }]);
+  const result = await gradeBatchViaGemini([{ q: 1, studentAnswer, correctAnswer, questionContext }], 'strict');
   if (result && result[0]) {
     const r = result[0];
     return { score: r.score, category: r.category, deductions: r.deductions, reasoning: r.reasoning };
@@ -444,8 +675,13 @@ async function gradeMultiBlankSingle(studentAnswer, correctAnswer, questionConte
 }
 
 function quickEqual(a, b) {
-  const norm = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/[.!?,]+$/, '');
-  return norm(a) === norm(b);
+  // ★ v22.4: 두 가지 정규화 비교 (정확/관대)
+  //   - normExact: 끝의 문장부호만 제거 (대소문자/공백/끝 마침표 차이만 허용)
+  //   - normLoose: 모든 쉼표 + 끝 문장부호 제거 (단순 나열 쉼표 차이 허용)
+  //   둘 중 하나라도 일치하면 100점 (단순 나열의 쉼표 누락은 감점 X)
+  const normExact = s => String(s || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/[.!?,]+$/, '');
+  const normLoose = s => String(s || '').toLowerCase().trim().replace(/,/g, '').replace(/\s+/g, ' ').replace(/[.!?]+$/, '');
+  return normExact(a) === normExact(b) || normLoose(a) === normLoose(b);
 }
 
 function sleep(ms) {
