@@ -1239,7 +1239,7 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
    - 기간 모드: 학생별 누적 흐름 (반 단위로 묶음, 학생 점수 추세)
    - 카드 제목: {과목} {학년} {레벨}반 · {시험명}  (👤 {선생님})
 */
-function StatsTab({sheetsUrl, T, S, teacherList}){
+function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const LOW_THRESHOLD = 70; // ★ 미달 기준 고정 (70점 미만)
   const todayStr = (()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;})();
   const [classes, setClasses] = useState([]);
@@ -1321,6 +1321,122 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
     const a = document.createElement("a");
     const fname = `${c.date||""}_${c.subject||""}_${c.grade||""}${c.level||""}반_${c.examType||""}_성적.csv`.replace(/[\\/:*?"<>|]/g,"");
     a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
+  };
+  // ★ v22.8: Word(.doc) 다운로드 — 컴퓨터 자체 기능 (HTML→Word, AI 미사용)
+  const downloadWord = (c)=>{
+    const esc = (s)=>String(s||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    const lines = [];
+    lines.push('<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">');
+    lines.push('<head><meta charset="utf-8"><title>반별 성적표</title>');
+    lines.push('<style>');
+    lines.push('@page { size: A4; margin: 2cm; }');
+    lines.push('body { font-family: "Malgun Gothic","Noto Sans KR",sans-serif; color:#1a1a1a; line-height:1.55; }');
+    lines.push('h1 { color:#B8860B; font-size:22pt; margin:0 0 6pt 0; border-bottom:2pt solid #D4A017; padding-bottom:6pt; }');
+    lines.push('h2 { color:#8B6914; font-size:14pt; margin:18pt 0 8pt 0; padding-bottom:3pt; border-bottom:1pt solid #E8E4DA; }');
+    lines.push('table { width:100%; border-collapse:collapse; margin:6pt 0; font-size:11pt; }');
+    lines.push('th { background:#FFF3D0; color:#8B6914; padding:6pt 8pt; border:1pt solid #E8D8A0; font-weight:700; }');
+    lines.push('td { padding:5pt 8pt; border:1pt solid #E8E4DA; }');
+    lines.push('.meta { color:#5C5C5C; font-size:11pt; margin-bottom:14pt; }');
+    lines.push('.summary-row td { background:#FFFBF0; }');
+    lines.push('.score-high { color:#2E7D32; font-weight:700; }');
+    lines.push('.score-mid { color:#B8860B; font-weight:700; }');
+    lines.push('.score-low { color:#C62828; font-weight:700; }');
+    lines.push('.student-block { margin-top:14pt; padding:10pt; border:1pt solid #E8E4DA; border-radius:4pt; page-break-inside:avoid; }');
+    lines.push('.student-head { font-size:12pt; font-weight:700; margin-bottom:6pt; }');
+    lines.push('.q-list { margin:4pt 0; font-size:10.5pt; line-height:1.7; }');
+    lines.push('.q-obj-item { display:inline-block; padding:2pt 8pt; margin:2pt 4pt 2pt 0; background:#FFEBEE; color:#C62828; border-radius:3pt; }');
+    lines.push('.q-sub-item { margin:6pt 0; padding:6pt 10pt; background:#FFF8E6; border-left:3pt solid #D4A017; }');
+    lines.push('.q-sub-wrong { background:#FFEBEE; border-left-color:#C62828; }');
+    lines.push('.q-label { color:#8B6914; font-weight:700; }');
+    lines.push('.reasoning { color:#5C5C5C; font-size:10pt; margin-top:3pt; font-style:italic; }');
+    lines.push('.foot { margin-top:24pt; padding-top:8pt; border-top:1pt solid #E8E4DA; color:#999; font-size:9pt; text-align:center; }');
+    lines.push('</style></head><body>');
+    lines.push(`<h1>채움학원 — 반별 성적표</h1>`);
+    lines.push(`<div class="meta"><b>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}</b><br/>`);
+    lines.push(`📅 ${esc(c.date)} &nbsp;&nbsp; 👨‍🏫 ${esc(c.teacher||"-")} &nbsp;&nbsp; 응시: ${c.total}명</div>`);
+    lines.push('<h2>📊 시험 결과 요약</h2>');
+    lines.push('<table><thead><tr><th>평균</th><th>최고</th><th>최저</th><th>만점자</th><th>70점 미만</th></tr></thead>');
+    lines.push(`<tbody class="summary-row"><tr><td>${c.avg}점</td><td>${c.max}점</td><td>${c.min}점</td><td>${c.perfectCount||0}명</td><td>${c.lowCount||0}명</td></tr></tbody></table>`);
+    lines.push('<h2>📋 학생별 성적</h2>');
+    lines.push('<table><thead><tr><th style="width:50pt">등수</th><th>학생</th><th style="width:60pt">점수</th><th>비고</th></tr></thead><tbody>');
+    (c.students||[]).forEach(s=>{
+      const cls = s.score>=90?"score-high":s.score>=70?"score-mid":"score-low";
+      const wrongCount = (s.wrongQs||[]).length;
+      const partial = (s.perQuestion||[]).filter(p=>p.verdict==="부분정답").length;
+      const note = wrongCount>0 ? `틀린 ${wrongCount}문항${partial>0?` · 부분 ${partial}`:""}` : (partial>0 ? `부분점수 ${partial}개` : "전부 정답");
+      lines.push(`<tr><td style="text-align:center">${s.rank}</td><td>${esc(s.name||"?")}</td><td class="${cls}" style="text-align:center">${s.score}점</td><td style="font-size:10pt">${esc(note)}</td></tr>`);
+    });
+    lines.push('</tbody></table>');
+    const wrongStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답").length>0);
+    if (wrongStudents.length>0) {
+      lines.push('<h2>📝 틀린 문항 상세</h2>');
+      wrongStudents.forEach(s=>{
+        const wrongP = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답");
+        const objWrongs = wrongP.filter(p=>p.type==="obj");
+        const subWrongs = wrongP.filter(p=>p.type==="sub");
+        lines.push(`<div class="student-block">`);
+        lines.push(`<div class="student-head">#${s.rank} ${esc(s.name||"?")} — ${s.score}점</div>`);
+        if (objWrongs.length>0) {
+          lines.push(`<div class="q-list"><span class="q-label">❌ 객관식 오답 ${objWrongs.length}개:</span><br/>`);
+          objWrongs.forEach(p=>{
+            lines.push(`<span class="q-obj-item">${p.q}번: ${esc(p.studentAns||"빈칸")} → <b>${esc(p.correctAns||"-")}</b></span>`);
+          });
+          lines.push(`</div>`);
+        }
+        subWrongs.forEach(p=>{
+          const isWrong = p.verdict==="오답";
+          lines.push(`<div class="q-sub-item${isWrong?" q-sub-wrong":""}">`);
+          lines.push(`<div><span class="q-label">${p.q}번 (주관식, ${p.score}점)</span></div>`);
+          lines.push(`<div style="margin-top:3pt"><b>학생답:</b> ${esc(p.studentAns||"(빈칸)")}</div>`);
+          lines.push(`<div><b>정답:</b> ${esc(p.correctAns||"-")}</div>`);
+          if (p.reasoning) lines.push(`<div class="reasoning">💬 ${esc(p.reasoning)}</div>`);
+          lines.push(`</div>`);
+        });
+        lines.push(`</div>`);
+      });
+    }
+    if (c.hardest && c.hardest.length>0) {
+      lines.push('<h2>🔥 어려운 문항 Top 5</h2>');
+      lines.push('<table><thead><tr><th style="width:80pt">문항</th><th>틀린 학생</th><th style="width:80pt">비율</th></tr></thead><tbody>');
+      c.hardest.forEach(h=>{
+        lines.push(`<tr><td style="text-align:center">${h.q}번</td><td>${h.wrong}명</td><td style="text-align:center">${h.pct}%</td></tr>`);
+      });
+      lines.push('</tbody></table>');
+    }
+    lines.push('<div class="foot">채움학원 자동 채점 시스템 · ' + new Date().toLocaleString("ko-KR") + '</div>');
+    lines.push('</body></html>');
+    const html = lines.join('\n');
+    const blob = new Blob(['﻿'+html], {type:"application/msword"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const fname = `${c.date||""}_${c.subject||""}_${c.grade||""}${c.level||""}반_${c.examType||""}_성적표.doc`.replace(/[\\/:*?"<>|]/g,"");
+    a.href = url; a.download = fname; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  // ★ v22.8: 시험지/답지 파일 모달
+  const [fileModalOpen, setFileModalOpen] = useState(false);
+  const [fileModalLoading, setFileModalLoading] = useState(false);
+  const [fileModalData, setFileModalData] = useState({title:"", files:[], err:""});
+  const openFileModal = async (c)=>{
+    if(!c.folderId){
+      alert("이 시험은 폴더 정보가 없어 파일을 찾을 수 없어요.\n(직접 입력 모드로 등록된 시험)");
+      return;
+    }
+    setFileModalOpen(true);
+    setFileModalLoading(true);
+    setFileModalData({title:`${c.subject} ${c.grade} ${c.level||""}반 · ${c.examType}`, files:[], err:""});
+    try{
+      const r = await fetch(`${sheetsUrl}?action=list_folder_files&folderId=${encodeURIComponent(c.folderId)}`);
+      const d = await r.json();
+      if(d.result==="ok"){
+        setFileModalData(prev=>({...prev, files: d.files||[]}));
+      } else {
+        setFileModalData(prev=>({...prev, err: d.message || "조회 실패"}));
+      }
+    }catch(e){
+      setFileModalData(prev=>({...prev, err: "네트워크 오류: "+String(e)}));
+    }
+    setFileModalLoading(false);
   };
 
   const scoreColor = (s)=> s>=90?T.accent : s>=80?T.goldDark : s>=LOW_THRESHOLD?T.text : T.danger;
@@ -1411,35 +1527,48 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
                   {expandable && open && (
                     <div style={{padding:"8px 12px 10px 16px",fontSize:11,color:T.text,lineHeight:1.6,background:T.white,borderTop:`1px dashed ${T.border}`}}>
                       {showPQ && wrongPQ.length>0 ? (
-                        // ★ v22.6: 문항별 상세 (객관식 학생답/정답, 주관식 텍스트 + AI 사유)
-                        wrongPQ.map((p,pi)=>{
-                          const isWrong = p.verdict==="오답";
-                          const bg = isWrong?"#fff5f5":"#fffaf0";
-                          return (
-                            <div key={pi} style={{padding:"6px 8px",background:bg,borderRadius:4,marginBottom:4,border:`1px solid ${isWrong?"#ffd0d0":"#ffe7b8"}`}}>
-                              <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3}}>
-                                <span style={{fontWeight:700,color:isWrong?T.danger:T.goldDark,fontSize:12}}>{p.q}번</span>
-                                <span style={{fontSize:10,color:T.textMuted,padding:"1px 6px",background:T.bg,borderRadius:3}}>{p.type==="obj"?"객관식":"주관식"}</span>
-                                <span style={{fontSize:10,fontWeight:700,color:isWrong?T.danger:T.goldDark}}>{p.score}점</span>
-                              </div>
-                              {p.type==="obj" ? (
-                                <div style={{fontSize:11,color:T.textSub}}>
-                                  학생답: <b style={{color:isWrong?T.danger:T.text}}>{p.studentAns||"(빈칸)"}</b>
-                                  <span style={{margin:"0 6px",color:T.textMuted}}>·</span>
-                                  정답: <b style={{color:T.accent}}>{p.correctAns||"-"}</b>
+                        <>
+                          {/* ★ v22.8: 객관식 — 한 블록에 압축 표시 (chip 스타일, 0점 표기 X) */}
+                          {(()=>{
+                            const objWrongs = wrongPQ.filter(p=>p.type==="obj");
+                            if(objWrongs.length===0)return null;
+                            return (
+                              <div style={{padding:"6px 10px",background:"#fff5f5",borderRadius:4,marginBottom:6,border:`1px solid #ffd0d0`}}>
+                                <div style={{fontSize:11,fontWeight:700,color:T.danger,marginBottom:4}}>❌ 객관식 오답 ({objWrongs.length})</div>
+                                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                                  {objWrongs.map((p,pi)=>(
+                                    <span key={pi} style={{display:"inline-block",padding:"2px 8px",background:T.white,border:`1px solid ${T.danger}40`,borderRadius:10,fontSize:11,fontWeight:600,color:T.text,whiteSpace:"nowrap"}}>
+                                      <span style={{color:T.danger,fontWeight:700}}>{p.q}번</span>
+                                      <span style={{margin:"0 3px",color:T.textMuted}}>:</span>
+                                      <span style={{color:T.danger}}>{p.studentAns||"빈칸"}</span>
+                                      <span style={{margin:"0 4px",color:T.textMuted}}>→</span>
+                                      <span style={{color:T.accent,fontWeight:700}}>{p.correctAns||"-"}</span>
+                                    </span>
+                                  ))}
                                 </div>
-                              ) : (
+                              </div>
+                            );
+                          })()}
+                          {/* ★ v22.8: 주관식 — 풀어서 표시 (학생답/정답/AI사유) */}
+                          {wrongPQ.filter(p=>p.type==="sub").map((p,pi)=>{
+                            const isWrong = p.verdict==="오답";
+                            const bg = isWrong?"#fff5f5":"#fffaf0";
+                            return (
+                              <div key={pi} style={{padding:"6px 10px",background:bg,borderRadius:4,marginBottom:4,border:`1px solid ${isWrong?"#ffd0d0":"#ffe7b8"}`}}>
+                                <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3}}>
+                                  <span style={{fontWeight:700,color:isWrong?T.danger:T.goldDark,fontSize:12}}>{p.q}번 (주관식)</span>
+                                  <span style={{fontSize:10,fontWeight:700,color:isWrong?T.danger:T.goldDark}}>{p.score}점</span>
+                                </div>
                                 <div style={{fontSize:11,color:T.textSub,wordBreak:"break-all"}}>
                                   <div>학생답: <span style={{color:isWrong?T.danger:T.text,fontWeight:600}}>"{p.studentAns||"(빈칸)"}"</span></div>
                                   <div>정답: <span style={{color:T.accent,fontWeight:600}}>"{p.correctAns||"-"}"</span></div>
                                   {p.reasoning && <div style={{marginTop:3,fontSize:10,color:T.textMuted,fontStyle:"italic"}}>💬 {p.reasoning}</div>}
                                 </div>
-                              )}
-                            </div>
-                          );
-                        })
+                              </div>
+                            );
+                          })}
+                        </>
                       ) : has ? (
-                        // 폴백: 기존 형식 (문항번호만) — perQuestion 없을 때
                         <div style={{color:T.danger,wordBreak:"break-all"}}>❌ {s.wrongQs.join(", ")}</div>
                       ) : null}
                     </div>
@@ -1460,9 +1589,11 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
             ))}
           </div>
         </div>}
-        {/* 액션 */}
-        <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:1,fontSize:12}}>📥 엑셀 다운로드</button>
+        {/* 액션 — ★ v22.8: Word/CSV 다운로드 + 시험지/답지 파일 모달 */}
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.goldDark}} title="Word 문서로 다운로드 (성적표 양식)">📄 Word 다운</button>
+          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:80,background:T.accent}} title="엑셀(CSV)로 다운로드">📊 엑셀</button>
+          <button onClick={()=>openFileModal(c)} disabled={!c.folderId} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:c.folderId?T.blue:T.borderLight,color:c.folderId?T.white:T.textMuted,cursor:c.folderId?"pointer":"not-allowed"}} title={c.folderId?"시험지/답지 파일 보기":"폴더 정보 없음 (직접 입력 모드)"}>📁 시험지·답지</button>
         </div>
       </div>
     );
@@ -1605,6 +1736,63 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
   };
 
   return (<div style={S.wrap} className="fade-up">
+    {/* ★ v22.8: 시험지/답지 파일 모달 */}
+    {fileModalOpen && (
+      <div onClick={()=>setFileModalOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div onClick={(e)=>e.stopPropagation()} style={{background:T.white,borderRadius:14,width:"100%",maxWidth:560,maxHeight:"85vh",overflow:"hidden",display:"flex",flexDirection:"column"}}>
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,background:T.goldPale,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:800,color:T.goldDeep}}>📁 시험지 / 답지 파일</div>
+              <div style={{fontSize:11,color:T.textSub,marginTop:2}}>{fileModalData.title}</div>
+            </div>
+            <button onClick={()=>setFileModalOpen(false)} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+          </div>
+          <div style={{flex:1,overflow:"auto",padding:14}}>
+            {fileModalLoading && <div style={{padding:20,textAlign:"center",color:T.textMuted}}>로딩 중...</div>}
+            {fileModalData.err && <div style={{padding:14,background:T.dangerLight,color:T.danger,borderRadius:8,fontSize:13,fontWeight:600,textAlign:"center"}}>{fileModalData.err}</div>}
+            {!fileModalLoading && !fileModalData.err && fileModalData.files.length===0 && (
+              <div style={{padding:24,textAlign:"center",color:T.textMuted,fontSize:13}}>파일이 없습니다.</div>
+            )}
+            {!fileModalLoading && fileModalData.files.length>0 && (
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {/* 시험지 그룹 */}
+                {fileModalData.files.filter(f=>f.kind==="exam").length>0 && (
+                  <div>
+                    <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:6,padding:"4px 8px",background:T.bg,borderRadius:4}}>📄 시험지 ({fileModalData.files.filter(f=>f.kind==="exam").length})</div>
+                    {fileModalData.files.filter(f=>f.kind==="exam").map((f,fi)=>(
+                      <div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 10px",background:T.white,border:`1px solid ${T.border}`,borderRadius:6,marginBottom:4}}>
+                        <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
+                          <div style={{fontSize:12,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.name}</div>
+                          <div style={{fontSize:10,color:T.textMuted}}>{f.size?Math.round(f.size/1024)+"KB":""}</div>
+                        </div>
+                        <button onClick={()=>proxyPreview&&proxyPreview(f.id,f.name)} disabled={!proxyPreview} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
+                        <button onClick={()=>proxyDownload&&proxyDownload(f.id,f.name)} disabled={!proxyDownload} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* 답지 그룹 */}
+                {fileModalData.files.filter(f=>f.kind==="answer").length>0 && (
+                  <div>
+                    <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:6,padding:"4px 8px",background:T.goldLight,borderRadius:4}}>🔑 답지 ({fileModalData.files.filter(f=>f.kind==="answer").length})</div>
+                    {fileModalData.files.filter(f=>f.kind==="answer").map((f,fi)=>(
+                      <div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 10px",background:T.goldPale,border:`1px solid ${T.goldMuted}`,borderRadius:6,marginBottom:4}}>
+                        <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
+                          <div style={{fontSize:12,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.name}</div>
+                          <div style={{fontSize:10,color:T.textMuted}}>{f.size?Math.round(f.size/1024)+"KB":""}</div>
+                        </div>
+                        <button onClick={()=>proxyPreview&&proxyPreview(f.id,f.name)} disabled={!proxyPreview} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
+                        <button onClick={()=>proxyDownload&&proxyDownload(f.id,f.name)} disabled={!proxyDownload} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
     <div style={{textAlign:"center",padding:"20px 0 12px"}}>
       <div style={{fontSize:36,marginBottom:4}}>📊</div>
       <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>반별 성적</h1>
@@ -3257,7 +3445,7 @@ export default function App(){
       {/* ═══ 일괄 프린트 탭 ═══ */}
       {screen==="home"&&tab==="print"&&(<PrintTab sheetsUrl={SHEETS_URL} T={T} S={S}/>)}
       {/* ═══ 반별 성적 탭 (v20.4) ═══ */}
-      {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
+      {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
       {/* ═══ 문제 생성기 탭 ═══ */}
       {screen==="home"&&tab==="generator"&&(<GeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
@@ -3639,9 +3827,9 @@ export default function App(){
   );
 }
 const S={
-  app:{fontFamily:"'Noto Sans KR',-apple-system,sans-serif",background:T.bg,minHeight:"100vh",maxWidth:480,margin:"0 auto",paddingBottom:20},
+  app:{fontFamily:"'Noto Sans KR',-apple-system,sans-serif",background:T.bg,minHeight:"100vh",maxWidth:960,margin:"0 auto",paddingBottom:20},
   hdr:{background:T.white,borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,zIndex:100},
-  hdrIn:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",maxWidth:480,margin:"0 auto"},
+  hdrIn:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",maxWidth:960,margin:"0 auto"},
   // NOTE: maxWidth는 CSS 클래스(.app-shell, .hdr-inner)로 반응형 오버라이드됨
   logoR:{display:"flex",alignItems:"center",gap:10},logoM:{width:36,height:36,borderRadius:10,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,color:T.white,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13,letterSpacing:-1},
   hdrT:{fontSize:15,fontWeight:800,color:T.text,letterSpacing:-.3},hdrS:{fontSize:10,color:T.textMuted,fontWeight:500,marginTop:-1},
@@ -3672,7 +3860,7 @@ const S={
   qNum:{flex:"0 0 28px",height:28,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700},
   cBtn:{flex:1,height:36,minWidth:0,borderRadius:9,border:"1.5px solid",fontSize:14,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"},
   sInp:{flex:1,padding:"8px 12px",fontSize:14,borderRadius:9,border:`1.5px solid ${T.border}`,fontFamily:"inherit",background:T.bg},
-  subBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:480,background:T.white,borderTop:`1px solid ${T.border}`,padding:"10px 16px",paddingBottom:"max(10px,env(safe-area-inset-bottom))",display:"flex",alignItems:"center",gap:10,zIndex:200}, /* sub-bar-fix 클래스로 PC 반응형 */
+  subBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:960,background:T.white,borderTop:`1px solid ${T.border}`,padding:"10px 16px",paddingBottom:"max(10px,env(safe-area-inset-bottom))",display:"flex",alignItems:"center",gap:10,zIndex:200}, /* sub-bar-fix 클래스로 PC 반응형 */
   subBtn:{padding:"11px 24px",fontSize:15,fontWeight:700,color:T.white,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,border:"none",borderRadius:10,cursor:"pointer",fontFamily:"inherit"},
   overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20},
   modal:{background:T.white,borderRadius:18,padding:"40px 20px",maxWidth:320,width:"100%",textAlign:"center"},
