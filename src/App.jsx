@@ -1387,21 +1387,61 @@ function StatsTab({sheetsUrl, T, S, teacherList}){
               const k = `${key}:${s.name||"?"}:${si}`;
               const open = !!openWrongs[k];
               const has = s.wrongQs && s.wrongQs.length>0;
+              // ★ v22.6: 부분점수 감지 + 문항별 상세 표시
+              const showPQ = Array.isArray(s.perQuestion) && s.perQuestion.length>0;
+              const partialCount = showPQ ? s.perQuestion.filter(p=>p.verdict==="부분정답").length : 0;
+              const wrongPQ = showPQ ? s.perQuestion.filter(p=>p.verdict==="오답"||p.verdict==="부분정답") : [];
+              const expandable = has || (showPQ && wrongPQ.length>0);
               return (
                 <div key={si} style={{background:s.score<LOW_THRESHOLD?T.dangerLight:s.score===100?T.goldPale:T.bg,borderRadius:6,fontSize:12,overflow:"hidden"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",cursor:has?"pointer":"default"}} onClick={()=>{ if(has) toggleWrong(k); }}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",cursor:expandable?"pointer":"default"}} onClick={()=>{ if(expandable) toggleWrong(k); }}>
                     <span style={{minWidth:32,fontSize:11,fontWeight:600,color:T.textMuted}}>#{s.rank}</span>
                     <span style={{minWidth:60,fontWeight:600,color:T.text}}>{s.name||"?"}</span>
                     <span style={{minWidth:50,fontWeight:700,color:scoreColor(s.score)}}>{s.score}점</span>
                     <span style={{flex:1,color:T.textSub,fontSize:11,textAlign:"right"}}>
-                      {has
-                        ? <span style={{color:T.danger,fontWeight:600}}>{open?"▼":"▶"} 틀린 {s.wrongQs.length}문항</span>
-                        : <span style={{color:T.accent}}>✓ 전부 정답</span>}
+                      {has ? (
+                        <span style={{color:T.danger,fontWeight:600}}>{open?"▼":"▶"} 틀린 {s.wrongQs.length}문항{partialCount>0?` · 부분 ${partialCount}`:""}</span>
+                      ) : partialCount>0 ? (
+                        <span style={{color:T.goldDark,fontWeight:600}}>{open?"▼":"▶"} 부분점수 {partialCount}개</span>
+                      ) : (
+                        <span style={{color:T.accent}}>✓ 전부 정답</span>
+                      )}
                     </span>
                   </div>
-                  {has && open && (
-                    <div style={{padding:"6px 10px 10px 50px",fontSize:11,color:T.danger,wordBreak:"break-all",lineHeight:1.6}}>
-                      ❌ {s.wrongQs.join(", ")}
+                  {expandable && open && (
+                    <div style={{padding:"8px 12px 10px 16px",fontSize:11,color:T.text,lineHeight:1.6,background:T.white,borderTop:`1px dashed ${T.border}`}}>
+                      {showPQ && wrongPQ.length>0 ? (
+                        // ★ v22.6: 문항별 상세 (객관식 학생답/정답, 주관식 텍스트 + AI 사유)
+                        wrongPQ.map((p,pi)=>{
+                          const isWrong = p.verdict==="오답";
+                          const bg = isWrong?"#fff5f5":"#fffaf0";
+                          return (
+                            <div key={pi} style={{padding:"6px 8px",background:bg,borderRadius:4,marginBottom:4,border:`1px solid ${isWrong?"#ffd0d0":"#ffe7b8"}`}}>
+                              <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3}}>
+                                <span style={{fontWeight:700,color:isWrong?T.danger:T.goldDark,fontSize:12}}>{p.q}번</span>
+                                <span style={{fontSize:10,color:T.textMuted,padding:"1px 6px",background:T.bg,borderRadius:3}}>{p.type==="obj"?"객관식":"주관식"}</span>
+                                <span style={{fontSize:10,fontWeight:700,color:isWrong?T.danger:T.goldDark}}>{p.score}점</span>
+                              </div>
+                              {p.type==="obj" ? (
+                                <div style={{fontSize:11,color:T.textSub}}>
+                                  학생답: <b style={{color:isWrong?T.danger:T.text}}>{p.studentAns||"(빈칸)"}</b>
+                                  <span style={{margin:"0 6px",color:T.textMuted}}>·</span>
+                                  정답: <b style={{color:T.accent}}>{p.correctAns||"-"}</b>
+                                </div>
+                              ) : (
+                                <div style={{fontSize:11,color:T.textSub,wordBreak:"break-all"}}>
+                                  <div>학생답: <span style={{color:isWrong?T.danger:T.text,fontWeight:600}}>"{p.studentAns||"(빈칸)"}"</span></div>
+                                  <div>정답: <span style={{color:T.accent,fontWeight:600}}>"{p.correctAns||"-"}"</span></div>
+                                  {p.reasoning && <div style={{marginTop:3,fontSize:10,color:T.textMuted,fontStyle:"italic"}}>💬 {p.reasoning}</div>}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      ) : has ? (
+                        // 폴백: 기존 형식 (문항번호만) — perQuestion 없을 때
+                        <div style={{color:T.danger,wordBreak:"break-all"}}>❌ {s.wrongQs.join(", ")}</div>
+                      ) : null}
                     </div>
                   )}
                 </div>
@@ -2771,6 +2811,16 @@ export default function App(){
   const[classes,setClasses]=useState([]);
   // 시험 정보
   const[examType,setExamType]=useState(_ls.lastExamType||""); // 직전 시험 종류 기억
+  // ★ v22.7: 주관식 채점 모드 (loose=해석/번역, strict=단답형)
+  const[gradingMode,setGradingMode]=useState("strict");
+  const[gradingModeAuto,setGradingModeAuto]=useState(true); // 자동 추천 상태 (선생님이 수동 변경 시 false)
+  // examType 변경 시 자동 추천 — "해석/번역/독해" 키워드 감지
+  useEffect(()=>{
+    if(!gradingModeAuto)return; // 선생님이 수동 변경한 경우 자동 추천 비활성화
+    const looseKeywords=["해석","번역","독해","translation","interpretation"];
+    const isLoose=looseKeywords.some(k=>(examType||"").toLowerCase().includes(k.toLowerCase()));
+    setGradingMode(isLoose?"loose":"strict");
+  },[examType,gradingModeAuto]);
   const[examDate,setExamDate]=useState(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;});
   const[examTime,setExamTime]=useState(()=>{const d=new Date();return`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;});
   // ★ (레거시 호환용) setType 은 더 이상 사용하지 않음. 차수는 rounds[i].label 로 관리.
@@ -2968,7 +3018,7 @@ export default function App(){
       // 1) 정답 데이터 시트 저장 (반별) — 시험 구분(setType) 포함
       for(const cls of classes){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:"",round:"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum})});
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:"",round:"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum,gradingMode})});
       }
       // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 반별 개별 업로드
       if(examFiles.length>0||answerFiles.length>0){
@@ -2976,7 +3026,7 @@ export default function App(){
         const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         for(const cls of classes){
           await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:"",round:"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData})});
+            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:"",round:"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData,gradingMode})});
         }
       }
       setDone(true);setScreen("done");
@@ -3008,12 +3058,12 @@ export default function App(){
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           for(const cls of classes){
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode})});
             // [v21.0] AI 검수 task 등록 (첫 답지 1개 사용)
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0 },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0, gradingMode },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -3042,11 +3092,11 @@ export default function App(){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0})});
+              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode})});
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0 },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0, gradingMode },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -3180,7 +3230,7 @@ export default function App(){
     }catch(err){alert("미리보기 실패: "+(err.message||err));}
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);setGradingMode("strict");setGradingModeAuto(true);
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
   return(
     <div style={S.app} className="app-shell">
@@ -3306,6 +3356,29 @@ export default function App(){
         <div style={S.card}>
           <div style={S.secLabel}>시험 정보</div>
           <ExamTypeSelect val={examType} onChange={setExamType}/>
+          {/* ★ v22.7: 주관식 채점 모드 — examType 으로 자동 추천 + 수동 토글 */}
+          <div style={{marginBottom:16,padding:"12px 14px",borderRadius:10,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:4,display:"flex",alignItems:"center",gap:6}}>
+              📝 주관식 채점 모드
+              {gradingModeAuto && <span style={{fontSize:10,padding:"2px 6px",borderRadius:6,background:T.gold,color:T.white,fontWeight:700}}>자동 추천</span>}
+            </div>
+            <div style={{fontSize:11,color:T.textMuted,marginBottom:8,lineHeight:1.5}}>
+              {gradingModeAuto ? `"${examType}" → AI가 ${gradingMode==="loose"?"해석/번역":"단답"} 시험으로 인식했어요. 다르면 변경하세요.` : "직접 선택해주세요."}
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              {[
+                {v:"strict",label:"엄격",desc:"단어/영작/단답 (정확도 중심)"},
+                {v:"loose",label:"유연",desc:"해석/번역 (의역 인정) ⭐"}
+              ].map(o=>{
+                const a=gradingMode===o.v;
+                const recommend=gradingModeAuto&&a;
+                return(<button key={o.v} onClick={()=>{setGradingMode(o.v);setGradingModeAuto(false);}} style={{flex:1,padding:"10px 8px",borderRadius:10,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,cursor:"pointer",fontFamily:"inherit",textAlign:"left",position:"relative"}}>
+                  <div style={{fontSize:13,fontWeight:a?800:600,color:a?T.white:T.text,marginBottom:2}}>{o.label}{recommend&&" ⭐"}</div>
+                  <div style={{fontSize:10,color:a?T.goldLight:T.textMuted,lineHeight:1.4}}>{o.desc}</div>
+                </button>);
+              })}
+            </div>
+          </div>
           <div style={{marginBottom:16}}>
             <div style={S.label}>시험 날짜 / 시간 <span style={{color:T.danger}}>*</span></div>
             <div style={{display:"flex",gap:8}}>
