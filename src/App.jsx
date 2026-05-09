@@ -1310,11 +1310,72 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
 
   // CSV 다운로드 (한 반 카드용)
   const downloadCsv = (c)=>{
-    const head = ["등수","학생","점수","틀린문항"];
-    const lines = [head.join(",")];
-    c.students.forEach(s=>{
-      lines.push([s.rank, `"${s.name}"`, s.score, `"${(s.wrongQs||[]).join(" ")}"`].join(","));
+    // ★ v22.9: 깔끔한 양식 (HTML→Excel) + 주관식 답안 상세 포함
+    const esc = (s)=>String(s==null?"":s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+    const lines = [];
+    lines.push('<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">');
+    lines.push('<head>');
+    lines.push('<meta http-equiv="Content-Type" content="text/html; charset=utf-8">');
+    lines.push('<meta name="ProgId" content="Excel.Sheet">');
+    lines.push('<meta name="Generator" content="Microsoft Excel 15">');
+    lines.push('<title>반별 성적표</title>');
+    lines.push('<!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet><x:Name>반별성적</x:Name><x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->');
+    lines.push('<style>');
+    lines.push('table { border-collapse:collapse; font-family:"Malgun Gothic",sans-serif; font-size:11pt; }');
+    lines.push('th { background:#FFF3D0; color:#8B6914; padding:6pt 8pt; border:1pt solid #C4A878; font-weight:700; }');
+    lines.push('td { padding:5pt 8pt; border:1pt solid #C4A878; vertical-align:top; mso-data-placement:same-cell; }');
+    lines.push('.title { font-size:16pt; font-weight:700; color:#B8860B; padding:8pt; }');
+    lines.push('.meta { font-size:11pt; color:#5C5C5C; padding:4pt 8pt; }');
+    lines.push('.section { font-size:13pt; font-weight:700; color:#8B6914; padding:8pt; background:#FFFBF0; }');
+    lines.push('.score-high { color:#2E7D32; font-weight:700; }');
+    lines.push('.score-mid { color:#B8860B; font-weight:700; }');
+    lines.push('.score-low { color:#C62828; font-weight:700; }');
+    lines.push('.wrong { color:#C62828; }');
+    lines.push('.correct { color:#2E7D32; font-weight:700; }');
+    lines.push('.sub { background:#FFFBF0; }');
+    lines.push('</style></head><body><table>');
+    lines.push(`<tr><td colspan="6" class="title">채움학원 — 반별 성적표</td></tr>`);
+    lines.push(`<tr><td colspan="6" class="meta"><b>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}</b> | 📅 ${esc(c.date)} | 👨‍🏫 ${esc(c.teacher||"-")} | 응시 ${c.total}명</td></tr>`);
+    lines.push(`<tr><td colspan="6" class="section">📊 시험 결과 요약</td></tr>`);
+    lines.push(`<tr><th>평균</th><th>최고</th><th>최저</th><th>만점자</th><th>70점 미만</th><th>응시</th></tr>`);
+    lines.push(`<tr><td>${c.avg}점</td><td>${c.max}점</td><td>${c.min}점</td><td>${c.perfectCount||0}명</td><td>${c.lowCount||0}명</td><td>${c.total}명</td></tr>`);
+    lines.push(`<tr><td colspan="6" class="section">📋 학생별 성적</td></tr>`);
+    lines.push(`<tr><th style="width:50pt">등수</th><th style="width:80pt">학생</th><th style="width:60pt">점수</th><th style="width:300pt">객관식 오답 (학생답→정답)</th><th style="width:140pt">주관식 결과</th><th style="width:80pt">비고</th></tr>`);
+    (c.students||[]).forEach(s=>{
+      const cls = s.score>=90?"score-high":s.score>=70?"score-mid":"score-low";
+      const objWrongs = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답");
+      const subAll = (s.perQuestion||[]).filter(p=>p.type==="sub");
+      const objLine = objWrongs.length>0
+        ? objWrongs.map(p=>`${p.q}번: ${esc(p.studentAns||"빈칸")}→${esc(p.correctAns||"-")}`).join(", ")
+        : "-";
+      const subSummary = subAll.length>0
+        ? `정답 ${subAll.filter(p=>p.verdict==="정답").length} / 부분 ${subAll.filter(p=>p.verdict==="부분정답").length} / 오답 ${subAll.filter(p=>p.verdict==="오답").length}`
+        : "-";
+      const wrongCnt = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답").length;
+      const note = wrongCnt>0 ? `오답·부분 ${wrongCnt}` : "전부 정답";
+      lines.push(`<tr><td style="text-align:center">${s.rank}</td><td><b>${esc(s.name||"?")}</b></td><td class="${cls}" style="text-align:center">${s.score}점</td><td class="wrong" style="font-size:10pt">${esc(objLine)}</td><td style="font-size:10pt">${esc(subSummary)}</td><td style="font-size:10pt">${esc(note)}</td></tr>`);
     });
+    const subStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
+    if (subStudents.length>0) {
+      lines.push(`<tr><td colspan="6" class="section">📝 주관식 답안 상세 (오답·부분점수)</td></tr>`);
+      lines.push(`<tr><th style="width:80pt">학생</th><th style="width:50pt">문항</th><th style="width:50pt">점수</th><th style="width:200pt">학생답</th><th style="width:200pt">정답</th><th>AI 채점 사유</th></tr>`);
+      subStudents.forEach(s=>{
+        const subWrongs = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
+        subWrongs.forEach(p=>{
+          const wcls = p.verdict==="오답" ? "wrong" : "";
+          lines.push(`<tr class="sub"><td><b>${esc(s.name||"?")}</b></td><td style="text-align:center">${p.q}번</td><td style="text-align:center" class="${wcls}">${p.score}점</td><td style="font-size:10pt">${esc(p.studentAns||"(빈칸)")}</td><td class="correct" style="font-size:10pt">${esc(p.correctAns||"-")}</td><td style="font-size:9.5pt;color:#5C5C5C">${esc(p.reasoning||"")}</td></tr>`);
+        });
+      });
+    }
+    if (c.hardest && c.hardest.length>0) {
+      lines.push(`<tr><td colspan="6" class="section">🔥 어려운 문항 Top ${c.hardest.length}</td></tr>`);
+      lines.push(`<tr><th>순위</th><th>문항</th><th>틀린 학생</th><th>비율</th><th colspan="2">비고</th></tr>`);
+      c.hardest.forEach((h,hi)=>{
+        lines.push(`<tr><td style="text-align:center">${hi+1}</td><td style="text-align:center"><b>${h.q}번</b></td><td style="text-align:center">${h.wrong}명</td><td style="text-align:center">${h.pct}%</td><td colspan="2"></td></tr>`);
+      });
+    }
+    lines.push(`<tr><td colspan="6" style="font-size:9pt;color:#999;padding:8pt;text-align:center">채움학원 자동 채점 시스템 · ${new Date().toLocaleString("ko-KR")}</td></tr>`);
+    lines.push('</table></body></html>');
     const bom = "\uFEFF";
     const blob = new Blob([bom + lines.join("\n")], {type:"text/csv;charset=utf-8"});
     const url = URL.createObjectURL(blob);
@@ -1322,12 +1383,19 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     const fname = `${c.date||""}_${c.subject||""}_${c.grade||""}${c.level||""}반_${c.examType||""}_성적.csv`.replace(/[\\/:*?"<>|]/g,"");
     a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
   };
-  // ★ v22.8: Word(.doc) 다운로드 — 컴퓨터 자체 기능 (HTML→Word, AI 미사용)
+  // ★ v22.9: Word(.doc) 다운로드 — Word 정상 인식 메타태그 추가
   const downloadWord = (c)=>{
     const esc = (s)=>String(s||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     const lines = [];
-    lines.push('<!DOCTYPE html><html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">');
-    lines.push('<head><meta charset="utf-8"><title>반별 성적표</title>');
+    // ★ v22.9: Word MHT 형식 — Word가 정확히 인식하는 헤더
+    lines.push('<html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">');
+    lines.push('<head>');
+    lines.push('<meta http-equiv="Content-Type" content="text/html; charset=utf-8">');
+    lines.push('<meta name="ProgId" content="Word.Document">');
+    lines.push('<meta name="Generator" content="Microsoft Word 15">');
+    lines.push('<meta name="Originator" content="Microsoft Word 15">');
+    lines.push('<title>반별 성적표</title>');
+    lines.push('<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml><![endif]-->');
     lines.push('<style>');
     lines.push('@page { size: A4; margin: 2cm; }');
     lines.push('body { font-family: "Malgun Gothic","Noto Sans KR",sans-serif; color:#1a1a1a; line-height:1.55; }');
@@ -1406,11 +1474,12 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     lines.push('<div class="foot">채움학원 자동 채점 시스템 · ' + new Date().toLocaleString("ko-KR") + '</div>');
     lines.push('</body></html>');
     const html = lines.join('\n');
-    const blob = new Blob(['﻿'+html], {type:"application/msword"});
+    // ★ v22.9: BOM 제거 + UTF-8 명시 → Word 정상 인식
+    const blob = new Blob([html], {type:"application/vnd.ms-word;charset=utf-8"});
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const fname = `${c.date||""}_${c.subject||""}_${c.grade||""}${c.level||""}반_${c.examType||""}_성적표.doc`.replace(/[\\/:*?"<>|]/g,"");
-    a.href = url; a.download = fname; a.click();
+    document.body.appendChild(a); a.href = url; a.download = fname; a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url),1000);
   };
   // ★ v22.8: 시험지/답지 파일 모달
@@ -1502,11 +1571,13 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
             {(c.students||[]).map((s,si)=>{
               const k = `${key}:${s.name||"?"}:${si}`;
               const open = !!openWrongs[k];
-              const has = s.wrongQs && s.wrongQs.length>0;
-              // ★ v22.6: 부분점수 감지 + 문항별 상세 표시
+              // ★ v22.9: 재검증된 perQuestion 우선 사용 (옛 wrongQs 무시 — false-positive 방지)
               const showPQ = Array.isArray(s.perQuestion) && s.perQuestion.length>0;
               const partialCount = showPQ ? s.perQuestion.filter(p=>p.verdict==="부분정답").length : 0;
               const wrongPQ = showPQ ? s.perQuestion.filter(p=>p.verdict==="오답"||p.verdict==="부분정답") : [];
+              const wrongOnly = showPQ ? s.perQuestion.filter(p=>p.verdict==="오답") : [];
+              const wrongCountDisp = showPQ ? wrongOnly.length : ((s.wrongQs||[]).length);
+              const has = wrongCountDisp>0;
               const expandable = has || (showPQ && wrongPQ.length>0);
               return (
                 <div key={si} style={{background:s.score<LOW_THRESHOLD?T.dangerLight:s.score===100?T.goldPale:T.bg,borderRadius:6,fontSize:12,overflow:"hidden"}}>
@@ -1516,7 +1587,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                     <span style={{minWidth:50,fontWeight:700,color:scoreColor(s.score)}}>{s.score}점</span>
                     <span style={{flex:1,color:T.textSub,fontSize:11,textAlign:"right"}}>
                       {has ? (
-                        <span style={{color:T.danger,fontWeight:600}}>{open?"▼":"▶"} 틀린 {s.wrongQs.length}문항{partialCount>0?` · 부분 ${partialCount}`:""}</span>
+                        <span style={{color:T.danger,fontWeight:600}}>{open?"▼":"▶"} 틀린 {wrongCountDisp}문항{partialCount>0?` · 부분 ${partialCount}`:""}</span>
                       ) : partialCount>0 ? (
                         <span style={{color:T.goldDark,fontWeight:600}}>{open?"▼":"▶"} 부분점수 {partialCount}개</span>
                       ) : (
@@ -1528,20 +1599,20 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                     <div style={{padding:"8px 12px 10px 16px",fontSize:11,color:T.text,lineHeight:1.6,background:T.white,borderTop:`1px dashed ${T.border}`}}>
                       {showPQ && wrongPQ.length>0 ? (
                         <>
-                          {/* ★ v22.8: 객관식 — 한 블록에 압축 표시 (chip 스타일, 0점 표기 X) */}
+                          {/* ★ v22.9: 객관식 — 초압축 chip (q·student›correct) */}
                           {(()=>{
                             const objWrongs = wrongPQ.filter(p=>p.type==="obj");
                             if(objWrongs.length===0)return null;
                             return (
-                              <div style={{padding:"6px 10px",background:"#fff5f5",borderRadius:4,marginBottom:6,border:`1px solid #ffd0d0`}}>
-                                <div style={{fontSize:11,fontWeight:700,color:T.danger,marginBottom:4}}>❌ 객관식 오답 ({objWrongs.length})</div>
-                                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                              <div style={{padding:"5px 8px",background:"#fff5f5",borderRadius:4,marginBottom:5,border:`1px solid #ffd0d0`}}>
+                                <div style={{fontSize:10,fontWeight:700,color:T.danger,marginBottom:3}}>❌ 객관식 ({objWrongs.length})</div>
+                                <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
                                   {objWrongs.map((p,pi)=>(
-                                    <span key={pi} style={{display:"inline-block",padding:"2px 8px",background:T.white,border:`1px solid ${T.danger}40`,borderRadius:10,fontSize:11,fontWeight:600,color:T.text,whiteSpace:"nowrap"}}>
-                                      <span style={{color:T.danger,fontWeight:700}}>{p.q}번</span>
-                                      <span style={{margin:"0 3px",color:T.textMuted}}>:</span>
-                                      <span style={{color:T.danger}}>{p.studentAns||"빈칸"}</span>
-                                      <span style={{margin:"0 4px",color:T.textMuted}}>→</span>
+                                    <span key={pi} style={{display:"inline-block",padding:"1px 5px",background:T.white,border:`1px solid ${T.danger}33`,borderRadius:6,fontSize:10,fontWeight:600,color:T.text,whiteSpace:"nowrap",lineHeight:1.5}}>
+                                      <span style={{color:T.danger,fontWeight:700}}>{p.q}</span>
+                                      <span style={{color:T.textMuted,margin:"0 2px",fontSize:8}}>·</span>
+                                      <span style={{color:T.danger}}>{p.studentAns||"빈"}</span>
+                                      <span style={{color:T.textMuted,margin:"0 1px",fontSize:9}}>›</span>
                                       <span style={{color:T.accent,fontWeight:700}}>{p.correctAns||"-"}</span>
                                     </span>
                                   ))}
@@ -1569,7 +1640,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                           })}
                         </>
                       ) : has ? (
-                        <div style={{color:T.danger,wordBreak:"break-all"}}>❌ {s.wrongQs.join(", ")}</div>
+                        <div style={{color:T.danger,wordBreak:"break-all"}}>❌ {(showPQ?wrongOnly.map(p=>p.q):(s.wrongQs||[])).join(", ")}</div>
                       ) : null}
                     </div>
                   )}
@@ -1759,32 +1830,42 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                 {fileModalData.files.filter(f=>f.kind==="exam").length>0 && (
                   <div>
                     <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:6,padding:"4px 8px",background:T.bg,borderRadius:4}}>📄 시험지 ({fileModalData.files.filter(f=>f.kind==="exam").length})</div>
-                    {fileModalData.files.filter(f=>f.kind==="exam").map((f,fi)=>(
+                    {fileModalData.files.filter(f=>f.kind==="exam").map((f,fi)=>{
+                      const sizeMB = f.size?(f.size/1024/1024):0;
+                      const big = sizeMB > 5.5;
+                      return (
                       <div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 10px",background:T.white,border:`1px solid ${T.border}`,borderRadius:6,marginBottom:4}}>
                         <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
                           <div style={{fontSize:12,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.name}</div>
-                          <div style={{fontSize:10,color:T.textMuted}}>{f.size?Math.round(f.size/1024)+"KB":""}</div>
+                          <div style={{fontSize:10,color:T.textMuted}}>{f.size?(sizeMB>=1?sizeMB.toFixed(1)+"MB":Math.round(f.size/1024)+"KB"):""}{big?" · 큼 ⓘ":""}</div>
                         </div>
                         <button onClick={()=>proxyPreview&&proxyPreview(f.id,f.name)} disabled={!proxyPreview} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
                         <button onClick={()=>proxyDownload&&proxyDownload(f.id,f.name)} disabled={!proxyDownload} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
+                        <a href={`https://drive.google.com/file/d/${f.id}/view`} target="_blank" rel="noopener noreferrer" title="Drive 페이지에서 직접 열기 (실패 시 백업)" style={{padding:"5px 8px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.border}`,background:T.bg,color:T.textSub,cursor:"pointer",textDecoration:"none",fontFamily:"inherit"}}>↗</a>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
                 {/* 답지 그룹 */}
                 {fileModalData.files.filter(f=>f.kind==="answer").length>0 && (
                   <div>
                     <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:6,padding:"4px 8px",background:T.goldLight,borderRadius:4}}>🔑 답지 ({fileModalData.files.filter(f=>f.kind==="answer").length})</div>
-                    {fileModalData.files.filter(f=>f.kind==="answer").map((f,fi)=>(
+                    {fileModalData.files.filter(f=>f.kind==="answer").map((f,fi)=>{
+                      const sizeMB = f.size?(f.size/1024/1024):0;
+                      const big = sizeMB > 5.5;
+                      return (
                       <div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"8px 10px",background:T.goldPale,border:`1px solid ${T.goldMuted}`,borderRadius:6,marginBottom:4}}>
                         <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
                           <div style={{fontSize:12,fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{f.name}</div>
-                          <div style={{fontSize:10,color:T.textMuted}}>{f.size?Math.round(f.size/1024)+"KB":""}</div>
+                          <div style={{fontSize:10,color:T.textMuted}}>{f.size?(sizeMB>=1?sizeMB.toFixed(1)+"MB":Math.round(f.size/1024)+"KB"):""}{big?" · 큼 ⓘ":""}</div>
                         </div>
                         <button onClick={()=>proxyPreview&&proxyPreview(f.id,f.name)} disabled={!proxyPreview} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>👁 보기</button>
                         <button onClick={()=>proxyDownload&&proxyDownload(f.id,f.name)} disabled={!proxyDownload} style={{padding:"5px 10px",fontSize:11,fontWeight:700,borderRadius:5,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>⬇ 다운</button>
+                        <a href={`https://drive.google.com/file/d/${f.id}/view`} target="_blank" rel="noopener noreferrer" title="Drive 페이지에서 직접 열기 (실패 시 백업)" style={{padding:"5px 8px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.border}`,background:T.bg,color:T.textSub,cursor:"pointer",textDecoration:"none",fontFamily:"inherit"}}>↗</a>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3373,37 +3454,74 @@ export default function App(){
   // 대시보드 조회
   // 프록시 다운로드 — Apps Script가 base64로 파일을 서빙 → blob으로 변환해서 저장
   // 다른 구글 계정(권한 없는 선생님)도 다운 가능
-  // 파일을 base64로 받아서 Blob URL로 변환하는 공통 함수
+  // ★ v22.9: 큰 파일은 GAS가 mode:"url" 로 응답 → Drive 직접 링크 사용
+  const fetchFileMeta=async(fileId)=>{
+    let res, d;
+    try {
+      res = await fetch(`${SHEETS_URL}?action=download_file&id=${encodeURIComponent(fileId)}`);
+    } catch(eFetch) {
+      throw new Error("네트워크 오류: "+String(eFetch));
+    }
+    const ct = res.headers.get("content-type")||"";
+    if (!ct.includes("json")) {
+      // GAS가 HTML(로그인/오류 페이지) 반환한 경우
+      throw new Error("GAS 응답 형식 오류 (HTML 반환). 배포된 Web App URL을 확인하세요.");
+    }
+    try { d = await res.json(); }
+    catch(eJson) { throw new Error("JSON 파싱 실패: "+String(eJson)); }
+    if(d.result!=="ok") throw new Error(d.message||"파일 접근 실패");
+    return d;
+  };
   const fetchFileBlob=async(fileId)=>{
-    const res=await fetch(`${SHEETS_URL}?action=download_file&id=${encodeURIComponent(fileId)}`);
-    const d=await res.json();
-    if(d.result!=="ok")throw new Error(d.message||"파일 접근 실패");
+    const d = await fetchFileMeta(fileId);
+    if (d.mode === "url") {
+      // 큰 파일 — Drive 직접 링크 (blob 변환 불가, 호출자가 url 처리해야 함)
+      return {url: d.downloadUrl, viewUrl: d.viewUrl, mimeType: d.mimeType||"", name: d.name||"", mode:"url"};
+    }
     const bin=atob(d.data);const u8=new Uint8Array(bin.length);
     for(let i=0;i<bin.length;i++)u8[i]=bin.charCodeAt(i);
     const blob=new Blob([u8],{type:d.mimeType||"application/octet-stream"});
-    return{blob,mimeType:d.mimeType||"",name:d.name||""};
+    return{blob,mimeType:d.mimeType||"",name:d.name||"",mode:"base64"};
   };
   // 다운로드 (구글 계정 없이도 가능 — Apps Script 프록시)
   const proxyDownload=async(fileId,fileName)=>{
     try{
-      const{blob,name}=await fetchFileBlob(fileId);
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");a.href=url;a.download=fileName||name||"download";
+      const r = await fetchFileBlob(fileId);
+      if (r.mode === "url") {
+        // 큰 파일 — Drive 직접 다운로드 URL을 새 탭에서 열기
+        window.open(r.url, "_blank");
+        return;
+      }
+      const url=URL.createObjectURL(r.blob);
+      const a=document.createElement("a");a.href=url;a.download=fileName||r.name||"download";
       document.body.appendChild(a);a.click();document.body.removeChild(a);
       setTimeout(()=>URL.revokeObjectURL(url),1000);
-    }catch(err){alert("다운로드 실패: "+(err.message||err));}
+    }catch(err){
+      console.error("[proxyDownload]", err);
+      // 마지막 수단: Drive 보기 URL을 새 탭에서 열기 (사용자가 다운로드 가능할 수 있음)
+      const fallback = window.confirm(
+        "다운로드 실패: " + (err.message||err) +
+        "\n\nDrive 페이지에서 직접 열어볼까요?"
+      );
+      if (fallback) window.open(`https://drive.google.com/file/d/${fileId}/view`, "_blank");
+    }
   };
   // 미리보기 (구글 계정 없이도 가능 — Blob URL로 새 탭 열기)
   const proxyPreview=async(fileId,fileName)=>{
     try{
-      const{blob,mimeType}=await fetchFileBlob(fileId);
+      const r = await fetchFileBlob(fileId);
+      if (r.mode === "url") {
+        // 큰 파일 — Drive 보기 URL을 새 탭에서 열기
+        window.open(r.viewUrl || `https://drive.google.com/file/d/${fileId}/view`, "_blank");
+        return;
+      }
       // PDF·이미지는 브라우저에서 바로 표시
       const previewable=["application/pdf","image/png","image/jpeg","image/gif","image/webp"];
-      const url=URL.createObjectURL(blob);
-      if(previewable.includes(mimeType)){
+      const url=URL.createObjectURL(r.blob);
+      if(previewable.includes(r.mimeType)){
         const w=window.open("","_blank");
         if(w){
-          if(mimeType==="application/pdf"){
+          if(r.mimeType==="application/pdf"){
             w.document.write(`<html><body style="margin:0"><iframe src="${url}" style="width:100%;height:100vh;border:none"></iframe></body></html>`);
           } else {
             w.document.write(`<html><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="${url}" style="max-width:100%;max-height:100vh;object-fit:contain"></body></html>`);
@@ -3417,7 +3535,14 @@ export default function App(){
         setTimeout(()=>URL.revokeObjectURL(url),1000);
         alert("이 파일 형식은 미리보기가 지원되지 않아 다운로드됩니다.\n(PDF·이미지 형식만 미리보기 가능)");
       }
-    }catch(err){alert("미리보기 실패: "+(err.message||err));}
+    }catch(err){
+      console.error("[proxyPreview]", err);
+      const fallback = window.confirm(
+        "미리보기 실패: " + (err.message||err) +
+        "\n\nDrive 페이지에서 직접 열어볼까요?"
+      );
+      if (fallback) window.open(`https://drive.google.com/file/d/${fileId}/view`, "_blank");
+    }
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
   const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);setGradingMode("strict");setGradingModeAuto(true);
