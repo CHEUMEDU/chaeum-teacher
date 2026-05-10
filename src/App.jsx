@@ -2760,13 +2760,17 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [confirmedModalOpen, setConfirmedModalOpen] = useState(false);
   const toggleFiles = (k)=>setOpenFiles(p=>({...p,[k]:!p[k]}));
-  // ★ v23.1: 정답 보기 모달
+  // ★ v23.1/23.2: 정답 보기·편집 모달
   const [ansModalOpen, setAnsModalOpen] = useState(false);
   const [ansModalLoading, setAnsModalLoading] = useState(false);
   const [ansModalData, setAnsModalData] = useState({title:"", err:"", totalQ:0, answers:{}, types:{}, meta:{}});
+  const [ansEditMode, setAnsEditMode] = useState(false);
+  const [ansEditData, setAnsEditData] = useState({answers:{}, types:{}, totalQ:0});
+  const [ansEditSaving, setAnsEditSaving] = useState(false);
   const openAnswerModal = async (ex)=>{
     setAnsModalOpen(true);
     setAnsModalLoading(true);
+    setAnsEditMode(false);
     setAnsModalData({title:`${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`, err:"", totalQ:0, answers:{}, types:{}, meta:{}});
     try {
       const params = new URLSearchParams();
@@ -2790,6 +2794,57 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
       setAnsModalData(p=>({...p, err:"네트워크 오류: "+String(e)}));
     }
     setAnsModalLoading(false);
+  };
+  // ★ v23.2: 편집 모드 진입
+  const startAnsEdit = ()=>{
+    setAnsEditData({
+      answers: {...ansModalData.answers},
+      types: {...ansModalData.types},
+      totalQ: ansModalData.totalQ
+    });
+    setAnsEditMode(true);
+  };
+  // ★ v23.2: 편집 저장
+  const saveAnsEdit = async ()=>{
+    if (ansEditSaving) return;
+    const folderId = ansModalData.meta?.folderId;
+    if (!folderId) { alert("folderId 없음 — 저장 불가"); return; }
+    setAnsEditSaving(true);
+    try {
+      const params = new URLSearchParams();
+      params.set("action", "update_answer_key");
+      params.set("folderId", folderId);
+      params.set("answers", JSON.stringify(ansEditData.answers));
+      params.set("types", JSON.stringify(ansEditData.types));
+      params.set("totalQ", String(ansEditData.totalQ));
+      const r = await fetch(`${sheetsUrl}?${params.toString()}`);
+      const d = await r.json();
+      if (d.result === "ok") {
+        setAnsModalData(p=>({...p, answers:ansEditData.answers, types:ansEditData.types, totalQ:ansEditData.totalQ}));
+        setAnsEditMode(false);
+        alert("저장됐어요. 채점에 반영하려면 '오늘 재채점' 버튼을 눌러주세요.");
+      } else {
+        alert("저장 실패: " + (d.message||"알 수 없음"));
+      }
+    } catch(e) { alert("네트워크 오류: " + String(e)); }
+    setAnsEditSaving(false);
+  };
+  // ★ v23.2: 정답 행 삭제
+  const deleteAnsRow = async ()=>{
+    const folderId = ansModalData.meta?.folderId;
+    if (!folderId) { alert("folderId 없음 — 삭제 불가"); return; }
+    if (!window.confirm("정말 이 정답 데이터를 삭제할까요?\n\n삭제 후엔 학생이 새로 시험 보더라도 채점 불가능합니다.\n(원본 시험지/답지 파일은 Drive에 그대로 남습니다)")) return;
+    try {
+      const r = await fetch(`${sheetsUrl}?action=delete_answer_row&folderId=${encodeURIComponent(folderId)}`);
+      const d = await r.json();
+      if (d.result === "ok") {
+        alert("삭제 완료. 새로 답지를 등록하려면 '시험 등록' 탭을 이용해주세요.");
+        setAnsModalOpen(false);
+        loadDashboard();
+      } else {
+        alert("삭제 실패: " + (d.message||"알 수 없음"));
+      }
+    } catch(e) { alert("네트워크 오류: " + String(e)); }
   };
   // ★ v23.1: 파일 일괄 다운로드 (오늘 모든 시험지/답지)
   const [batchDlRunning, setBatchDlRunning] = useState(false);
@@ -2849,7 +2904,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
       <div style={{fontSize:36,marginBottom:4}}>📊</div>
       <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>{isDashToday?"오늘의 현황":`${dashDateLabel} 시험 현황`}</h1>
       <p style={{fontSize:13,color:T.textMuted}}>{isDashToday?"오늘":dashDateLabel} 시험 · 과목 · 학년 · 선생님별 분류</p>
-      <button onClick={()=>setConfirmedModalOpen(true)} style={{position:"absolute",top:20,right:0,padding:"8px 14px",fontSize:12,fontWeight:700,borderRadius:8,border:`1px solid ${T.gold}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>📖 확정 답지 조회</button>
+      {/* ★ v23.2: 확정 답지 조회 버튼 제거 — 각 시험 카드의 "정답 보기" 버튼으로 통합 */}
     </div>
     {/* [v21.0] AI 검수 대기 배너 */}
     {reviewCount > 0 && (
@@ -2867,74 +2922,103 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     )}
     {reviewModalOpen && <ReviewListModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>{setReviewModalOpen(false);loadReviewCount();}}/>}
     {confirmedModalOpen && <ConfirmedAnswersModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>setConfirmedModalOpen(false)}/>}
-    {/* ★ v23.1: 정답 보기 모달 */}
+    {/* ★ v23.2: 정답 보기·편집 모달 — 번호 순 통합, 편집/삭제 지원 */}
     {ansModalOpen && (
       <div onClick={()=>setAnsModalOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-        <div onClick={e=>e.stopPropagation()} style={{background:T.white,borderRadius:14,width:"100%",maxWidth:680,maxHeight:"86vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
-          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,background:T.goldPale,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div>
-              <div style={{fontSize:15,fontWeight:800,color:T.goldDeep}}>🔑 정답 데이터</div>
-              <div style={{fontSize:11,color:T.textSub,marginTop:2}}>{ansModalData.title}</div>
+        <div onClick={e=>e.stopPropagation()} style={{background:T.white,borderRadius:14,width:"100%",maxWidth:720,maxHeight:"88vh",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+          <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,background:T.goldPale,display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:15,fontWeight:800,color:T.goldDeep}}>🔑 정답 데이터 {ansEditMode&&<span style={{fontSize:11,padding:"2px 8px",background:T.danger,color:T.white,borderRadius:6,marginLeft:6}}>편집 중</span>}</div>
+              <div style={{fontSize:11,color:T.textSub,marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{ansModalData.title}</div>
             </div>
-            <button onClick={()=>setAnsModalOpen(false)} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
+            <button onClick={()=>{ if(ansEditMode&&!window.confirm("편집 내용 버리고 닫을까요?")) return; setAnsModalOpen(false); }} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
           </div>
           <div style={{flex:1,overflow:"auto",padding:14}}>
             {ansModalLoading && <div style={{padding:20,textAlign:"center",color:T.textMuted}}>로딩 중...</div>}
             {ansModalData.err && <div style={{padding:14,background:T.dangerLight,color:T.danger,borderRadius:8,fontSize:13,fontWeight:600,textAlign:"center"}}>{ansModalData.err}</div>}
             {!ansModalLoading && !ansModalData.err && ansModalData.totalQ > 0 && (()=>{
               const meta = ansModalData.meta || {};
-              const ans = ansModalData.answers || {};
-              const types = ansModalData.types || {};
-              const startN = meta.startNumber || 1;
               const total = ansModalData.totalQ || 0;
-              const objs = [], subs = [];
+              const startN = meta.startNumber || 1;
+              const ansSrc = ansEditMode ? ansEditData.answers : (ansModalData.answers||{});
+              const typSrc = ansEditMode ? ansEditData.types : (ansModalData.types||{});
+              const items = [];
+              let objN=0, subN=0;
               for (let i=0; i<total; i++) {
                 const num = String(startN + i);
-                const t = types[num] || types[i+1] || "obj";
-                const a = ans[num] !== undefined ? ans[num] : (ans[i+1] !== undefined ? ans[i+1] : "");
-                if (t === "sub") subs.push({num, ans:a});
-                else objs.push({num, ans:a});
+                const t = typSrc[num] || typSrc[i+1] || "obj";
+                const a = ansSrc[num] !== undefined ? ansSrc[num] : (ansSrc[i+1] !== undefined ? ansSrc[i+1] : "");
+                items.push({num, type:t, ans:a});
+                if (t==="sub") subN++; else objN++;
               }
+              const updateA = (num, v)=>setAnsEditData(p=>({...p, answers:{...p.answers, [num]:v}}));
+              const updateT = (num, v)=>setAnsEditData(p=>({...p, types:{...p.types, [num]:v}}));
               return (
                 <div>
+                  {/* 메타 정보 */}
                   <div style={{padding:"8px 12px",background:T.bg,borderRadius:6,marginBottom:10,fontSize:11,color:T.textSub,display:"flex",gap:12,flexWrap:"wrap"}}>
                     <span>👨‍🏫 <b>{meta.teacher||"-"}</b></span>
                     <span>📅 {meta.date||"-"}</span>
                     <span>📝 총 {total}문항</span>
-                    <span>🅰 객관식 {objs.length}</span>
-                    <span>✍️ 주관식 {subs.length}</span>
+                    <span>🅰 객관식 {objN}</span>
+                    <span>✍️ 주관식 {subN}</span>
                     {meta.setLabel && <span>📦 {meta.setLabel}</span>}
                   </div>
-                  {objs.length > 0 && (
-                    <div style={{marginBottom:14}}>
-                      <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:6}}>🅰 객관식 정답 ({objs.length})</div>
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(70px,1fr))",gap:4}}>
-                        {objs.map((q,qi)=>(
-                          <div key={qi} style={{padding:"6px 8px",background:T.goldLight,border:`1px solid ${T.goldMuted}`,borderRadius:6,fontSize:12,textAlign:"center"}}>
-                            <div style={{fontSize:10,color:T.textMuted,fontWeight:600}}>{q.num}번</div>
-                            <div style={{fontSize:14,fontWeight:800,color:T.goldDeep,marginTop:2}}>{q.ans||"-"}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {subs.length > 0 && (
-                    <div>
-                      <div style={{fontSize:12,fontWeight:700,color:T.goldDeep,marginBottom:6}}>✍️ 주관식 정답 ({subs.length})</div>
-                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                        {subs.map((q,qi)=>(
-                          <div key={qi} style={{padding:"7px 10px",background:T.bg,border:`1px solid ${T.border}`,borderRadius:6,display:"flex",gap:10,alignItems:"flex-start"}}>
-                            <div style={{minWidth:38,fontSize:11,fontWeight:700,color:T.goldDark}}>{q.num}번</div>
-                            <div style={{flex:1,fontSize:12,color:T.text,wordBreak:"break-word"}}>{q.ans||<span style={{color:T.danger}}>(빈칸)</span>}</div>
-                          </div>
-                        ))}
-                      </div>
+                  {/* 번호 순서대로 통합 표시 */}
+                  <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                    {items.map((q,qi)=>{
+                      const isObj = q.type === "obj";
+                      const bg = isObj ? T.goldLight : T.bg;
+                      const border = isObj ? T.goldMuted : T.border;
+                      return (
+                        <div key={qi} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",background:bg,border:`1px solid ${border}`,borderRadius:6}}>
+                          <div style={{minWidth:42,fontSize:11,fontWeight:800,color:T.goldDeep,textAlign:"center"}}>{q.num}번</div>
+                          {ansEditMode ? (
+                            <>
+                              <select value={q.type} onChange={e=>updateT(q.num, e.target.value)} style={{padding:"2px 6px",fontSize:11,border:`1px solid ${T.border}`,borderRadius:4,fontFamily:"inherit",background:T.white}}>
+                                <option value="obj">객관식</option>
+                                <option value="sub">주관식</option>
+                              </select>
+                              <input value={q.ans||""} onChange={e=>updateA(q.num, e.target.value)} placeholder={isObj?"예: 3":"정답 입력"} style={{flex:1,padding:"3px 8px",fontSize:12,border:`1px solid ${T.border}`,borderRadius:4,fontFamily:"inherit"}}/>
+                            </>
+                          ) : (
+                            <>
+                              <span style={{fontSize:9,padding:"1px 5px",borderRadius:6,background:isObj?T.goldDark:T.blue,color:T.white,fontWeight:700,whiteSpace:"nowrap"}}>{isObj?"🅰 객":"✍️ 주"}</span>
+                              <div style={{flex:1,fontSize:isObj?14:12,fontWeight:isObj?800:600,color:isObj?T.goldDeep:T.text,wordBreak:"break-word"}}>{q.ans?String(q.ans):<span style={{color:T.danger}}>(빈칸)</span>}</div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {/* 편집 모드: 문항 추가/감소 */}
+                  {ansEditMode && (
+                    <div style={{marginTop:10,padding:"8px 10px",background:T.bg,borderRadius:6,display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:11,color:T.textSub,fontWeight:600}}>총 문항 수:</span>
+                      <input type="number" min="1" max="200" value={ansEditData.totalQ} onChange={e=>setAnsEditData(p=>({...p, totalQ:Math.max(1,parseInt(e.target.value)||1)}))} style={{width:80,padding:"3px 6px",fontSize:12,border:`1px solid ${T.border}`,borderRadius:4,fontFamily:"inherit"}}/>
                     </div>
                   )}
                 </div>
               );
             })()}
           </div>
+          {/* 액션 버튼 영역 */}
+          {!ansModalLoading && !ansModalData.err && ansModalData.totalQ > 0 && (
+            <div style={{padding:"10px 14px",borderTop:`1px solid ${T.border}`,background:T.bg,display:"flex",gap:6,flexWrap:"wrap"}}>
+              {!ansEditMode ? (
+                <>
+                  <button onClick={startAnsEdit} style={{...S.btnG,flex:"1 1 30%",fontSize:12,padding:"8px 12px",background:T.goldDark}}>✏️ 정답 편집</button>
+                  <button onClick={deleteAnsRow} style={{flex:"1 1 30%",fontSize:12,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.danger}`,background:T.white,color:T.danger,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🗑 정답 삭제</button>
+                  <button onClick={()=>setAnsModalOpen(false)} style={{flex:"1 1 30%",fontSize:12,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>닫기</button>
+                </>
+              ) : (
+                <>
+                  <button disabled={ansEditSaving} onClick={saveAnsEdit} style={{...S.btnG,flex:"1 1 50%",fontSize:12,padding:"8px 12px",background:ansEditSaving?T.borderLight:T.accent,cursor:ansEditSaving?"wait":"pointer"}}>{ansEditSaving?"저장 중...":"💾 저장"}</button>
+                  <button onClick={()=>setAnsEditMode(false)} style={{flex:"1 1 30%",fontSize:12,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>취소</button>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
     )}
@@ -2989,13 +3073,12 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
         </div>
       );
       return(<>
-        {/* ── 5개 KPI 바 ── */}
-        <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:14}}>
+        {/* ── 4개 KPI 바 (★ v23.2: 검수 대기 제거 — 배너로만 노출) ── */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:14}}>
           {kpi("📋 등록 시험", allExams.length, T.goldDark)}
           {kpi("👥 예상 응시", expTot, T.blue)}
           {kpi("✅ 제출 완료", subTot, T.accent)}
           {kpi("📊 제출률", submitPct+"%", T.goldDark)}
-          {kpi("🔍 검수 대기", reviewCount, reviewCount>0?T.danger:T.textMuted)}
         </div>
         {/* ── 보조 알림 ── */}
         {(expTot>0||fileMissing>0)&&(
@@ -3143,7 +3226,8 @@ export default function App(){
   const[tcount,setTcount]=useState(""); // 반별 예상 인원
   const[classes,setClasses]=useState([]);
   // 시험 정보
-  const[examType,setExamType]=useState(_ls.lastExamType||""); // 직전 시험 종류 기억
+  // ★ v23.2: 시험 종류 자동 "시험" — UI에서 선택 제거됨 (CONE 연동 후 재도입 예정)
+  const[examType,setExamType]=useState("시험");
   // ★ v22.7: 주관식 채점 모드 (loose=해석/번역, strict=단답형)
   const[gradingMode,setGradingMode]=useState("strict");
   const[gradingModeAuto,setGradingModeAuto]=useState(true); // 자동 추천 상태 (선생님이 수동 변경 시 false)
@@ -3602,7 +3686,7 @@ export default function App(){
     }
   };
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
-  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);setGradingMode("strict");setGradingModeAuto(true);
+  const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("시험");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);setGradingMode("strict");setGradingModeAuto(true);
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
   return(
     <div style={S.app} className="app-shell">
@@ -3637,13 +3721,25 @@ export default function App(){
           <div style={{marginBottom:0}}>
             <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span><span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:6}}>(선생님목록에서 선택 · 다음부터 자동)</span></div>
             {teacherList.length>0?(
-              <select style={S.inp} value={teacher} onChange={e=>setTeacher(e.target.value)}>
+              <select style={S.inp} value={teacher} onChange={e=>{
+                const newName = e.target.value;
+                setTeacher(newName);
+                // ★ v23.2: 선생님 선택 시 과목 자동 매칭 (관리자는 수동)
+                const t = teacherList.find(x=>(x.name||x["이름"])===newName);
+                if (t) {
+                  const cat = String(t.category||t.subject||"").trim();
+                  const isAdmin = cat==="관리자" || cat==="기타" || /실장|데스크|원장|관리/.test(cat);
+                  if (!isAdmin && ["국어","영어","수학","과학","사회"].includes(cat)) {
+                    setTs(cat);
+                  }
+                }
+              }}>
                 <option value="">-- 선생님 선택 --</option>
                 {/* ★ 카테고리(관리자/국어/영어/수학) 우선 그룹핑, fallback 과목 */}
                 {["관리자","국어","영어","수학"].map(cat=>{
                   const catTeachers=teacherList.filter(t=>(t.category||t.subject)===cat);
                   if(catTeachers.length===0)return null;
-                  return(<optgroup key={cat} label={cat==="관리자"?cat:cat+"과"}>{catTeachers.map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>);
+                  return(<optgroup key={cat} label={cat==="관리자"?cat+" (직접 과목 선택)":cat+"과 (자동)"}>{catTeachers.map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>);
                 })}
                 {teacherList.filter(t=>!["관리자","국어","영어","수학"].includes(t.category||t.subject)).length>0&&(
                   <optgroup label="기타">{teacherList.filter(t=>!["관리자","국어","영어","수학"].includes(t.category||t.subject)).map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>
@@ -3725,7 +3821,8 @@ export default function App(){
         </div>
         <div style={S.card}>
           <div style={S.secLabel}>시험 정보</div>
-          <ExamTypeSelect val={examType} onChange={setExamType}/>
+          {/* ★ v23.2: 시험 종류 선택 제거 — 자동 "시험"으로 통일. CONE 연결 후 반/시험 분류 도입 예정.
+              과거 ExamTypeSelect 컴포넌트는 유지 (반별 성적 등 다른 화면에서 사용 가능). */}
           {/* ★ v22.7: 주관식 채점 모드 — examType 으로 자동 추천 + 수동 토글 */}
           <div style={{marginBottom:16,padding:"12px 14px",borderRadius:10,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
             <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:4,display:"flex",alignItems:"center",gap:6}}>
@@ -3750,16 +3847,24 @@ export default function App(){
             </div>
           </div>
           <div style={{marginBottom:16}}>
-            <div style={S.label}>시험 날짜 / 시간 <span style={{color:T.danger}}>*</span><span style={{fontSize:11,color:T.textMuted,fontWeight:400,marginLeft:6}}>(주중 5~10시 정각이 보통)</span></div>
+            <div style={S.label}>시험 날짜 / 시간 <span style={{color:T.danger}}>*</span></div>
             <div style={{display:"flex",gap:8,marginBottom:6}}>
               <input type="date" style={{...S.dateInp,flex:"1 1 55%"}} value={examDate} onChange={e=>setExamDate(e.target.value)}/>
               <input type="time" style={{...S.dateInp,flex:"1 1 40%",minWidth:0}} value={examTime} onChange={e=>setExamTime(e.target.value)}/>
             </div>
-            {/* ★ v23.1: 빠른 시간 선택 (자주 쓰는 정각 + 주말 옵션) */}
-            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+            {/* ★ v23.2: 빠른 시간 선택 — 주중 + 주말 분리 */}
+            <div style={{marginBottom:4,fontSize:10,color:T.textMuted,fontWeight:600}}>주중 (월~금)</div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
               {["17:00","18:00","19:00","20:00","21:00","22:00"].map(t=>{
                 const a = examTime===t;
                 return(<button key={t} type="button" onClick={()=>setExamTime(t)} style={{padding:"4px 10px",fontSize:11,fontWeight:700,borderRadius:14,border:`1px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{t}</button>);
+              })}
+            </div>
+            <div style={{marginBottom:4,fontSize:10,color:T.textMuted,fontWeight:600}}>주말 (토)</div>
+            <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+              {["11:00","12:00","13:00","14:00","15:00","16:00"].map(t=>{
+                const a = examTime===t;
+                return(<button key={t} type="button" onClick={()=>setExamTime(t)} style={{padding:"4px 10px",fontSize:11,fontWeight:700,borderRadius:14,border:`1px solid ${a?T.goldDark:T.border}`,background:a?T.gold:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{t}</button>);
               })}
               <button type="button" onClick={()=>{const now=new Date();setExamTime(`${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`);}} style={{padding:"4px 10px",fontSize:11,fontWeight:700,borderRadius:14,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>🕐 지금</button>
             </div>
