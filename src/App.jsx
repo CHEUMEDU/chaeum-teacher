@@ -290,8 +290,10 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
   const [pageTo, setPageTo] = useState("");
   const [selectedTypes, setSelectedTypes] = useState([{ type: "grammar", percentage: 100, subtypes: [] }]);
   const [questionCount, setQuestionCount] = useState(30);
+  const [customCountMode, setCustomCountMode] = useState(false);  // ★ v23.9: 문제수 직접입력 토글
   const [mcRatio, setMcRatio] = useState(60);
   const [difficulty, setDifficulty] = useState({ easy: 30, mid: 50, hard: 20 });
+  const [pdfFiles, setPdfFiles] = useState([]);  // ★ v23.9: PDF 첨부 [{name, base64, sizeMB}]
 
   // ── 호출/등록 상태 ──
   const [screen, setScreen] = useState("form"); // form | preview | done
@@ -389,10 +391,55 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
     setDifficulty({ easy: ne, mid: nm, hard: nh });
   };
 
-  // 비용 추정
-  const estCost = (()=>{ const base = { 10:120, 15:180, 20:240, 25:290, 30:350, 40:450, 50:560 }; return base[questionCount] || Math.round(questionCount * 11.5); })();
+  // 비용 추정 (PDF 첨부 시 +30% 가산)
+  const estCost = (()=>{
+    const base = { 10:120, 15:180, 20:240, 25:290, 30:350, 40:450, 50:560, 60:670, 70:780, 80:890, 100:1100 };
+    const raw = base[questionCount] || Math.round(questionCount * 11.5);
+    const withPdf = pdfFiles.length > 0 ? Math.round(raw * 1.3) : raw;
+    return withPdf;
+  })();
   const mcCount = Math.round((questionCount * mcRatio) / 100);
   const ssCount = questionCount - mcCount;
+
+  // ★ v23.9: PDF 업로드 핸들러
+  const handlePdfUpload = async (fileList) => {
+    const arr = Array.from(fileList || []);
+    if (arr.length === 0) return;
+    if (pdfFiles.length + arr.length > 3) {
+      alert("PDF는 최대 3개까지 첨부 가능합니다.");
+      return;
+    }
+    const newFiles = [];
+    for (const f of arr) {
+      if (!f.name.toLowerCase().endsWith('.pdf')) {
+        alert(`${f.name} 은(는) PDF가 아닙니다. PDF 파일만 첨부 가능합니다.`);
+        continue;
+      }
+      const sizeMB = f.size / 1024 / 1024;
+      if (sizeMB > 20) {
+        alert(`${f.name} 은(는) ${sizeMB.toFixed(1)}MB로 너무 큽니다 (최대 20MB).`);
+        continue;
+      }
+      try {
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result;
+            const idx = result.indexOf('base64,');
+            resolve(idx >= 0 ? result.substring(idx + 7) : result);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(f);
+        });
+        newFiles.push({ name: f.name, base64, sizeMB: parseFloat(sizeMB.toFixed(2)) });
+      } catch (e) {
+        alert(`${f.name} 읽기 실패: ${e.message}`);
+      }
+    }
+    if (newFiles.length > 0) setPdfFiles(p => [...p, ...newFiles]);
+  };
+
+  const removePdf = (idx) => setPdfFiles(p => p.filter((_, i) => i !== idx));
 
   // ── 생성 호출 ──
   const handleGenerate = async () => {
@@ -409,7 +456,12 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
     const timer = setInterval(() => setElapsed(e => e + 1), 1000);
 
     try {
-      const body = { bookCategory, bookName, ranges, rangeMode, testTypes: selectedTypes, questionCount, mcRatio, difficulty };
+      // ★ v23.9: PDF 첨부 포함
+      const body = {
+        bookCategory, bookName, ranges, rangeMode,
+        testTypes: selectedTypes, questionCount, mcRatio, difficulty,
+        pdfFiles: pdfFiles.map(f => ({ name: f.name, base64: f.base64 }))
+      };
       const r = await fetch(GENERATE_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -502,7 +554,7 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
         <div style={{ textAlign: "center", padding: "20px 0 12px" }}>
           <div style={{ fontSize: 36, marginBottom: 4 }}>📚</div>
           <h1 style={{ fontSize: 24, fontWeight: 800, color: T.text, marginBottom: 4 }}>AI 문제 생성</h1>
-          <p style={{ fontSize: 13, color: T.textMuted }}>Claude Sonnet 4.6 · 즉시 생성 · 자가 검증</p>
+          <p style={{ fontSize: 13, color: T.textMuted }}>Claude Sonnet 4.5 · PDF 첨부 가능 · 자가 검증</p>
         </div>
 
         {/* STEP 1: 교재 */}
@@ -598,17 +650,67 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
           )}
         </div>
 
-        {/* STEP 4: 문제 수 */}
+        {/* STEP 4: 문제 수 ★ v23.9: 직접입력 옵션 추가 */}
         <div style={S.card}>
-          <div style={S.secLabel}>4. 문제 수</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[10, 15, 20, 25, 30, 40, 50].map(n => (
-              <button key={n} onClick={() => setQuestionCount(n)}
-                style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${questionCount === n ? T.goldDark : T.border}`, background: questionCount === n ? T.goldLight : T.white, color: questionCount === n ? T.goldDark : T.textSub, fontWeight: questionCount === n ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+          <div style={S.secLabel}>4. 문제 수 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(최대 150개)</span></div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+            {[10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 100].map(n => (
+              <button key={n} onClick={() => { setQuestionCount(n); setCustomCountMode(false); }}
+                style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${!customCountMode && questionCount === n ? T.goldDark : T.border}`, background: !customCountMode && questionCount === n ? T.goldLight : T.white, color: !customCountMode && questionCount === n ? T.goldDark : T.textSub, fontWeight: !customCountMode && questionCount === n ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
                 {n}
               </button>
             ))}
+            <button onClick={() => setCustomCountMode(true)}
+              style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${customCountMode ? T.goldDark : T.border}`, background: customCountMode ? T.goldLight : T.white, color: customCountMode ? T.goldDark : T.textSub, fontWeight: customCountMode ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+              ✏️ 직접 입력
+            </button>
           </div>
+          {customCountMode && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+              <input type="number" min="1" max="150" value={questionCount}
+                onChange={e => {
+                  const v = Math.max(1, Math.min(150, parseInt(e.target.value) || 1));
+                  setQuestionCount(v);
+                }}
+                style={{ ...S.inp, width: 120 }} placeholder="문제수" />
+              <span style={{ fontSize: 12, color: T.textSub }}>문제 (1~150)</span>
+            </div>
+          )}
+          {questionCount > 70 && (
+            <div style={{ marginTop: 8, padding: "6px 10px", background: "#FFF7E6", border: "1px solid #FAAD14", borderRadius: 6, fontSize: 11, color: "#874D00" }}>
+              ⚠️ {questionCount}문제는 생성에 2~3분 정도 걸릴 수 있습니다.
+            </div>
+          )}
+        </div>
+
+        {/* ★ v23.9: STEP 4.5 — PDF 교재 첨부 (선택) */}
+        <div style={S.card}>
+          <div style={S.secLabel}>📎 교재 PDF 첨부 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(선택 · 최대 3개 · 각 20MB)</span></div>
+          <div style={{ fontSize: 11, color: T.textSub, marginBottom: 8, lineHeight: 1.6 }}>
+            💡 첨부하면 PDF 본문을 직접 분석해서 거기 나온 어휘·문장·예문 기반으로 출제합니다.<br />
+            첨부 안 해도 교재명·범위 기반으로 일반 수준의 문제 생성됩니다.
+          </div>
+          <input type="file" accept="application/pdf,.pdf" multiple
+            onChange={e => { handlePdfUpload(e.target.files); e.target.value = ''; }}
+            style={{ display: "block", marginBottom: 8, fontSize: 12 }} />
+          {pdfFiles.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              {pdfFiles.map((f, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: T.bg, borderRadius: 6, marginBottom: 4, fontSize: 12 }}>
+                  <span style={{ fontSize: 14 }}>📄</span>
+                  <span style={{ flex: 1, color: T.text, fontWeight: 600 }}>{f.name}</span>
+                  <span style={{ color: T.textMuted, fontSize: 11 }}>{f.sizeMB}MB</span>
+                  <button onClick={() => removePdf(i)}
+                    style={{ padding: "2px 8px", borderRadius: 4, border: `1px solid ${T.danger}`, background: T.white, color: T.danger, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
+                    ✕ 삭제
+                  </button>
+                </div>
+              ))}
+              <div style={{ marginTop: 6, padding: "4px 8px", background: T.accentLight, borderRadius: 4, fontSize: 11, color: T.accent, fontWeight: 600 }}>
+                ✓ {pdfFiles.length}개 PDF 첨부됨 — 본문 기반 출제로 진행됩니다
+              </div>
+            </div>
+          )}
         </div>
 
         {/* STEP 5: 객/서 비율 */}
@@ -656,13 +758,13 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
           <div style={S.secLabel}>7. 생성</div>
           <div style={{ padding: 14, background: T.goldPale, border: `1px solid ${T.gold}`, borderRadius: 10, marginBottom: 12 }}>
             <div style={{ fontSize: 13, color: T.textSub, lineHeight: 1.8 }}>
-              💰 예상 비용: <strong style={{ color: T.goldDark }}>약 {estCost}원</strong> (5분 내 재호출 시 90% 할인)<br />
-              ⏱ 예상 시간: 약 60~90초 · Claude Sonnet 4.6
+              💰 예상 비용: <strong style={{ color: T.goldDark }}>약 {estCost}원</strong>{pdfFiles.length > 0 ? ` (PDF ${pdfFiles.length}개 분석 +30%)` : ""} (5분 내 재호출 시 90% 할인)<br />
+              ⏱ 예상 시간: 약 {questionCount > 70 ? "120~180" : questionCount > 40 ? "80~120" : "60~90"}초 · Claude Sonnet 4.5{pdfFiles.length > 0 ? " + PDF 분석" : ""}
             </div>
           </div>
           <button onClick={handleGenerate} disabled={generating}
             style={{ ...S.btnG, width: "100%", opacity: generating ? 0.7 : 1, cursor: generating ? "wait" : "pointer" }}>
-            {generating ? `🤖 생성 중... ${elapsed}초 경과 (60~90초 소요)` : "🚀 문제 생성하기"}
+            {generating ? `🤖 생성 중... ${elapsed}초 경과 (${questionCount}문제${pdfFiles.length > 0 ? ` + PDF ${pdfFiles.length}개` : ""})` : "🚀 문제 생성하기"}
           </button>
         </div>
       </div>
