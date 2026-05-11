@@ -1322,7 +1322,8 @@ function DiffView({correct, student, T}) {
               <b>{i+1})</b>{" "}
               {g.type === "replace" ? (
                 <>
-                  <span style={{textDecoration:"line-through",color:"#C62828"}}>{g.from}</span>
+                  {/* ★ v23.6: 가이드 박스는 빨간 글씨만 (가독성 우선) — 취소선 제거 */}
+                  <span style={{color:"#C62828",fontWeight:600}}>{g.from}</span>
                   <span style={{margin:"0 4px"}}>→</span>
                   <b style={{color:"#2E7D32"}}>{g.to}</b>
                 </>
@@ -1462,15 +1463,29 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       sep();
     }
 
-    // ─── 주관식 상세 (정답 먼저, 학생답 다음, 점수+사유) ───
+    // ─── 주관식 상세 (정답 먼저, 학생답 다음, 점수+사유+수정가이드) ───
+    // ★ v23.6: 수정·추가 가이드를 텍스트로 정리해서 별도 컬럼에 포함
     const subStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
     if (subStudents.length>0) {
       out.push(row("[주관식 검토 (오답·부분점수)]"));
-      out.push(row("학생","문항","점수","정답","학생답","AI 채점 사유"));
+      out.push(row("학생","문항","점수","정답","학생답","수정·추가 가이드","AI 채점 사유"));
       subStudents.forEach(s=>{
         const w = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
         w.forEach(p=>{
-          out.push(row(s.name||"?", `${p.q})`, String(p.score||0), p.correctAns||"-", p.studentAns||"(빈칸)", p.reasoning||""));
+          // 수정·추가 가이드 텍스트 생성 (1) X→Y · 2) Z (추가) 형식)
+          let guideTxt = "";
+          if (p.correctAns && p.studentAns) {
+            try {
+              const ops = diffWordsKor(p.correctAns, p.studentAns);
+              const groups = groupDiffOps(ops);
+              const guides = groups.filter(g=>g.type==="replace"||g.type==="add");
+              guideTxt = guides.map((g,gi)=>{
+                if (g.type==="replace") return `${gi+1}) ${g.from}→${g.to}`;
+                return `${gi+1}) ${g.text} (추가)`;
+              }).join(" · ");
+            } catch(_e) {}
+          }
+          out.push(row(s.name||"?", `${p.q})`, String(p.score||0), p.correctAns||"-", p.studentAns||"(빈칸)", guideTxt, p.reasoning||""));
         });
       });
       sep();
@@ -1664,29 +1679,38 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const [fileModalOpen, setFileModalOpen] = useState(false);
   const [fileModalLoading, setFileModalLoading] = useState(false);
   const [fileModalData, setFileModalData] = useState({title:"", files:[], err:""});
-  // ★ v23.3: folderId 없어도 작동 — 정답목록에서 매칭 검색해서 폴더 찾음
+  // ★ v23.6: folderId 없어도 작동 — 정답목록에서 다단계 매칭 검색
+  //   - 1차: c.folderId (class_grades 가 이미 folderId 있는 행 우선 반환)
+  //   - 2차: view_answer_key 전체 메타 (subject+grade+level+examType+teacher+date)
+  //   - 3차: 레벨만 빼고 재시도 (다른 레벨로 등록되었을 수도 있음)
+  //   - 4차: 선생님까지 빼고 재시도 (다른 선생님 행에 폴더 있을 수도 있음)
   const openFileModal = async (c)=>{
     setFileModalOpen(true);
     setFileModalLoading(true);
     setFileModalData({title:`${c.subject} ${c.grade} ${c.level||""}반 · ${c.examType}`, files:[], err:""});
     try{
       let folderId = c.folderId;
-      // folderId 없으면 정답목록에서 검색
-      if (!folderId) {
-        const sp = new URLSearchParams();
-        sp.set("action","view_answer_key");
-        sp.set("subject", c.subject||"");
-        sp.set("grade", c.grade||"");
-        sp.set("level", c.level||"");
-        sp.set("examType", c.examType||"");
-        sp.set("teacher", c.teacher||"");
-        sp.set("date", c.date||"");
+      const tryLookup = async (params)=>{
+        const sp = new URLSearchParams({action:"view_answer_key", ...params});
         const lk = await fetch(`${sheetsUrl}?${sp.toString()}`);
         const ld = await lk.json();
-        if (ld.result === "ok" && ld.meta && ld.meta.folderId) folderId = ld.meta.folderId;
+        if (ld.result === "ok" && ld.meta && ld.meta.folderId) return ld.meta.folderId;
+        return "";
+      };
+      if (!folderId) {
+        // 2차 — 전체 메타
+        folderId = await tryLookup({subject:c.subject||"", grade:c.grade||"", level:c.level||"", examType:c.examType||"", teacher:c.teacher||"", date:c.date||""});
       }
       if (!folderId) {
-        setFileModalData(prev=>({...prev, err:"이 시험의 폴더 정보를 찾을 수 없어요. (직접 입력 모드로 등록됨)"}));
+        // 3차 — 레벨 제거
+        folderId = await tryLookup({subject:c.subject||"", grade:c.grade||"", examType:c.examType||"", teacher:c.teacher||"", date:c.date||""});
+      }
+      if (!folderId) {
+        // 4차 — 선생님 제거 (다른 선생님 폴더에라도 파일 있으면 OK)
+        folderId = await tryLookup({subject:c.subject||"", grade:c.grade||"", examType:c.examType||"", date:c.date||""});
+      }
+      if (!folderId) {
+        setFileModalData(prev=>({...prev, err:"이 시험은 시험지/답지 파일이 등록되지 않은 것 같아요.\n\n원본 PDF가 필요하면 '시험 등록' 탭에서 다시 업로드 해주세요."}));
         setFileModalLoading(false);
         return;
       }
@@ -1743,6 +1767,14 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     lines.push('.sub-correct { color:#2E7D32; font-weight:700; }');
     lines.push('.diff-add { background:#e8f5e9; color:#2E7D32; font-weight:700; padding:0 2pt; border-radius:2pt; border-bottom:2pt dotted #2E7D32; }');
     lines.push('.diff-del { background:#ffebee; color:#C62828; text-decoration:line-through; padding:0 2pt; border-radius:2pt; }');
+    /* ★ v23.6: 수정·추가 가이드 박스 (PDF/인쇄용) — 학생답 본문 아래에 따로 정리 */
+    lines.push('.guide-box { margin-top:5pt; padding:6pt 10pt; background:#f0f9f0; border:1pt dashed #66bb6a; border-radius:3pt; font-size:10pt; }');
+    lines.push('.guide-title { font-size:9pt; font-weight:700; color:#2E7D32; margin-bottom:3pt; }');
+    lines.push('.guide-item { color:#1B5E20; line-height:1.6; padding:1pt 0; }');
+    lines.push('.guide-from { color:#C62828; font-weight:600; }');  /* 가이드의 from은 빨간 글씨만 (취소선 X — 가독성) */
+    lines.push('.guide-to { color:#2E7D32; font-weight:700; }');
+    lines.push('.guide-arrow { margin:0 4pt; color:#666; }');
+    lines.push('.guide-add-tag { margin-left:4pt; font-size:9pt; color:#666; }');
     lines.push('.reasoning { color:#5C5C5C; font-size:10pt; margin-top:4pt; font-style:italic; }');
     lines.push('.foot { margin-top:24pt; padding-top:8pt; border-top:1pt solid #E8E4DA; color:#999; font-size:9pt; text-align:center; }');
     lines.push('@media print { body { background:#fff; padding:0; } .toolbar { display:none !important; } .sheet { box-shadow:none; padding:0; border-radius:0; } }');
@@ -1761,7 +1793,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       });
       lines.push('</div>');
     }
-    // 주관식 — 정답 먼저, 학생답 diff
+    // 주관식 — 정답 먼저, 학생답 diff + 수정 가이드 (v23.6: 가이드 박스 분리)
     const subW = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
     if (subW.length>0) {
       lines.push('<h2>📝 주관식 검토 ('+subW.length+'개)</h2>');
@@ -1770,19 +1802,35 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         lines.push(`<div class="sub-block${isWrong?" wrong":""}">`);
         lines.push(`<div><b>${p.q}번 (주관식, ${p.score}점)</b></div>`);
         lines.push(`<div style="margin-top:5pt"><b>✓ 정답:</b> <span class="sub-correct">${esc(p.correctAns||"-")}</span></div>`);
-        // diff 표시
+        // ★ v23.6: 학생답 본문 — 빨간 취소선만 (가독성 우선, add는 가이드 박스에 분리)
         const ops = diffWordsKor(p.correctAns||"", p.studentAns||"");
-        let diffHtml = "";
-        ops.forEach(o=>{
-          if (o.op==="keep") diffHtml += esc(o.text);
-          else if (o.op==="add") diffHtml += `<span class="diff-add">${esc(o.text)}</span>`;
-          else diffHtml += `<span class="diff-del">${esc(o.text)}</span>`;
+        const groups = groupDiffOps(ops);
+        let bodyHtml = "";
+        groups.forEach(g=>{
+          if (g.type==="keep") bodyHtml += esc(g.text) + " ";
+          else if (g.type==="del") bodyHtml += `<span class="diff-del">${esc(g.text)}</span> `;
+          else if (g.type==="replace") bodyHtml += `<span class="diff-del">${esc(g.from)}</span> `;
+          // add 는 본문에서 제외 (가이드 박스로)
         });
-        lines.push(`<div style="margin-top:3pt"><b>📝 학생답:</b> ${p.studentAns?diffHtml:'<i style="color:#C62828">(빈칸)</i>'}</div>`);
+        lines.push(`<div style="margin-top:3pt"><b>📝 학생답:</b> ${p.studentAns?bodyHtml:'<i style="color:#C62828">(빈칸)</i>'}</div>`);
+        // ★ v23.6: 수정·추가 가이드 박스 (취소선 X · 빨간 글씨만)
+        const guides = groups.filter(g=>g.type==="replace"||g.type==="add");
+        if (guides.length > 0) {
+          lines.push(`<div class="guide-box">`);
+          lines.push(`<div class="guide-title">🔧 수정·추가 가이드</div>`);
+          guides.forEach((g,gi)=>{
+            if (g.type==="replace") {
+              lines.push(`<div class="guide-item"><b>${gi+1})</b> <span class="guide-from">${esc(g.from)}</span><span class="guide-arrow">→</span><span class="guide-to">${esc(g.to)}</span></div>`);
+            } else {
+              lines.push(`<div class="guide-item"><b>${gi+1})</b> <span class="guide-to">${esc(g.text)}</span><span class="guide-add-tag">(추가)</span></div>`);
+            }
+          });
+          lines.push(`</div>`);
+        }
         if (p.reasoning) lines.push(`<div class="reasoning">💬 ${esc(p.reasoning)}</div>`);
         lines.push(`</div>`);
       });
-      lines.push('<div style="font-size:10pt;color:#666;margin-top:6pt;background:#f9f9f9;padding:6pt;border-radius:4pt"><span class="diff-add">초록</span> = 추가가 필요한 단어 · <span class="diff-del">빨강</span> = 빼야 할 단어</div>');
+      lines.push('<div style="font-size:10pt;color:#666;margin-top:6pt;background:#f9f9f9;padding:6pt;border-radius:4pt"><b style="color:#2E7D32">초록</b> = 추가 필요 · <span class="diff-del">빨강 취소선</span> = 빼야 함 (학생답 본문 표시) · <span class="guide-from">빨강 글씨</span> = 가이드의 원본 표현</div>');
     }
     if (objW.length===0 && subW.length===0) {
       lines.push('<h2>🎉 전부 정답!</h2><p>훌륭한 시험이었어요. 계속 이대로 잘해줘!</p>');
