@@ -3045,16 +3045,15 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     setAnsEditMode(false);
     setAnsModalData({title:`${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`, err:"", totalQ:0, answers:{}, types:{}, meta:{}});
     try {
+      // ★ v23.6: folderId 와 메타데이터 둘 다 보냄 — GAS 가 폴더ID 매칭 실패 시 메타데이터로 fallback
       const params = new URLSearchParams();
       if (ex.folderId) params.set("folderId", ex.folderId);
-      else {
-        params.set("subject", ex.subject||"");
-        params.set("grade", ex.grade||"");
-        params.set("level", ex.level||"");
-        params.set("examType", ex.examType||"");
-        params.set("teacher", ex.teacher||"");
-        params.set("date", ex.date||"");
-      }
+      params.set("subject", ex.subject||"");
+      params.set("grade", ex.grade||"");
+      params.set("level", ex.level||"");
+      params.set("examType", ex.examType||"");
+      if (ex.teacher) params.set("teacher", ex.teacher);
+      params.set("date", ex.date||"");
       const r = await fetch(`${sheetsUrl}?action=view_answer_key&${params.toString()}`);
       const d = await r.json();
       if (d.result === "ok") {
