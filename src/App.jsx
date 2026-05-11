@@ -1239,6 +1239,47 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
    - 기간 모드: 학생별 누적 흐름 (반 단위로 묶음, 학생 점수 추세)
    - 카드 제목: {과목} {학년} {레벨}반 · {시험명}  (👤 {선생님})
 */
+// ★ v23.3: 단순 단어 diff — LCS 기반. 정답에서 학생답으로 가는 변환 단계를 마킹
+//   반환: [{op:"keep"|"add"|"del", text:string, isSub:boolean(replace 쌍)}]
+//   - keep: 학생답에 그대로 있는 단어 (검정)
+//   - add: 정답에는 있지만 학생답에는 없는 단어 (초록 = "추가 필요")
+//   - del: 학생답에 있지만 정답에는 없는 단어 (빨강 취소선 = "빼야 할")
+function diffWordsKor(correct, student) {
+  const _tok = s => String(s||"").trim().split(/(\s+|[.,!?;:"'])/).filter(t => t && !/^\s+$/.test(t));
+  const a = _tok(correct), b = _tok(student);
+  const m = a.length, n = b.length;
+  // LCS DP
+  const dp = Array(m+1).fill(null).map(()=>Array(n+1).fill(0));
+  for (let i=1; i<=m; i++) for (let j=1; j<=n; j++) {
+    if (a[i-1] === b[j-1]) dp[i][j] = dp[i-1][j-1] + 1;
+    else dp[i][j] = Math.max(dp[i-1][j], dp[i][j-1]);
+  }
+  const ops = [];
+  let i=m, j=n;
+  while (i>0 && j>0) {
+    if (a[i-1] === b[j-1]) { ops.push({op:"keep", text:a[i-1]}); i--; j--; }
+    else if (dp[i-1][j] >= dp[i][j-1]) { ops.push({op:"add", text:a[i-1]}); i--; }
+    else { ops.push({op:"del", text:b[j-1]}); j--; }
+  }
+  while (i>0) { ops.push({op:"add", text:a[i-1]}); i--; }
+  while (j>0) { ops.push({op:"del", text:b[j-1]}); j--; }
+  return ops.reverse();
+}
+// React 컴포넌트로 렌더링
+function DiffView({correct, student, T}) {
+  if (!correct && !student) return null;
+  const ops = diffWordsKor(correct, student);
+  return (
+    <span style={{lineHeight:1.7}}>
+      {ops.map((o,i)=>{
+        if (o.op === "keep") return <span key={i}>{o.text}</span>;
+        if (o.op === "add") return <span key={i} style={{background:"#e8f5e9",color:"#2E7D32",fontWeight:700,padding:"0 2px",borderRadius:2,borderBottom:"2px dotted #2E7D32"}} title="추가 필요">{o.text}</span>;
+        return <span key={i} style={{background:"#ffebee",color:"#C62828",textDecoration:"line-through",padding:"0 2px",borderRadius:2}} title="빼야 함">{o.text}</span>;
+      })}
+    </span>
+  );
+}
+
 function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const LOW_THRESHOLD = 70; // ★ 미달 기준 고정 (70점 미만)
   const todayStr = (()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;})();
@@ -1318,53 +1359,74 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       return v;
     };
     const row = (...cells)=>cells.map(csvCell).join(",");
+    const sep = ()=>out.push(""); // 빈 줄 헬퍼 (그냥 줄바꿈)
     const out = [];
-    out.push(row("채움학원 — 반별 성적표"));
-    out.push(row(""));
-    out.push(row("과목","학년","반","시험명","날짜","선생님","응시"));
-    out.push(row(c.subject||"", c.grade||"", c.level||"", c.examType||"", c.date||"", c.teacher||"", String(c.total||0)));
-    out.push(row(""));
-    out.push(row("[ 시험 결과 요약 ]"));
-    out.push(row("평균","최고","최저","만점자","70점 미만","응시"));
-    out.push(row(`${c.avg}점`, `${c.max}점`, `${c.min}점`, `${c.perfectCount||0}명`, `${c.lowCount||0}명`, `${c.total}명`));
-    out.push(row(""));
-    out.push(row("[ 학생별 성적 ]"));
-    out.push(row("등수","학생","점수","객관식 오답 (학생답→정답)","주관식 정답","주관식 부분","주관식 오답","비고"));
+
+    // ─── 헤더 ───
+    out.push(row("[채움학원 반별 성적표]"));
+    out.push(row("시험 정보", `${c.subject||""} ${c.grade||""} ${c.level||""}반`, c.examType||"", `${c.date||""}`, `담당: ${c.teacher||"-"}`, `응시: ${c.total||0}명`));
+    sep();
+
+    // ─── 요약 ───
+    out.push(row("[시험 결과 요약]"));
+    out.push(row("평균","최고","최저","만점자","70점 미만"));
+    out.push(row(`${c.avg||0}`, `${c.max||0}`, `${c.min||0}`, `${c.perfectCount||0}`, `${c.lowCount||0}`));
+    sep();
+
+    // ─── 학생별 성적 (깔끔하게: 등수, 학생, 점수, 객관식오답수, 주관식 결과, 비고) ───
+    out.push(row("[학생별 성적]"));
+    out.push(row("등수","학생","점수","객관식 오답수","주관식 정답","주관식 부분","주관식 오답","비고"));
     (c.students||[]).forEach(s=>{
       const objWrongs = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답");
       const subAll = (s.perQuestion||[]).filter(p=>p.type==="sub");
-      const objLine = objWrongs.length>0
-        ? objWrongs.map(p=>`${p.q}번:${p.studentAns||"빈칸"}→${p.correctAns||"-"}`).join(" / ")
-        : "-";
       const subOk = subAll.filter(p=>p.verdict==="정답").length;
       const subPart = subAll.filter(p=>p.verdict==="부분정답").length;
       const subWrong = subAll.filter(p=>p.verdict==="오답").length;
       const wrongCnt = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답").length;
-      const note = wrongCnt>0 ? `오답·부분 ${wrongCnt}` : "전부 정답";
-      out.push(row(String(s.rank), s.name||"?", `${s.score}점`, objLine, String(subOk), String(subPart), String(subWrong), note));
+      const note = s.score===100 ? "만점" : s.score<70 ? "보충 필요" : wrongCnt===0 ? "양호" : "복습 권장";
+      out.push(row(String(s.rank||""), s.name||"?", String(s.score||0), String(objWrongs.length), String(subOk), String(subPart), String(subWrong), note));
     });
-    out.push(row(""));
-    const subStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
-    if (subStudents.length>0) {
-      out.push(row("[ 주관식 답안 상세 (오답·부분점수) ]"));
-      out.push(row("학생","문항","점수","학생답","정답","AI 채점 사유"));
-      subStudents.forEach(s=>{
-        const subWrongs = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
-        subWrongs.forEach(p=>{
-          out.push(row(s.name||"?", `${p.q}번`, `${p.score}점`, p.studentAns||"(빈칸)", p.correctAns||"-", p.reasoning||""));
+    sep();
+
+    // ─── 객관식 오답 상세 (학생별, 한 줄 한 학생) ───
+    const objStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답").length>0);
+    if (objStudents.length>0) {
+      out.push(row("[객관식 오답 상세]"));
+      out.push(row("학생","오답 번호","학생답","정답"));
+      objStudents.forEach(s=>{
+        const w = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답");
+        w.forEach(p=>{
+          out.push(row(s.name||"?", `${p.q})`, p.studentAns||"빈칸", p.correctAns||"-"));
         });
       });
-      out.push(row(""));
+      sep();
     }
-    if (c.hardest && c.hardest.length>0) {
-      out.push(row(`[ 어려운 문항 Top ${c.hardest.length} ]`));
-      out.push(row("순위","문항","틀린 학생","비율"));
-      c.hardest.forEach((h,hi)=>{
-        out.push(row(String(hi+1), `${h.q}번`, `${h.wrong}명`, `${h.pct}%`));
+
+    // ─── 주관식 상세 (정답 먼저, 학생답 다음, 점수+사유) ───
+    const subStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
+    if (subStudents.length>0) {
+      out.push(row("[주관식 검토 (오답·부분점수)]"));
+      out.push(row("학생","문항","점수","정답","학생답","AI 채점 사유"));
+      subStudents.forEach(s=>{
+        const w = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
+        w.forEach(p=>{
+          out.push(row(s.name||"?", `${p.q})`, String(p.score||0), p.correctAns||"-", p.studentAns||"(빈칸)", p.reasoning||""));
+        });
       });
-      out.push(row(""));
+      sep();
     }
-    out.push(row(`채움학원 자동 채점 시스템 · ${new Date().toLocaleString("ko-KR")}`));
+
+    // ─── 어려운 문항 ───
+    if (c.hardest && c.hardest.length>0) {
+      out.push(row(`[어려운 문항 Top ${c.hardest.length}]`));
+      out.push(row("순위","문항","틀린 학생","비율(%)"));
+      c.hardest.forEach((h,hi)=>{
+        out.push(row(String(hi+1), `${h.q})`, String(h.wrong), String(h.pct)));
+      });
+      sep();
+    }
+
+    out.push(row(`* 생성일: ${new Date().toLocaleString("ko-KR")} | 채움학원 자동 채점 시스템`));
     const bom = "﻿";
     const blob = new Blob([bom + out.join("\r\n")], {type:"text/csv;charset=utf-8"});
     const url = URL.createObjectURL(blob);
@@ -1542,16 +1604,33 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const [fileModalOpen, setFileModalOpen] = useState(false);
   const [fileModalLoading, setFileModalLoading] = useState(false);
   const [fileModalData, setFileModalData] = useState({title:"", files:[], err:""});
+  // ★ v23.3: folderId 없어도 작동 — 정답목록에서 매칭 검색해서 폴더 찾음
   const openFileModal = async (c)=>{
-    if(!c.folderId){
-      alert("이 시험은 폴더 정보가 없어 파일을 찾을 수 없어요.\n(직접 입력 모드로 등록된 시험)");
-      return;
-    }
     setFileModalOpen(true);
     setFileModalLoading(true);
     setFileModalData({title:`${c.subject} ${c.grade} ${c.level||""}반 · ${c.examType}`, files:[], err:""});
     try{
-      const r = await fetch(`${sheetsUrl}?action=list_folder_files&folderId=${encodeURIComponent(c.folderId)}`);
+      let folderId = c.folderId;
+      // folderId 없으면 정답목록에서 검색
+      if (!folderId) {
+        const sp = new URLSearchParams();
+        sp.set("action","view_answer_key");
+        sp.set("subject", c.subject||"");
+        sp.set("grade", c.grade||"");
+        sp.set("level", c.level||"");
+        sp.set("examType", c.examType||"");
+        sp.set("teacher", c.teacher||"");
+        sp.set("date", c.date||"");
+        const lk = await fetch(`${sheetsUrl}?${sp.toString()}`);
+        const ld = await lk.json();
+        if (ld.result === "ok" && ld.meta && ld.meta.folderId) folderId = ld.meta.folderId;
+      }
+      if (!folderId) {
+        setFileModalData(prev=>({...prev, err:"이 시험의 폴더 정보를 찾을 수 없어요. (직접 입력 모드로 등록됨)"}));
+        setFileModalLoading(false);
+        return;
+      }
+      const r = await fetch(`${sheetsUrl}?action=list_folder_files&folderId=${encodeURIComponent(folderId)}`);
       const d = await r.json();
       if(d.result==="ok"){
         setFileModalData(prev=>({...prev, files: d.files||[]}));
@@ -1578,6 +1657,82 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       </div>
     </div>
   );
+
+  // ★ v23.3: 학생 1명용 PDF — 인쇄용 새 탭 (반 PDF와 동일 양식, 단일 학생)
+  const downloadStudentPdf = (c, s)=>{
+    const esc = (str)=>String(str||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    const lines = [];
+    lines.push('<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">');
+    lines.push(`<title>${esc(s.name||"학생")} 성적표 - ${esc(c.subject)} ${esc(c.grade)} ${esc(c.examType)}</title>`);
+    lines.push('<style>');
+    lines.push('@page { size: A4; margin: 18mm 16mm; }');
+    lines.push('body { font-family:"Malgun Gothic","Noto Sans KR",sans-serif; color:#1a1a1a; line-height:1.55; margin:0; padding:24px; max-width:920px; margin:0 auto; background:#f5f5f5; }');
+    lines.push('.sheet { background:#fff; padding:32px; border-radius:8px; box-shadow:0 2px 12px rgba(0,0,0,0.08); }');
+    lines.push('.toolbar { background:#fff8e6; border:1px solid #f0d595; border-radius:8px; padding:12px 16px; margin-bottom:16px; display:flex; gap:8px; align-items:center; }');
+    lines.push('.toolbar button { padding:8px 14px; font-size:13px; font-weight:700; border-radius:6px; border:none; cursor:pointer; font-family:inherit; background:#B8860B; color:#fff; }');
+    lines.push('h1 { color:#B8860B; font-size:22pt; margin:0 0 6pt 0; border-bottom:2pt solid #D4A017; padding-bottom:6pt; }');
+    lines.push('h2 { color:#8B6914; font-size:14pt; margin:18pt 0 8pt 0; padding-bottom:3pt; border-bottom:1pt solid #E8E4DA; }');
+    lines.push('.meta { color:#5C5C5C; font-size:11pt; margin-bottom:14pt; }');
+    lines.push('.score-box { display:inline-block; padding:18pt 26pt; background:#FFF3D0; border:2pt solid #D4A017; border-radius:10pt; text-align:center; margin:6pt 0; }');
+    lines.push('.score-num { font-size:32pt; font-weight:800; color:#B8860B; line-height:1; }');
+    lines.push('.score-label { font-size:11pt; color:#5C5C5C; margin-top:4pt; }');
+    lines.push('.obj-chips { display:flex; flex-wrap:wrap; gap:5pt; margin:4pt 0; }');
+    lines.push('.obj-chip { padding:3pt 9pt; background:#FFEBEE; color:#C62828; border-radius:10pt; font-size:10.5pt; font-weight:600; }');
+    lines.push('.sub-block { margin:6pt 0; padding:8pt 12pt; background:#FFF8E6; border-left:3pt solid #D4A017; border-radius:3pt; page-break-inside:avoid; }');
+    lines.push('.sub-block.wrong { background:#FFEBEE; border-left-color:#C62828; }');
+    lines.push('.sub-correct { color:#2E7D32; font-weight:700; }');
+    lines.push('.diff-add { background:#e8f5e9; color:#2E7D32; font-weight:700; padding:0 2pt; border-radius:2pt; border-bottom:2pt dotted #2E7D32; }');
+    lines.push('.diff-del { background:#ffebee; color:#C62828; text-decoration:line-through; padding:0 2pt; border-radius:2pt; }');
+    lines.push('.reasoning { color:#5C5C5C; font-size:10pt; margin-top:4pt; font-style:italic; }');
+    lines.push('.foot { margin-top:24pt; padding-top:8pt; border-top:1pt solid #E8E4DA; color:#999; font-size:9pt; text-align:center; }');
+    lines.push('@media print { body { background:#fff; padding:0; } .toolbar { display:none !important; } .sheet { box-shadow:none; padding:0; border-radius:0; } }');
+    lines.push('</style></head><body>');
+    lines.push('<div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>');
+    lines.push('<div class="sheet">');
+    lines.push(`<h1>채움학원 — 개인 성적표</h1>`);
+    lines.push(`<div class="meta"><b>${esc(s.name||"?")}</b> (#${s.rank}) · ${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}<br/>📅 ${esc(c.date)} &nbsp; 👨‍🏫 ${esc(c.teacher||"-")}</div>`);
+    lines.push('<div class="score-box"><div class="score-num">'+(s.score||0)+'점</div><div class="score-label">반 평균 '+(c.avg||0)+'점 / 등수 #'+(s.rank||"-")+' / 응시 '+(c.total||0)+'명</div></div>');
+    // 객관식 오답
+    const objW = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답");
+    if (objW.length>0) {
+      lines.push('<h2>❌ 객관식 오답 ('+objW.length+'개)</h2><div class="obj-chips">');
+      objW.forEach(p=>{
+        lines.push(`<span class="obj-chip">${p.q}) ${esc(p.studentAns||"빈")} › <b>${esc(p.correctAns||"-")}</b></span>`);
+      });
+      lines.push('</div>');
+    }
+    // 주관식 — 정답 먼저, 학생답 diff
+    const subW = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
+    if (subW.length>0) {
+      lines.push('<h2>📝 주관식 검토 ('+subW.length+'개)</h2>');
+      subW.forEach(p=>{
+        const isWrong = p.verdict==="오답";
+        lines.push(`<div class="sub-block${isWrong?" wrong":""}">`);
+        lines.push(`<div><b>${p.q}번 (주관식, ${p.score}점)</b></div>`);
+        lines.push(`<div style="margin-top:5pt"><b>✓ 정답:</b> <span class="sub-correct">${esc(p.correctAns||"-")}</span></div>`);
+        // diff 표시
+        const ops = diffWordsKor(p.correctAns||"", p.studentAns||"");
+        let diffHtml = "";
+        ops.forEach(o=>{
+          if (o.op==="keep") diffHtml += esc(o.text);
+          else if (o.op==="add") diffHtml += `<span class="diff-add">${esc(o.text)}</span>`;
+          else diffHtml += `<span class="diff-del">${esc(o.text)}</span>`;
+        });
+        lines.push(`<div style="margin-top:3pt"><b>📝 학생답:</b> ${p.studentAns?diffHtml:'<i style="color:#C62828">(빈칸)</i>'}</div>`);
+        if (p.reasoning) lines.push(`<div class="reasoning">💬 ${esc(p.reasoning)}</div>`);
+        lines.push(`</div>`);
+      });
+      lines.push('<div style="font-size:10pt;color:#666;margin-top:6pt;background:#f9f9f9;padding:6pt;border-radius:4pt"><span class="diff-add">초록</span> = 추가가 필요한 단어 · <span class="diff-del">빨강</span> = 빼야 할 단어</div>');
+    }
+    if (objW.length===0 && subW.length===0) {
+      lines.push('<h2>🎉 전부 정답!</h2><p>훌륭한 시험이었어요. 계속 이대로 잘해줘!</p>');
+    }
+    lines.push('<div class="foot">채움학원 · ' + new Date().toLocaleString("ko-KR") + '</div>');
+    lines.push('</div></body></html>');
+    const w = window.open("", "_blank");
+    if (w) { w.document.open(); w.document.write(lines.join('\n')); w.document.close(); }
+    else alert("팝업이 차단되었어요. 주소창의 팝업 차단을 해제해 주세요.");
+  };
 
   // ★ 단일 모드 카드 렌더링
   const renderSingleCard = (c, key)=>{
@@ -1641,6 +1796,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                     <span style={{minWidth:32,fontSize:11,fontWeight:600,color:T.textMuted}}>#{s.rank}</span>
                     <span style={{minWidth:60,fontWeight:600,color:T.text}}>{s.name||"?"}</span>
                     <span style={{minWidth:50,fontWeight:700,color:scoreColor(s.score)}}>{s.score}점</span>
+                    {/* ★ v23.3: 학생별 PDF 다운로드 (각 점수 옆) */}
+                    <button onClick={(e)=>{e.stopPropagation();downloadStudentPdf(c,s);}} title={`${s.name||"학생"} 개인 성적표 PDF`} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:6,border:`1px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>📄 PDF</button>
                     <span style={{flex:1,color:T.textSub,fontSize:11,textAlign:"right"}}>
                       {has ? (
                         <span style={{color:T.danger,fontWeight:600}}>{open?"▼":"▶"} 틀린 {wrongCountDisp}문항{partialCount>0?` · 부분 ${partialCount}`:""}</span>
@@ -1665,9 +1822,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                                 <div style={{display:"flex",flexWrap:"wrap",gap:3}}>
                                   {objWrongs.map((p,pi)=>(
                                     <span key={pi} style={{display:"inline-block",padding:"1px 5px",background:T.white,border:`1px solid ${T.danger}33`,borderRadius:6,fontSize:10,fontWeight:600,color:T.text,whiteSpace:"nowrap",lineHeight:1.5}}>
-                                      <span style={{color:T.danger,fontWeight:700}}>{p.q}</span>
-                                      <span style={{color:T.textMuted,margin:"0 2px",fontSize:8}}>·</span>
-                                      <span style={{color:T.danger}}>{p.studentAns||"빈"}</span>
+                                      <span style={{color:T.danger,fontWeight:700}}>{p.q})</span>
+                                      <span style={{color:T.danger,marginLeft:3}}>{p.studentAns||"빈"}</span>
                                       <span style={{color:T.textMuted,margin:"0 1px",fontSize:9}}>›</span>
                                       <span style={{color:T.accent,fontWeight:700}}>{p.correctAns||"-"}</span>
                                     </span>
@@ -1686,9 +1842,17 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                                   <span style={{fontWeight:700,color:isWrong?T.danger:T.goldDark,fontSize:12}}>{p.q}번 (주관식)</span>
                                   <span style={{fontSize:10,fontWeight:700,color:isWrong?T.danger:T.goldDark}}>{p.score}점</span>
                                 </div>
-                                <div style={{fontSize:11,color:T.textSub,wordBreak:"break-all"}}>
-                                  <div>학생답: <span style={{color:isWrong?T.danger:T.text,fontWeight:600}}>"{p.studentAns||"(빈칸)"}"</span></div>
-                                  <div>정답: <span style={{color:T.accent,fontWeight:600}}>"{p.correctAns||"-"}"</span></div>
+                                <div style={{fontSize:11,color:T.textSub,wordBreak:"break-word"}}>
+                                  {/* ★ v23.3: 정답 먼저 + 학생답 diff 표시 */}
+                                  <div style={{marginBottom:3}}><span style={{color:T.accent,fontWeight:700,marginRight:4}}>✓ 정답:</span><span style={{color:T.text,fontWeight:500}}>{p.correctAns||"-"}</span></div>
+                                  <div style={{marginBottom:3}}>
+                                    <span style={{color:isWrong?T.danger:T.goldDark,fontWeight:700,marginRight:4}}>📝 학생답:</span>
+                                    {p.studentAns ? <DiffView correct={p.correctAns||""} student={p.studentAns||""} T={T}/> : <span style={{color:T.danger,fontStyle:"italic"}}>(빈칸)</span>}
+                                  </div>
+                                  <div style={{fontSize:9,color:T.textMuted,marginBottom:3}}>
+                                    <span style={{background:"#e8f5e9",color:"#2E7D32",padding:"0 4px",borderRadius:2,marginRight:4}}>초록</span>= 추가 필요 ·
+                                    <span style={{background:"#ffebee",color:"#C62828",padding:"0 4px",borderRadius:2,margin:"0 4px",textDecoration:"line-through"}}>빨강</span>= 빼야 함
+                                  </div>
                                   {p.reasoning && <div style={{marginTop:3,fontSize:10,color:T.textMuted,fontStyle:"italic"}}>💬 {p.reasoning}</div>}
                                 </div>
                               </div>
@@ -1720,7 +1884,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.goldDark}} title="새 탭에서 인쇄용 페이지 열기 (PDF 저장 / Word 복사 가능)">📄 인쇄·PDF</button>
           <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:80,background:T.accent}} title="CSV 다운로드 (Excel에서 바로 열기)">📊 CSV(엑셀)</button>
-          <button onClick={()=>openFileModal(c)} disabled={!c.folderId} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:c.folderId?T.blue:T.borderLight,color:c.folderId?T.white:T.textMuted,cursor:c.folderId?"pointer":"not-allowed"}} title={c.folderId?"시험지/답지 파일 보기":"폴더 정보 없음 (직접 입력 모드)"}>📁 시험지·답지</button>
+          <button onClick={()=>openFileModal(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.blue,color:T.white,cursor:"pointer"}} title="시험지/답지 파일 보기">📁 시험지·답지</button>
         </div>
       </div>
     );
@@ -2804,7 +2968,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     });
     setAnsEditMode(true);
   };
-  // ★ v23.2: 편집 저장
+  // ★ v23.3: 편집 저장 — 저장 후 자동 재채점 옵션
   const saveAnsEdit = async ()=>{
     if (ansEditSaving) return;
     const folderId = ansModalData.meta?.folderId;
@@ -2822,12 +2986,34 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
       if (d.result === "ok") {
         setAnsModalData(p=>({...p, answers:ansEditData.answers, types:ansEditData.types, totalQ:ansEditData.totalQ}));
         setAnsEditMode(false);
-        alert("저장됐어요. 채점에 반영하려면 '오늘 재채점' 버튼을 눌러주세요.");
+        // ★ v23.3: 저장 직후 자동 재채점 (이미 학생 답안 있으면 즉시 반영)
+        if (window.confirm("✅ 정답 저장 완료!\n\n학생 답안이 이미 있다면 지금 재채점할까요?\n(객관식은 즉시 / 주관식은 밤 11시 AI 채점에 반영)")) {
+          await forceRegradeCurrentExam();
+        }
       } else {
         alert("저장 실패: " + (d.message||"알 수 없음"));
       }
     } catch(e) { alert("네트워크 오류: " + String(e)); }
     setAnsEditSaving(false);
+  };
+  // ★ v23.3: 현재 모달의 시험 강제 재채점
+  const [regradeRunning, setRegradeRunning] = useState(false);
+  const forceRegradeCurrentExam = async ()=>{
+    const folderId = ansModalData.meta?.folderId;
+    if (!folderId) { alert("folderId 없음 — 재채점 불가"); return; }
+    if (regradeRunning) return;
+    setRegradeRunning(true);
+    try {
+      const r = await fetch(`${sheetsUrl}?action=force_regrade_by_folder&folderId=${encodeURIComponent(folderId)}`);
+      const d = await r.json();
+      if (d.result === "ok") {
+        alert(`💯 재채점 완료\n\n${d.message||""}`);
+        loadDashboard(); // 대시보드 즉시 갱신
+      } else {
+        alert("재채점 실패: " + (d.message||"알 수 없음"));
+      }
+    } catch(e) { alert("네트워크 오류: " + String(e)); }
+    setRegradeRunning(false);
   };
   // ★ v23.2: 정답 행 삭제
   const deleteAnsRow = async ()=>{
@@ -3007,9 +3193,10 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
             <div style={{padding:"10px 14px",borderTop:`1px solid ${T.border}`,background:T.bg,display:"flex",gap:6,flexWrap:"wrap"}}>
               {!ansEditMode ? (
                 <>
-                  <button onClick={startAnsEdit} style={{...S.btnG,flex:"1 1 30%",fontSize:12,padding:"8px 12px",background:T.goldDark}}>✏️ 정답 편집</button>
-                  <button onClick={deleteAnsRow} style={{flex:"1 1 30%",fontSize:12,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.danger}`,background:T.white,color:T.danger,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🗑 정답 삭제</button>
-                  <button onClick={()=>setAnsModalOpen(false)} style={{flex:"1 1 30%",fontSize:12,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>닫기</button>
+                  <button onClick={startAnsEdit} style={{...S.btnG,flex:"1 1 22%",fontSize:12,padding:"8px 10px",background:T.goldDark}}>✏️ 편집</button>
+                  <button onClick={forceRegradeCurrentExam} disabled={regradeRunning} style={{flex:"1 1 22%",fontSize:12,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${T.accent}`,background:regradeRunning?T.borderLight:T.accentLight,color:T.accent,fontWeight:700,cursor:regradeRunning?"wait":"pointer",fontFamily:"inherit"}} title="이 시험의 학생 답안을 현재 정답으로 다시 채점">{regradeRunning?"재채점 중...":"💯 재채점"}</button>
+                  <button onClick={deleteAnsRow} style={{flex:"1 1 22%",fontSize:12,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${T.danger}`,background:T.white,color:T.danger,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🗑 삭제</button>
+                  <button onClick={()=>setAnsModalOpen(false)} style={{flex:"1 1 22%",fontSize:12,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>닫기</button>
                 </>
               ) : (
                 <>
