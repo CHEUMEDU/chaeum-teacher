@@ -4,6 +4,16 @@
 // ============================================================
 // 버전 이력
 // ─────────────────────────────────────────
+// v23.8 (2026-05-11) — 의미 기반 채점 엔진으로 완전 전환 (학원 실무 피드백 최종 반영)
+//   ★ 표면 유사도 채점 → "학생이 핵심 의미를 이해했는지" 평가
+//   ★ 단답·영작·해석 3가지 시나리오 통합 처리
+//   ★ 동의어 사전 내장 ("양치하다"="이를 닦다", "챙긴다"="가지고 간다" 등)
+//   ★ 띄어쓰기·문장부호·반말/존댓말 차이 절대 감점 X
+//   ★ 단답형 — 문장 전체에 정답 단어 포함 시 80~100점 (기존: 0점)
+//   ★ 영작형은 문법 오류 엄격 검사 유지
+//   ★ 응답 스펙 새로 (questionNumber/isCorrect/reason/correctionGuide/acceptedExpressions)
+//   ★ 기존 frontend 호환 위한 변환 layer (q/category/reasoning/grammarTip 자동 매핑)
+//
 // v23.7 (2026-05-11) — 해석시험 채점 기준 대폭 완화 (학원 실무 피드백)
 //   ★ 동의어 절대 감점 X ("정말"="실로", "영향력"="영향", "이러한 이유로"="이 때문에")
 //   ★ 띄어쓰기·문장부호 절대 감점 X ("기울여야한다"="기울여야 한다")
@@ -25,7 +35,7 @@
 
 export const maxDuration = 60;
 
-const VERSION = "v23.7"; // ★ v23.7: 해석시험 채점 기준 대폭 완화 — 동의어·띄어쓰기·표현 차이 무감점, 핵심 의미만 보면 100점
+const VERSION = "v23.8"; // ★ v23.8: 의미 기반 채점 엔진 — 표면 유사도 → 학생이 핵심 의미를 이해했는지로 평가 기준 전환
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -33,198 +43,141 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type'
 };
 
-// 5단계 채점 기준 (엄격 — 단어/영작/단답)
+// ★ v23.8: 의미 기반 채점 엔진 — 학원 실무 피드백 완전 반영
+//   기존 표면 유사도 방식 → 의미 일치 방식으로 전환
+//   응답 필드도 새 스펙 (questionNumber/isCorrect/reason/correctionGuide/acceptedExpressions)
 const GRADING_RUBRIC = `
-당신은 영어/국어 학원의 주관식 답안 채점 전문가입니다.
-학생 답안을 정답과 비교하여 5단계 기준으로 정확하게 채점하세요.
+너는 중학생 영어 학원 주관식 답안을 채점하는 채점 엔진이다.
 
-## 5단계 채점 기준
+가장 중요한 원칙은 "정답 문장과 글자가 똑같은지"가 아니라 "학생이 영어 문장의 핵심 의미와 문법 포인트를 정확히 이해했는지"이다.
 
-### A. 감점 없음 (100점 — 완전정답)
-- 정답과 100% 일치, 대소문자/공백/문장부호 차이만 있음
-- 축약형(don't ↔ do not), 영/미 표기(colour ↔ color) 차이만 있음
+[채점 기본 원칙]
 
-### B. 경미한 오류 (-5% ~ -10%)
-- 관사 누락/혼동(a/an/the): -5%
-- 동사 수일치, 단복수, 가산/불가산: -5%
-- 1~2글자 철자 오타, 대명사 격, 전치사, 부사/형용사 혼동: -10%
-- 형태소 오류(-ing↔-ed), 잉여 단어 1개: -10%
+1. 의미가 같으면 표현이 달라도 정답으로 인정한다.
+- "우산을 가지고 간다" = "우산을 챙긴다" = "우산을 가져간다"
+- "이를 닦다" = "양치하다" = "치아를 닦다"
+- "식사한 후에" = "밥을 먹은 후에" = "먹은 뒤에"
+- "하루에 두 번" = "하루 두 번" = "매일 두 번"
+- "배가 고프지 않아도" = "배고프지 않아도"
+- "아침 수업이 있을 때" = "아침 수업이 있는 날/때"
+- "영향력" = "영향"
+- "정말" = "실로" = "참으로"
+- "이러한 이유로" = "이 때문에" = "그래서"
 
-### C. 중간 오류 (-15% ~ -20%)
-- 사역동사, 어순 변형, 시제, 태, 분사 형태 오류: -15%
-- 관계대명사, 접속사, 비교급, 조동사, 부정사/동명사 혼동: -15%
-- 핵심단어 1개 누락, 가정법 형태 오류: -20%
+2. 띄어쓰기, 문장부호, 존댓말/반말 차이는 감점하지 않는다.
+- "올것같을때" = "올 것 같을 때" (감점 X)
+- 마침표, 물음표 누락은 의미가 유지되면 감점 X
+- "일어나나요?" = "일어나니?" (의문 의미 같으면 감점 X)
+- "있을때" = "있을 때" (감점 X)
 
-### D. 심각한 오류 (-30% ~ -50%)
-- 의문문 어순, 한국어 직역, 의미 변형: -30%
-- 핵심단어 2개+ 누락: -40%
-- 핵심 구문 오류 (시제+태+조동사 동시): -50%
+3. 다음 핵심 요소는 반드시 확인한다.
+- 주어가 맞는가?
+- 동작/상태가 맞는가?
+- 부정문이면 부정 의미가 살아 있는가?
+- 의문문이면 질문 의미가 살아 있는가?
+- 빈도부사(always, usually, often 등)가 빠지지 않았는가?
+- 시간 접속사(before, after, when, while, until, as soon as 등)의 의미가 맞는가?
+- 조건/양보 표현(if, even if, although, even though 등)의 의미가 맞는가?
+- 영어 영작 문제에서는 주어, 동사, 시제, 수일치, 접속사 구조가 맞는가?
 
-### E. 결정적 오류 (-100% — 0점)
-- 파트 완전 누락, 미답, 의미 완전 변형, 단답/문장 형식 위반
+4. 한국어 해석형 문제는 자연스러운 한국어 표현을 폭넓게 인정한다.
+단, 직역투가 너무 심해서 의미가 불분명하거나 문장 구조가 무너지면 감점한다.
 
-## 채점 규칙
-1. 합산 적용 (여러 오류 시 모두 합산)
-2. 최저점 0점 보장 (감점 합 -120%여도 0점)
-3. 빈칸은 무조건 0점
-4. 모호하면 학생에게 관대하게
-5. 동의어 인정
-6. ★ 중요: deductions 합계와 score 가 정확히 일치해야 함 (100 + 합계 = score)
-7. ★ 단순 나열의 쉼표(,) 누락은 감점하지 않음
-   - 예: "balloon, honey, creative" ↔ "balloon honey creative" → 감점 X (단순 나열)
-   - 예: "Pooh, Honey" ↔ "Pooh Honey" → 감점 X
-   - 예: "사과, 배, 포도" ↔ "사과 배 포도" → 감점 X
-   - 단순 명사 나열에서 쉼표는 가독성 도구일 뿐 문법 포인트가 아님
-8. ★ 다음 경우의 쉼표 누락은 감점 (문법적 의미가 있음)
-   - 분사구문 분리 (예: "Walking down the street, I saw a dog")
-   - 부사절/주절 분리 (예: "When I came home, mom was cooking")
-   - 동격 구문 (예: "My friend, John, is here")
-   - 호격 (예: "Hello, Tom")
-   - 학생이 이런 경우 쉼표를 빼면 "문장부호 누락 -5%" 감점
+5. 영어 영작형 문제는 문법 오류를 더 엄격하게 본다.
+특히 다음 오류는 감점한다.
+- 3인칭 단수 현재 -s 누락
+- 시제 오류
+- 주어 누락
+- be동사/일반동사 혼동
+- 접속사 뒤 문장 구조 오류
+- 전치사 뒤 동사 형태 오류
+- 단어 순서가 영어 문장으로 성립하지 않는 경우
 
-## 응답 필드 (필수)
-- "q": 문항 번호
-- "score": 0~100 점수
-- "category": "A" / "B" / "C" / "D" / "E"
-- "deductions": [{type, amount, reason}, ...] (빈 배열 가능)
-- "reasoning": 채점 사유 (간략하게 1-2문장, 반말)
-- "grammarTip": ★ 학생 학습용 문법/구문 팁 (1-3문장)
+[점수 기준]
 
-## ★ grammarTip 작성 규칙 (매우 중요)
-- **반말로 친근하게** 쓰기 (과외 선생님이 학생에게 설명하듯)
-- **좋은 뉘앙스** — 부드럽고 격려하는 톤 (질책 X)
-- 학생이 이해할 수 있는 쉬운 표현
-- 핵심 문법 포인트 1-2개 + 짧은 예시
-- 정답인 경우 빈 문자열 ""
+100점:
+- 핵심 의미가 모두 맞고, 표현 차이만 있는 경우
+- 띄어쓰기, 문장부호, 어미 차이는 감점하지 않음
+- "양치하다"="이를 닦다", "챙기다"="가지고 가다" 같은 자연스러운 동의 표현은 100점
 
-좋은 예시 (이렇게 써):
-- "비교급은 'more~' 또는 '-er', 최상급은 'most~' 또는 '-est' 형태야. 'popular'는 긴 단어니까 'most popular' 로 써주면 돼!"
-- "여기는 분사구문이야. 동사를 -ing 형태로 바꾸면 '~하면서' 의미가 돼. 예) 'Walking down the street' = '거리를 걸어가면서'"
-- "to 부정사가 명사를 꾸밀 때는 '~할' 의미야. 'a movie to watch' = '볼 영화'. 외워두면 영작할 때 편해!"
+95점:
+- 핵심 의미는 맞지만 한국어 표현이 약간 어색한 경우 (직역투가 미세하게)
 
-나쁜 예시 (이렇게 쓰지 마):
-- "오류가 있습니다." (반말 X, 격식체)
-- "당신은 ~를 모르는 것 같습니다." (불쾌한 뉘앙스)
-- 너무 어려운 문법 용어만 나열
+90점:
+- 핵심 의미는 대체로 맞지만 일부 부사·어미·자연스러움·문장 순서에 약간의 문제
 
-## ★ overallComment (학생 총평) 별도 필드 — 응답 마지막에 1개
-- 학생 이름으로 시작 (예: "{학생이름} 학생")
-- 1~2 문장 반말로 친근하게
-- 학생의 강점과 약점을 모두 균형있게 언급
-- 격려 톤 (절대 깎아내리지 말기)
+80점:
+- 핵심 의미는 절반 이상 맞지만 중요한 요소 하나가 빠진 경우
+- 예: always, before/after, 부정 의미, 의문 의미, 주어 중 하나가 약해진 경우
 
-좋은 예시:
-- "유지인 학생, 객관식은 거의 다 맞췄는데 주관식 영작에서 작은 실수가 많았어. 단어 철자랑 시제만 좀 더 신경 쓰면 더 잘 할 수 있어!"
-- "유지인 학생, 시제랑 단복수 부분이 헷갈리는 것 같네. 그래도 의미는 잘 전달했어. 다음엔 'is/are' 같은 동사 변형을 한 번 더 체크해보자!"
-- "유지인 학생, 거의 만점에 가까운 점수야! 정말 잘했어. 한두 개 작은 철자 실수만 더 조심하면 완벽해."
-- "유지인 학생, 이번 시험은 좀 어려웠나봐. 괜찮아, 천천히 하나씩 다시 보자. 특히 비교급/최상급 부분 한 번 더 복습해봐."
+70점:
+- 대략적인 의미는 맞지만 문장이 매우 어색하거나 직역투가 심한 경우
+
+50점:
+- 일부 단어 또는 일부 의미만 맞고 전체 문장 의미가 불완전한 경우
+
+0점:
+- 정답과 핵심 의미가 다르거나, 요구한 답과 완전히 다른 경우
+- 빈칸·미답
+
+[단답형 문제 기준]
+
+정답이 before, after, when 같은 단어 하나인 경우:
+- 학생이 정확한 단어만 쓰면 100점
+- 대소문자 차이는 감점하지 않음
+- 학생이 문장 전체를 썼더라도 그 안에 정답 단어가 정확히 들어 있고 문법적으로 맞으면 80~100점으로 인정한다.
+- 정답 단어가 없거나 다른 접속사를 쓰면 0점
+- before와 when, after와 before처럼 의미가 달라지는 접속사는 오답
+
+[출력 형식 — 반드시 이 형식만 사용]
+
+각 문항마다 다음 JSON 형식으로 출력하라:
+
+{
+  "questionNumber": 번호,
+  "score": 0~100 정수,
+  "isCorrect": true 또는 false (90점 이상 true, 그 외 false),
+  "reason": "학생 답안이 왜 이 점수인지 1~2문장 반말로 짧고 명확하게",
+  "correctionGuide": ["필요한 경우에만 수정 가이드 1~3개"],
+  "acceptedExpressions": ["정답으로 인정한 동의 표현이 있으면"]
+}
+
+[★ 최종 주의 — 반드시 지킬 것]
+- 정답 문장과 똑같이 고치라고 하지 마라
+- 학생 답안이 의미상 맞으면 "정답 표현과 다르지만 의미가 같으므로 정답 인정"이라고 reason 에 명시하라
+- 불필요한 감점은 하지 마라
+- 그러나 영어 영작 문제의 문법 오류는 분명히 감점하라
+- correctionGuide 는 진짜 의미가 달라지는 경우에만 작성 (동의어 차이로 수정 권유 X)
+
+[overallComment — 학생 총평]
+응답 마지막에 학생 이름으로 시작하는 1~2문장 반말 격려 코멘트도 함께 제공하라.
+예: "유지인 학생, 의미 파악은 잘했어! 영작에서 시제만 한 번 더 체크하면 완벽해."
 `;
 
-// ★ v23.7: 유연 채점 기준 — 더 후하게 (학원 실무 피드백 반영)
-//   기존 v22.7 ~ v23.3 은 너무 엄격 → 동의어·띄어쓰기·표현 차이까지 감점했음
-//   v23.7 핵심: 핵심 의미만 통하면 100점 / 동의어·띄어쓰기는 절대 감점 X
-const GRADING_RUBRIC_LOOSE = `
-당신은 중·고등부 영어→한국어 해석/번역 시험 채점 전문가입니다.
-**관대하고 후한** 채점을 원칙으로 합니다.
-학생이 **영어 원문의 핵심 내용·주제·주장**을 이해했는지가 거의 전부입니다.
-표현·어휘 선택 차이는 거의 감점하지 마세요.
+// ★ v23.8: LOOSE 모드 = strict 모드의 의미 기반 채점 그대로 사용
+//   사용자 제공 프롬프트가 이미 통합형(단답·영작·해석 모두 처리)이라 동일 적용
+//   해석 모드는 영작 문법 엄격 부분을 무시하는 정도의 차이만
+const GRADING_RUBRIC_LOOSE = GRADING_RUBRIC + `
 
-## ★ 가장 중요한 원칙 (★★★ 절대 지킬 것)
-1. **핵심 의미만 통하면 100점** — 표현 차이는 무시
-2. **동의어·유사 표현·풀어쓴 표현은 정답** ("정말"="실로"="아주" / "이러한 이유로"="이 때문에"="그래서")
-3. **띄어쓰기는 절대 감점 안 함** ("기울여야 한다" = "기울여야한다")
-4. **문장부호 차이는 절대 감점 안 함** (마침표·쉼표 유무/위치)
-5. **조사 차이는 절대 감점 안 함** ("-는/-은/-이/-가/-을/-를/-에게/-한테")
-6. **어순 차이는 절대 감점 안 함** (한국어는 어순 자유)
-7. **약간의 의미 변형도 80~90점 인정** — 핵심을 알면 후하게
+## ★ 해석 모드 추가 가이드 (loose mode)
+이 시험은 영어→한국어 해석형 시험이다.
+- 영작 문법 엄격 검사는 적용하지 않는다 (학생이 한국어로 쓰니까)
+- 한국어 자연스러움만 평가
+- 의역·동의어·풀어쓴 표현 모두 100점 인정
+- 직역투가 매우 심해서 의미가 무너지는 경우에만 감점
 
-## ★ 동의어·유사어 인정 예시 (★★★ 절대 감점 X)
-- 정말 / 참으로 / 실로 / 진짜로 / 매우 → 다 같음
-- 영향력 / 영향 → 같음
-- 이러한 이유로 / 이 때문에 / 그래서 / 그러므로 → 같음
-- 형성하다 / 만들다 / 만들어내다 / 형성시키다 / 형성해주다 → 같음
-- 결정 / 선택 / 의사결정 → 거의 같음
-- 행동 / 행위 / 활동 / 행동방식 → 같음
-- 주의 / 관심 / 신경 → 같음
-- 세심한 / 면밀한 / 자세한 / 꼼꼼한 / 밀접한 → 같음
-- 노력 / 수고 / 힘 → 같음
-- 가능성이 높다 / 할 가능성이 있다 / 할 가능성이 크다 → 같음
-- 만들다 / 삼다 → 같음 ("습관으로 만들다" = "습관으로 삼다")
-- 알려주다 / 말하다 / 전하다 / 이야기하다 / 언급하다 → 같음
-- 보여주다 / 반영하다 / 드러내다 → 같음
-- 어떤 / 무엇인가 / 모든 → 자주 같이 쓰임
-- 분명 / 확실히 / 명백히 → 같음
-
-## ★ 표현 차이 인정 예시 (★★★ 절대 감점 X)
-- "행동에 의해 요구되는" = "행동을 하는 데 필요한" (수동·능동 차이만, 의미 동일)
-- "정도의 범위내로" = "정도로" (강조 표현)
-- "예측하는 것은 아니지만" = "예측하지는 않지만" (구조만 다름)
-- "우리가 행동하는 것은" = "우리의 행동은" (명사형/관계절 차이)
-- "그것이 편리하면" = "어떤 일이 편리하면" (대명사 사용)
-- "공공연한 행동" = "겉으로 드러나는 행동" = "외적 행동" (overt 의역)
-
-## ★ 띄어쓰기·문장부호 — 절대 무시
-- "기울여야한다" = "기울여야 한다" (100점)
-- "할 수 있다" = "할수있다" (100점)
-- ", 또는" = "또는" (100점)
-- 마침표 유무 (100점)
-- 쉼표 위치 차이 (100점)
-
-## 5단계 채점 기준 (해석 모드 — 매우 관대)
-
-### A. 완전정답 (95~100점) ★ 대부분 여기에 해당
-- **핵심 의미 통함** — 핵심 동사·명사·주어가 살아있으면 100점
-- 동의어·풀어쓴 표현·의역 자유롭게 — 모두 100점
-- 띄어쓰기·문장부호 차이 무시
-- 표현이 약간 어색해도 의미만 통하면 95~100점
-
-### B. 거의 정답 (85~95점) ★ 부분점수
-- 핵심은 맞으나 보조 어휘 1개 누락 or 의미가 살짝 다름
-- 핵심 동사·명사·주어 모두 OK
-- 예: "noted"를 "말했다"로 → 100점, "썼다"로 → 90점 (의미 살짝 다름)
-
-### C. 부분 정답 (60~85점)
-- 핵심 메시지의 70~80%만 전달
-- 핵심 어휘 1~2개 잘못 또는 누락
-- 시제 일부 잘못
-- 일부 문장만 해석 (나머지 누락)
-
-### D. 일부 오답 (30~60점)
-- 핵심 메시지의 30~50%만 전달
-- 주어·목적어가 잘못됨
-- 핵심 동사 의미 변형
-
-### E. 오답 (0~30점)
-- **핵심 내용을 이해하지 못함**
-- 의미가 반대 (긍정↔부정 반전)
-- 빈칸, 미답, 의미 없는 단어 나열
-
-## ★ 절대 감점하지 말 것 (★★★ 다시 강조)
-1. 어순 차이
-2. 조사 차이 (-는/-은/-이/-가/-을/-를)
-3. 띄어쓰기
-4. 문장부호 (마침표·쉼표)
-5. 동의어 사용 ("정말"↔"실로", "영향"↔"영향력")
-6. 풀어쓴 표현 ("한 단어" ↔ "두세 단어로 풀어쓴 표현")
-7. 능동·수동 표현 차이 (의미 같으면)
-8. 단복수 표현 ("어떤 행동" ↔ "모든 행동" — 일반화는 OK)
-9. 표현 다듬기 ("매우 좋다" ↔ "정말 좋다")
-
-## ★ 감점할 것 (★★★ 핵심)
-- 핵심 동사 의미 완전 변형 ("달리다" → "쉬다") → D
-- 핵심 명사 누락 또는 변형 → C/D
-- 시제 큰 오류 (과거 → 현재로 명백히 잘못) → C
-- 부정/긍정 반전 → E
-- 주어/목적어 완전히 바뀜 → D
-- 문장 일부 또는 전체 누락 (50% 이상) → D/E
-
-## ★ 점수 산정 가이드 (★★★ 관대하게)
-- 핵심 의미 전달 OK + 표현 차이만 있음 → **95~100점** (대부분 100점)
-- 핵심 의미 OK + 보조 어휘 1개 살짝 다름 → **90~95점**
-- 핵심 의미 OK + 보조 어휘 2개 누락 → **80~90점**
-- 핵심 의미 70% 전달 → 70~80점
-- 핵심 의미 50% 전달 → 50~70점
-- 핵심 의미 이해 못함 → 30점 이하
+위의 모든 동의어·표현 차이는 100점이다:
+- 영향력 / 영향
+- 정말 / 실로 / 참으로
+- 이러한 이유로 / 이 때문에 / 그래서
+- 형성하다 / 만들다 / 만들어내다
+- 양치하다 / 이를 닦다 / 치아를 닦다
+- 우산을 가지고 간다 / 우산을 챙긴다 / 우산을 가져간다
+- 식사한 후에 / 밥을 먹은 후에 / 먹은 뒤에
+- 하루에 두 번 / 하루 두 번 / 매일 두 번
+- 결정 / 선택 / 의사결정
+- 행동 / 행위 / 활동 / 행동방식
+`;
 
 ## 응답 필드 (필수)
 - "q": 문항 번호
@@ -587,16 +540,23 @@ async function gradeBatchViaGemini(items, gradingMode) {
     `[문항 ${it.q}]\n학생 답안: "${it.studentAnswer}"\n정답: "${it.correctAnswer}"` +
     (it.questionContext ? `\n맥락: ${it.questionContext}` : '')
   ).join('\n\n');
+  // ★ v23.8: 새 응답 형식 (사용자 제공 스펙) — questionNumber/isCorrect/reason/correctionGuide/acceptedExpressions
   const prompt = RUBRIC +
     `\n\n## 채점 모드: ${modeLabel}\n` +
     `## 채점 대상 (${items.length}개 문항)\n\n${promptItems}\n\n` +
     `## 응답 형식 (JSON 배열만 출력 — 마크다운 코드블록 금지)\n` +
     `[\n` +
-    items.map(it => `  {"q": "${it.q}", "score": 95, "category": "B", "deductions": [{"type":"...", "amount":-5, "reason":"..."}], "reasoning": "...", "grammarTip": "..."}`).join(',\n') +
-    `\n]\n\n각 문항을 위 채점 기준대로 평가해 ${items.length}개 항목 JSON 배열로만 응답하세요.\n` +
-    `★ 중요: deductions 합계와 score 가 정확히 일치 (100 + 합계 = score, 0 미만은 0)\n` +
-    `★ grammarTip: 학생이 이해할 수 있는 1-2문장 문법/구문 설명 (정답이면 "")` +
-    (isLoose ? `\n★ 해석 모드: 어순/조사 차이 절대 감점 금지. 의미 통하면 정답.` : '');
+    items.map(it => `  {"questionNumber": "${it.q}", "score": 100, "isCorrect": true, "reason": "정답 표현과 다르지만 의미가 같으므로 정답 인정", "correctionGuide": [], "acceptedExpressions": []}`).join(',\n') +
+    `\n]\n\n` +
+    `각 문항을 위 채점 기준대로 평가해 정확히 ${items.length}개 항목 JSON 배열로만 응답하세요.\n` +
+    `★ 핵심 원칙:\n` +
+    `  1. 의미가 같으면 100점 (동의어·표현 차이 절대 감점 X)\n` +
+    `  2. 띄어쓰기·문장부호·반말/존댓말 차이는 감점 X\n` +
+    `  3. correctionGuide 는 진짜 의미 변형이 있을 때만 (동의어 차이로 권유 금지)\n` +
+    `  4. acceptedExpressions 는 학생이 동의 표현을 썼을 때만 (예: ["챙긴다 = 가지고 간다"])\n` +
+    `  5. isCorrect: score >= 90 이면 true, 그 외 false\n` +
+    `  6. 영어 영작이면 문법 오류는 분명히 감점\n` +
+    `\n★ overallComment 는 별도 호출에서 처리하므로 응답에 포함 X. 채점 결과만 JSON 배열로 출력.`;
   const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
   try {
     const r = await fetch(url, {
@@ -639,6 +599,15 @@ async function gradeBatchViaGemini(items, gradingMode) {
   }
 }
 
+// ★ v23.8: 점수 → category 자동 매핑 (의미 기반 채점에서는 deductions 사용 X)
+function _scoreToCategory(score) {
+  if (score >= 95) return "A";
+  if (score >= 85) return "B";
+  if (score >= 60) return "C";
+  if (score >= 30) return "D";
+  return "E";
+}
+
 async function parseBatchResponse(r, items) {
   let text = '';
   try {
@@ -654,29 +623,62 @@ async function parseBatchResponse(r, items) {
       else if (parsed && Array.isArray(parsed.items)) parsed = parsed.items;
       else throw new Error("응답이 배열 아님");
     }
+    // ★ v23.8: 새 응답 형식 → 기존 frontend 호환 형식으로 변환
+    //   새 형식: { questionNumber, score, isCorrect, reason, correctionGuide[], acceptedExpressions[] }
+    //   구 형식: { q, score, category, deductions[], reasoning, grammarTip }
+    //   둘 다 처리 (q 와 questionNumber 모두 받아들임)
+    // _overall element 가 섞여 있으면 제거 (혹시 AI 가 무시하고 넣은 경우 대응)
+    parsed = parsed.filter(p => {
+      const qn = p.questionNumber !== undefined ? p.questionNumber : p.q;
+      return String(qn || "").indexOf("_overall") !== 0;
+    });
     return parsed.map(p => {
+      // 문항 번호 추출
+      const qNum = p.questionNumber !== undefined ? p.questionNumber : p.q;
       let score = parseInt(p.score, 10);
       if (isNaN(score) || score < 0) score = 0;
       if (score > 100) score = 100;
-      // ★ v22.3: deductions 합산으로 점수 재계산 (AI score 와 차이 5점 이상 시 deductions 우선)
-      const deductions = Array.isArray(p.deductions) ? p.deductions : [];
-      const totalDeduction = deductions.reduce((s, d) => s + Math.abs(Number(d.amount) || 0), 0);
-      const calculatedScore = Math.max(0, 100 - totalDeduction);
-      if (Math.abs(score - calculatedScore) > 5) {
-        // AI 점수와 deductions 합산이 5점 이상 차이 → deductions 합산을 신뢰
-        score = calculatedScore;
+      // 기존 deductions 사용 시에는 합산 검증 (구 형식 호환)
+      if (Array.isArray(p.deductions) && p.deductions.length > 0) {
+        const totalDed = p.deductions.reduce((s, d) => s + Math.abs(Number(d.amount) || 0), 0);
+        const calc = Math.max(0, 100 - totalDed);
+        if (Math.abs(score - calc) > 5) score = calc;
       }
-      // 메타 필드 보존 (parentQ, blank — 빈칸 분리 채점 시 사용)
-      const orig = items.find(it => String(it.q) === String(p.q));
+      // category: 새 형식 (isCorrect) 우선, 없으면 점수 → 자동 매핑
+      let category;
+      if (p.category) {
+        category = String(p.category).toUpperCase();
+      } else {
+        category = _scoreToCategory(score);
+      }
+      // reasoning: 새 형식 reason 우선
+      const reasoning = String(p.reason || p.reasoning || '');
+      // grammarTip: correctionGuide 배열 → 줄바꿈으로 합침 / 구 grammarTip
+      let grammarTip = '';
+      if (Array.isArray(p.correctionGuide) && p.correctionGuide.length > 0) {
+        grammarTip = p.correctionGuide.join("\n");
+      } else if (p.grammarTip) {
+        grammarTip = String(p.grammarTip);
+      }
+      // acceptedExpressions 있으면 reasoning 뒤에 부가 정보로 표시
+      let extraNote = '';
+      if (Array.isArray(p.acceptedExpressions) && p.acceptedExpressions.length > 0) {
+        extraNote = "\n인정 표현: " + p.acceptedExpressions.join(", ");
+      }
+      const orig = items.find(it => String(it.q) === String(qNum));
       return {
-        q: p.q,
+        q: qNum,
         parentQ: orig ? orig.parentQ : undefined,
         blank: orig ? orig.blank : undefined,
         score: score,
-        category: String(p.category || "?").toUpperCase(),
-        deductions: deductions,
-        reasoning: String(p.reasoning || ''),
-        grammarTip: String(p.grammarTip || '')  // ★ v22.3 추가
+        category: category,
+        deductions: Array.isArray(p.deductions) ? p.deductions : [],
+        reasoning: reasoning + extraNote,
+        grammarTip: grammarTip,
+        // ★ v23.8: 새 필드 보존 (frontend 에서 활용 가능)
+        isCorrect: typeof p.isCorrect === 'boolean' ? p.isCorrect : (score >= 90),
+        correctionGuide: Array.isArray(p.correctionGuide) ? p.correctionGuide : [],
+        acceptedExpressions: Array.isArray(p.acceptedExpressions) ? p.acceptedExpressions : []
       };
     });
   } catch (e) {
