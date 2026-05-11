@@ -3875,24 +3875,105 @@ export default function App(){
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
   const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("시험");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);setGradingMode("strict");setGradingModeAuto(true);
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
+  // ★ v23.4: 탭 메타 정보 (사이드바 + 모바일 하단탭 공유)
+  const _navTabs = [
+    {k:"register",  label:"시험 등록",   icon:"📋", section:"main"},
+    {k:"dashboard", label:"오늘의 현황", icon:"📊", section:"main"},
+    {k:"stats",     label:"반별 성적",   icon:"📈", section:"main"},
+    {k:"generator", label:"문제 생성",   icon:"📚", section:"tools"},
+    {k:"teachers",  label:"선생님 관리", icon:"👥", section:"tools"}
+  ];
   return(
     <div style={S.app} className="app-shell">
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:${T.bg}}input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-shadow:0 0 0 3px ${T.goldLight}!important}@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}@keyframes spin{to{transform:rotate(360deg)}}.fade-up{animation:fadeUp .3s ease-out}::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}
-/* ── 반응형: 모바일 스타일 유지 (좌우폭 480px 고정) ── */
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:'Noto Sans KR',-apple-system,sans-serif;background:${T.bg}}
+input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-shadow:0 0 0 3px ${T.goldLight}!important}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+.fade-up{animation:fadeUp .3s ease-out}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-thumb{background:${T.border};border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:${T.gold}}
+
+/* ★ v23.4: 반응형 — 데스크탑은 사이드바, 모바일/태블릿은 하단탭 */
+.app-shell{display:flex;min-height:100vh;max-width:1400px;margin:0 auto;background:${T.bg}}
+.main-content{flex:1;min-width:0;padding-bottom:0}
+
+/* ── 사이드바 (데스크탑 전용 ≥ 769px) ── */
+.sidebar{width:228px;background:linear-gradient(180deg,${T.goldDeep} 0%,${T.goldDark} 100%);padding:22px 14px;color:#fff;flex-shrink:0;position:sticky;top:0;height:100vh;overflow-y:auto;display:flex;flex-direction:column}
+.sb-logo-row{display:flex;align-items:center;gap:10px;margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid rgba(255,255,255,.18)}
+.sb-logo-icon{width:38px;height:38px;border-radius:10px;background:#fff;color:${T.goldDark};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;flex-shrink:0;letter-spacing:-0.5px}
+.sb-brand{font-size:14px;font-weight:800;line-height:1.2}
+.sb-brand .sub{font-size:10px;opacity:.8;font-weight:500;display:block;margin-top:2px}
+.sb-section{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:rgba(255,255,255,.55);margin:14px 0 6px;padding:0 8px}
+.sb-item{padding:10px 12px;display:flex;align-items:center;gap:10px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:600;margin-bottom:3px;color:rgba(255,255,255,.85);transition:all .15s;font-family:inherit;border:none;background:transparent;width:100%;text-align:left}
+.sb-item:hover{background:rgba(255,255,255,.12)}
+.sb-item.active{background:#fff;color:${T.goldDeep};box-shadow:0 4px 14px rgba(0,0,0,.12);font-weight:800}
+.sb-item .ic{font-size:15px;width:20px;text-align:center}
+.sb-teacher{margin-top:auto;padding:11px 12px;background:rgba(0,0,0,.18);border-radius:10px;font-size:11px;line-height:1.5}
+.sb-teacher b{font-weight:800;font-size:12.5px}
+
+/* ── 모바일 상단바 + 하단탭 (≤ 768px) ── */
+.mobile-topbar{display:none;padding:14px 16px;background:#fff;border-bottom:1px solid ${T.border};position:sticky;top:0;z-index:99;align-items:center;gap:10px}
+.mobile-topbar .logo-icon{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,${T.gold},${T.goldDark});color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:10px;letter-spacing:-0.5px}
+.mobile-topbar h1{flex:1;font-size:14px;font-weight:800;color:${T.text};letter-spacing:-.2px}
+.mobile-topbar h1 .sub{font-size:10px;color:${T.textMuted};font-weight:500;display:block;margin-top:1px}
+.mobile-teacher{padding:5px 10px;background:${T.goldLight};color:${T.goldDark};border-radius:8px;font-size:10.5px;font-weight:700;white-space:nowrap}
+.mobile-tabbar{display:none;position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid ${T.border};padding:6px 0 max(10px,env(safe-area-inset-bottom));z-index:200;box-shadow:0 -4px 20px rgba(0,0,0,.06)}
+.mobile-tabbar-inner{display:flex;max-width:540px;margin:0 auto}
+.mb-tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;padding:7px 0;background:none;border:none;font-family:inherit}
+.mb-tab .ic{font-size:18px;color:${T.textMuted};transition:all .15s}
+.mb-tab .lb{font-size:9.5px;color:${T.textMuted};font-weight:700}
+.mb-tab.active .ic{color:${T.goldDark};transform:translateY(-2px)}
+.mb-tab.active .lb{color:${T.goldDark}}
+
+@media (max-width: 768px){
+  .app-shell{flex-direction:column}
+  .sidebar{display:none}
+  .mobile-topbar{display:flex}
+  .mobile-tabbar{display:block}
+  .main-content{padding-bottom:80px}
+  .wrap, [class*="wrap"]{padding-left:14px !important;padding-right:14px !important}
+}
+@media (min-width: 769px){
+  .mobile-topbar, .mobile-tabbar{display:none !important}
+}
 `}</style>
-      <header style={S.hdr}><div style={S.hdrIn} className="hdr-inner"><div style={S.logoR}><div style={S.logoM}>채움</div><div><div style={S.hdrT}>채움학원</div><div style={S.hdrS}>시험 등록 (선생님용)</div></div></div>{teacher&&<div style={S.hdrB}>👤 {teacher}</div>}</div></header>
-      {/* ═══ 상단 탭 (home 에서만 표시) ═══ */}
-      {screen==="home"&&(<div style={{display:"flex",flexWrap:"wrap",gap:6,padding:"10px 14px 0"}}>
-        {[
-          {k:"register",label:"📋 시험 등록"},
-          {k:"dashboard",label:"📊 오늘의 현황"},
-          {k:"stats",label:"📊 반별 성적"},
-          {k:"generator",label:"📚 문제 생성"},
-          {k:"teachers",label:"👥 선생님 관리"}
-        ].map(tb=>(
-          <button key={tb.k} onClick={()=>setTab(tb.k)} style={{flex:"1 1 100px",minWidth:100,padding:"10px",fontSize:12,fontWeight:700,borderRadius:10,border:"none",cursor:"pointer",fontFamily:"inherit",background:tab===tb.k?T.goldDark:T.white,color:tab===tb.k?T.white:T.textSub,boxShadow:tab===tb.k?"none":`inset 0 0 0 1.5px ${T.border}`}}>{tb.label}</button>
+
+      {/* ════ 데스크탑: 좌측 사이드바 (≥ 769px) ════ */}
+      <nav className="sidebar">
+        <div className="sb-logo-row">
+          <div className="sb-logo-icon">C-ONE</div>
+          <div className="sb-brand">채움학원<span className="sub">선생님 콘솔 v23.4</span></div>
+        </div>
+        <div className="sb-section">메인</div>
+        {_navTabs.filter(t=>t.section==="main").map(t=>(
+          <button key={t.k} className={"sb-item"+(tab===t.k?" active":"")} onClick={()=>setTab(t.k)}>
+            <span className="ic">{t.icon}</span><span>{t.label}</span>
+          </button>
         ))}
-      </div>)}
+        <div className="sb-section">도구</div>
+        {_navTabs.filter(t=>t.section==="tools").map(t=>(
+          <button key={t.k} className={"sb-item"+(tab===t.k?" active":"")} onClick={()=>setTab(t.k)}>
+            <span className="ic">{t.icon}</span><span>{t.label}</span>
+          </button>
+        ))}
+        {teacher && (
+          <div className="sb-teacher">
+            <b>👤 {teacher}</b>
+            <div style={{opacity:.75,marginTop:2}}>{(teacherList||[]).find(t=>(t.name||t["이름"])===teacher)?.category||(teacherList||[]).find(t=>(t.name||t["이름"])===teacher)?.subject||"-"}</div>
+          </div>
+        )}
+      </nav>
+
+      <div className="main-content">
+        {/* ════ 모바일: 상단바 (≤ 768px) ════ */}
+        <div className="mobile-topbar">
+          <div className="logo-icon">C-ONE</div>
+          <h1>채움학원<span className="sub">선생님 콘솔</span></h1>
+          {teacher && <div className="mobile-teacher">👤 {teacher}</div>}
+        </div>
       {/* ═══ 일괄 프린트 탭 ═══ */}
       {/* ★ v23.1: 일괄 프린트 탭 제거 — 오늘의 현황의 "파일 일괄 다운로드" 버튼으로 대체 */}
       {/* ═══ 반별 성적 탭 (v20.4) ═══ */}
@@ -4303,14 +4384,27 @@ export default function App(){
         </div>
       </div>)}
       {error&&<div style={{position:"fixed",bottom:80,left:"50%",transform:"translateX(-50%)",background:T.dangerLight,color:T.danger,padding:"10px 20px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:999}}>{error}</div>}
+      </div> {/* /.main-content */}
+
+      {/* ════ 모바일/태블릿: 하단 탭바 (≤ 768px) ════ */}
+      <nav className="mobile-tabbar">
+        <div className="mobile-tabbar-inner">
+          {_navTabs.map(t=>(
+            <button key={t.k} className={"mb-tab"+(tab===t.k?" active":"")} onClick={()=>setTab(t.k)}>
+              <span className="ic">{t.icon}</span>
+              <span className="lb">{t.label}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
     </div>
   );
 }
 const S={
-  app:{fontFamily:"'Noto Sans KR',-apple-system,sans-serif",background:T.bg,minHeight:"100vh",maxWidth:960,margin:"0 auto",paddingBottom:20},
+  // ★ v23.4: app shell 은 CSS 클래스(.app-shell)에서 flex 처리, max-width 1400으로 확장
+  app:{fontFamily:"'Noto Sans KR',-apple-system,sans-serif",background:T.bg,minHeight:"100vh"},
   hdr:{background:T.white,borderBottom:`1px solid ${T.border}`,position:"sticky",top:0,zIndex:100},
-  hdrIn:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px",maxWidth:960,margin:"0 auto"},
-  // NOTE: maxWidth는 CSS 클래스(.app-shell, .hdr-inner)로 반응형 오버라이드됨
+  hdrIn:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 16px"},
   logoR:{display:"flex",alignItems:"center",gap:10},logoM:{width:36,height:36,borderRadius:10,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,color:T.white,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:13,letterSpacing:-1},
   hdrT:{fontSize:15,fontWeight:800,color:T.text,letterSpacing:-.3},hdrS:{fontSize:10,color:T.textMuted,fontWeight:500,marginTop:-1},
   hdrB:{fontSize:10,fontWeight:600,color:T.goldDark,background:T.goldLight,padding:"4px 10px",borderRadius:20,whiteSpace:"nowrap"},
