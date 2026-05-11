@@ -491,17 +491,25 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       else{alert("등록 실패: "+(d.message||""));}
     }catch(e){alert("등록 오류: "+e);}
   };
-  // ★ v14: A세트 ↔ B세트 교체 (백업 세트로 swap)
+  // ★ v23.7: A세트 ↔ B세트 교체 — text/plain + 응답 검증 (no-cors silent 실패 제거)
   const swapExamSet=async(rowIndex,activeNow)=>{
     const targetLabel=activeNow==="A"?"B":"A";
     if(!confirm(`현재 ${activeNow}세트가 학생앱에 노출 중입니다.\n${targetLabel}세트로 교체하시겠습니까?\n\n학생들이 보는 시험 문제가 즉시 바뀝니다.`))return;
     try{
-      const r=await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({action:"swap_exam_set",rowIndex})});
-      // no-cors라 응답 못 읽음 → 낙관적 처리 + 새로고침
-      alert(`✅ ${targetLabel}세트로 교체 요청을 보냈습니다.\n잠시 후 새로고침하면 바뀐 결과가 보입니다.`);
-      setTimeout(loadHistory,1500);
-    }catch(e){alert("교체 오류: "+e);}
+      const r=await fetch(sheetsUrl,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain;charset=utf-8"},
+        body:JSON.stringify({action:"swap_exam_set",rowIndex})
+      });
+      const text=await r.text();
+      let d; try{d=JSON.parse(text);}catch(_e){d={result:"error",message:text.substring(0,100)};}
+      if(d.result==="ok"||d.result==="success"){
+        alert(`✅ ${targetLabel}세트로 교체 완료!\n학생앱에 즉시 반영됩니다.`);
+        loadHistory();
+      }else{
+        alert(`❌ 교체 실패\n\n사유: ${d.message||"알 수 없는 오류"}\n\n다시 시도해주세요.`);
+      }
+    }catch(e){alert("네트워크 오류: "+String(e));}
   };
   // 생성 요청 삭제
   const deleteExamGen=async(rowIndex)=>{
@@ -513,50 +521,115 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
       else{alert("삭제 실패: "+(d.message||""));}
     }catch(e){alert("삭제 오류: "+e);}
   };
-  // OMR 시험 등록 (선택한 세트의 문제를 정답목록에 저장)
+  // ★ v23.7: OMR 시험 등록 — 안정화 (응답 검증 + 자동 재시도 + 사후 역검증)
+  // ─ 이전 버그: mode:"no-cors" + application/json 으로 응답을 못 읽어 silent 실패 발생 가능
+  // ─ 신뢰 패턴: text/plain (CORS simple request) → 응답 읽기 → result 검증 → 실패시 재시도
   const registerExam=async()=>{
     if(!preview||!preview.sets||preview.sets.length===0)return alert("문제 데이터가 없습니다.");
     const chosenSet=preview.sets[selectedSet];
     if(!chosenSet)return alert("세트를 선택하세요.");
     const qs=chosenSet.questions||[];
     if(qs.length===0)return alert("문제가 없습니다.");
-    // ★ 정답을 객체 형태로 변환 (1-based 키) — 학생앱 채점 호환
+    // ─── ① 전송 전 무결성 검증 — 빈 정답·중복 번호·문항수 불일치 차단 ───
     const answersObj={};const typesObj={};
+    const emptyQs=[];const dupQs=[];
     qs.forEach((q,i)=>{
       const qNum=String(q.number||(i+1));
-      answersObj[qNum]=q.type==="mc"?q.answer:String(q.answer||"");
+      if(answersObj[qNum]!==undefined)dupQs.push(qNum);
+      const ans=q.type==="mc"?q.answer:String(q.answer||"");
+      if(ans===undefined||ans===null||String(ans).trim()==="")emptyQs.push(qNum);
+      answersObj[qNum]=ans;
       typesObj[qNum]=q.type==="mc"?"obj":"sub";
     });
+    if(dupQs.length>0){
+      return alert(`❌ 등록 차단 — 중복된 문항 번호: ${dupQs.join(", ")}\n\n생성기 데이터에 문제가 있어요.\n미리보기를 닫고 재생성하거나 새로고침 후 다시 시도하세요.`);
+    }
+    if(Object.keys(answersObj).length!==qs.length){
+      return alert(`❌ 등록 차단 — 문항 수 불일치\n시도: ${qs.length}개 / 정답 등록 예정: ${Object.keys(answersObj).length}개\n\n번호가 중복되었거나 누락된 것 같아요. 재생성 권장.`);
+    }
+    if(emptyQs.length>0){
+      if(!confirm(`⚠️ 정답이 비어있는 문항: ${emptyQs.join(", ")}\n\n이 문항은 학생이 채점받지 못합니다.\n그래도 등록할까요?`))return;
+    }
+    // ─── ② 메타 추출 ───
+    const tcParts=(preview.targetClass||"").split(/\s+/);
+    const regSubject=tcParts[0]||"영어";
+    const regGrade=tcParts[1]||"";
+    const regLevel=(tcParts[2]||"").replace(/반$/,"");
+    const _pgSetType=(preview.setType||"").trim();
+    const body={
+      action:"save_answer_key",
+      subject:regSubject,
+      grade:regGrade,
+      level:regLevel,
+      examType:"문제생성기",
+      setType:_pgSetType,
+      round:_pgSetType||`세트${["A","B","C"][selectedSet]}`,
+      totalQuestions:qs.length,
+      answers:answersObj,
+      types:typesObj,
+      teacher:preview.teacher||"",
+      studentCount:0,
+      className:preview.targetClass||"",
+      date:new Date().toISOString().split("T")[0].replace(/-/g,".")
+    };
     setSending(true);
-    try{
-      // targetClass에서 과목/학년/레벨 추출 (예: "영어 중3 A반" → subject="영어", grade="중3", level="A")
-      const tcParts=(preview.targetClass||"").split(/\s+/);
-      const regSubject=tcParts[0]||"영어";
-      const regGrade=tcParts[1]||"";
-      const regLevel=(tcParts[2]||"").replace(/반$/,"");
-      // 문제생성기 경로: setType(이론편/실전편/혼합)이 있으면 우선 사용, 없으면 세트 A/B/C 라벨
-      const _pgSetType=(preview.setType||"").trim();
-      await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          action:"save_answer_key",
-          subject:regSubject,
-          grade:regGrade,
-          level:regLevel,
-          examType:"문제생성기",
-          setType:_pgSetType,
-          round:_pgSetType||`세트${["A","B","C"][selectedSet]}`,
-          totalQuestions:qs.length,
-          answers:answersObj,
-          types:typesObj,
-          teacher:preview.teacher||"",
-          studentCount:0,
-          className:preview.targetClass||"",
-          date:new Date().toISOString().split("T")[0].replace(/-/g,".")
-        })});
-      alert(`${_pgSetType||("세트 "+["A","B","C"][selectedSet])}로 시험이 등록되었습니다! 학생들이 선택할 수 있어요.`);
-      setStep(1);setPreview(null);loadHistory();
-    }catch(e){alert("등록 실패: "+e);}
+    // ─── ③ 신뢰 POST — text/plain (CORS simple) + 응답 검증 + 재시도 3회 ───
+    const tryOnce=async()=>{
+      const r=await fetch(sheetsUrl,{
+        method:"POST",
+        headers:{"Content-Type":"text/plain;charset=utf-8"},
+        body:JSON.stringify(body)
+      });
+      const text=await r.text();
+      try{return JSON.parse(text);}
+      catch(_e){return{result:"error",message:"응답 파싱 실패: "+text.substring(0,80)};}
+    };
+    let lastResult=null;
+    for(let attempt=1;attempt<=3;attempt++){
+      try{
+        lastResult=await tryOnce();
+        if(lastResult.result==="success"||lastResult.result==="ok")break;
+      }catch(e){
+        lastResult={result:"error",message:String(e)};
+      }
+      if(attempt<3)await new Promise(r=>setTimeout(r,800*attempt));
+    }
+    // ─── ④ 사후 역검증 (1차) — 서버 응답의 savedAnswers / rowIndex 직접 비교 ───
+    let verifyMsg="";
+    if(lastResult&&(lastResult.result==="success"||lastResult.result==="ok")){
+      const savedCnt=Number(lastResult.savedAnswers||0);
+      const rowIdx=lastResult.rowIndex;
+      if(savedCnt>0&&savedCnt===qs.length){
+        verifyMsg=`✅ 서버 검증 OK — 행 #${rowIdx} 에 ${savedCnt}문항 정확히 저장됨`;
+      }else if(lastResult.warning){
+        verifyMsg=`⚠️ ${lastResult.warning}\n시트를 직접 확인하세요.`;
+      }
+      // 2차 역검증 — 학생앱과 동일한 list_exams_by_date 로 외부 시점에서도 보이는지 확인
+      try{
+        const today=new Date().toISOString().split("T")[0].replace(/-/g,".");
+        const vr=await fetch(`${sheetsUrl}?action=admin_list_exams_by_date&date=${encodeURIComponent(today)}`);
+        const vd=await vr.json();
+        if(vd&&vd.result==="ok"&&Array.isArray(vd.exams)){
+          const matched=vd.exams.find(x=>
+            String(x.className||"").trim()===String(preview.targetClass||"").trim()&&
+            String(x.examType||"")==="문제생성기"&&
+            (String(x.setType||"")===_pgSetType||String(x.setType||"")===body.round)
+          );
+          if(!matched){
+            verifyMsg+=`\n⚠️ 외부 조회에서 방금 등록한 시험을 못 찾았어요. 잠시 후 학생앱 확인 필요.`;
+          }
+        }
+      }catch(_e){/* 2차 검증 실패는 등록 자체에 영향 X */}
+    }
     setSending(false);
+    if(lastResult&&(lastResult.result==="success"||lastResult.result==="ok")){
+      const objCnt=Object.values(typesObj).filter(t=>t==="obj").length;
+      const subCnt=Object.values(typesObj).filter(t=>t==="sub").length;
+      alert(`✅ ${_pgSetType||("세트 "+["A","B","C"][selectedSet])}로 시험이 등록되었습니다!\n\n📝 ${qs.length}문항 (객관식 ${objCnt} · 주관식 ${subCnt})\n${verifyMsg||""}\n\n학생들이 선택할 수 있어요.`);
+      setStep(1);setPreview(null);loadHistory();
+    }else{
+      alert(`❌ 등록 실패 (3회 시도)\n\n사유: ${lastResult?.message||"알 수 없는 오류"}\n\n네트워크 확인 후 다시 시도하거나, 새로고침해주세요.\n중복 등록 방지를 위해 시트의 정답목록도 한 번 확인하시는 게 좋아요.`);
+    }
   };
   // 히스토리 로드
   const loadHistory=useCallback(async()=>{
@@ -1243,7 +1316,9 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
 //   학생답 본문에는 빨간 취소선만 표시 (read flow 방해 X)
 //   아래에 별도 박스로 "수정/추가 가이드" 1) X → Y  2) Y 추가 형식
 function diffWordsKor(correct, student) {
-  const _tok = s => String(s||"").trim().split(/(\s+|[.,!?;:"'])/).filter(t => t && !/^\s+$/.test(t));
+  // ★ LOOSE 모드: 문장 끝 구두점 제거·아포스트로피 단어 내 유지·다중 공백 정규화
+  const _prep = s => String(s||"").trim().replace(/[.!?]+$/, '').replace(/\s+/g, ' ');
+  const _tok = s => _prep(s).split(/(\s+|[,;:"])/).filter(t => t && !/^\s+$/.test(t));
   const a = _tok(correct), b = _tok(student);
   const m = a.length, n = b.length;
   const dp = Array(m+1).fill(null).map(()=>Array(n+1).fill(0));
@@ -3193,6 +3268,26 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     loadReviewCount();
   }, [dashDate, sheetsUrl, loadReviewCount]);
   useEffect(()=>{ loadDashboard(); }, [loadDashboard]);
+  // ★ v23.7: 시험지/답지 파일 삭제 — 2차 확인 후 휴지통 이동
+  const deleteDashFile = useCallback(async (fl, examLabel)=>{
+    const kindLabel = fl.kind==="answer" ? "답지" : "시험지";
+    // 1차 확인
+    if (!window.confirm(`이 ${kindLabel} 파일을 삭제할까요?\n\n${fl.name}\n\n(잘못 올렸을 때 사용)`)) return;
+    // 2차 확인
+    if (!window.confirm(`정말 삭제할까요?\n\n📁 ${examLabel||""}\n${fl.kind==="answer"?"🔑":"📄"} ${fl.name}\n\n삭제 후 Drive 휴지통에서 30일 내 복구 가능합니다.`)) return;
+    try {
+      const r = await fetch(`${sheetsUrl}?action=delete_dash_file&fileId=${encodeURIComponent(fl.id)}&confirm=YES`);
+      const d = await r.json();
+      if (d.result === "ok") {
+        alert(`✅ 삭제 완료\n\n${d.fileName||fl.name}\n(휴지통으로 이동)`);
+        loadDashboard(); // 즉시 갱신
+      } else {
+        alert("삭제 실패: " + (d.message||"알 수 없는 오류"));
+      }
+    } catch(e) {
+      alert("네트워크 오류: " + String(e));
+    }
+  }, [sheetsUrl, loadDashboard]);
   // [v21.0] 30초마다 검수 대기 카운트 갱신
   useEffect(()=>{
     const id = setInterval(loadReviewCount, 30000);
@@ -3490,8 +3585,10 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
                                       <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
                                         <div style={{fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fl.name}</div>
                                       </div>
-                                      <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:4,border:"none",cursor:"pointer",fontFamily:"inherit"}}>⬇</button>
-                                      <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}}>👁</button>
+                                      <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:4,border:"none",cursor:"pointer",fontFamily:"inherit"}} title="다운로드">⬇</button>
+                                      <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}} title="미리보기">👁</button>
+                                      {/* ★ v23.7: 잘못 올린 파일 삭제 — 2차 확인 후 휴지통 이동 */}
+                                      <button onClick={()=>deleteDashFile(fl, `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.white,color:T.danger,border:`1px solid ${T.danger}`,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}} title="이 파일 삭제 (휴지통 이동)">🗑</button>
                                     </div>
                                   ))}
                                 </div>
