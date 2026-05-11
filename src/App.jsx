@@ -1239,16 +1239,13 @@ function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
    - 기간 모드: 학생별 누적 흐름 (반 단위로 묶음, 학생 점수 추세)
    - 카드 제목: {과목} {학년} {레벨}반 · {시험명}  (👤 {선생님})
 */
-// ★ v23.3: 단순 단어 diff — LCS 기반. 정답에서 학생답으로 가는 변환 단계를 마킹
-//   반환: [{op:"keep"|"add"|"del", text:string, isSub:boolean(replace 쌍)}]
-//   - keep: 학생답에 그대로 있는 단어 (검정)
-//   - add: 정답에는 있지만 학생답에는 없는 단어 (초록 = "추가 필요")
-//   - del: 학생답에 있지만 정답에는 없는 단어 (빨강 취소선 = "빼야 할")
+// ★ v23.5: 그룹화된 diff — 연속된 del+add 를 "replace"로 묶고, 단독 add는 "addition"으로
+//   학생답 본문에는 빨간 취소선만 표시 (read flow 방해 X)
+//   아래에 별도 박스로 "수정/추가 가이드" 1) X → Y  2) Y 추가 형식
 function diffWordsKor(correct, student) {
   const _tok = s => String(s||"").trim().split(/(\s+|[.,!?;:"'])/).filter(t => t && !/^\s+$/.test(t));
   const a = _tok(correct), b = _tok(student);
   const m = a.length, n = b.length;
-  // LCS DP
   const dp = Array(m+1).fill(null).map(()=>Array(n+1).fill(0));
   for (let i=1; i<=m; i++) for (let j=1; j<=n; j++) {
     if (a[i-1] === b[j-1]) dp[i][j] = dp[i-1][j-1] + 1;
@@ -1265,18 +1262,81 @@ function diffWordsKor(correct, student) {
   while (j>0) { ops.push({op:"del", text:b[j-1]}); j--; }
   return ops.reverse();
 }
-// React 컴포넌트로 렌더링
+
+// ★ v23.5: ops를 그룹으로 묶기 — 연속된 add/del 처리
+function groupDiffOps(ops) {
+  const groups = []; // [{type:"keep"|"replace"|"add"|"del", from?, to?, text?}]
+  let i = 0;
+  while (i < ops.length) {
+    const o = ops[i];
+    if (o.op === "keep") {
+      groups.push({type:"keep", text:o.text});
+      i++;
+    } else {
+      // 연속된 del 모음
+      const dels = [];
+      while (i < ops.length && ops[i].op === "del") { dels.push(ops[i].text); i++; }
+      // 연속된 add 모음
+      const adds = [];
+      while (i < ops.length && ops[i].op === "add") { adds.push(ops[i].text); i++; }
+      // 분류
+      if (dels.length > 0 && adds.length > 0) {
+        groups.push({type:"replace", from: dels.join(" ").replace(/\s+([.,!?;:])/g,"$1"), to: adds.join(" ").replace(/\s+([.,!?;:])/g,"$1")});
+      } else if (dels.length > 0) {
+        groups.push({type:"del", text: dels.join(" ").replace(/\s+([.,!?;:])/g,"$1")});
+      } else if (adds.length > 0) {
+        groups.push({type:"add", text: adds.join(" ").replace(/\s+([.,!?;:])/g,"$1")});
+      }
+    }
+  }
+  return groups;
+}
+
+// ★ v23.5: 학생답 본문 (빨간 취소선만) + 별도 가이드 박스
 function DiffView({correct, student, T}) {
   if (!correct && !student) return null;
   const ops = diffWordsKor(correct, student);
+  const groups = groupDiffOps(ops);
+  // 본문: 학생답 표시 — keep(검정) + del(빨강 취소선) + replace의 from(빨강 취소선)
+  // add(추가 필요)는 본문에서 제외하고 아래 가이드로
+  const guides = []; // {type:"replace"|"add", from?, to?, text?}
+  groups.forEach(g=>{ if(g.type==="replace"||g.type==="add") guides.push(g); });
   return (
-    <span style={{lineHeight:1.7}}>
-      {ops.map((o,i)=>{
-        if (o.op === "keep") return <span key={i}>{o.text}</span>;
-        if (o.op === "add") return <span key={i} style={{background:"#e8f5e9",color:"#2E7D32",fontWeight:700,padding:"0 2px",borderRadius:2,borderBottom:"2px dotted #2E7D32"}} title="추가 필요">{o.text}</span>;
-        return <span key={i} style={{background:"#ffebee",color:"#C62828",textDecoration:"line-through",padding:"0 2px",borderRadius:2}} title="빼야 함">{o.text}</span>;
-      })}
-    </span>
+    <>
+      <span style={{lineHeight:1.7}}>
+        {groups.map((g,i)=>{
+          if (g.type === "keep") return <span key={i}>{g.text} </span>;
+          if (g.type === "del" || g.type === "replace") {
+            const txt = g.type === "del" ? g.text : g.from;
+            return <span key={i} style={{background:"#ffebee",color:"#C62828",textDecoration:"line-through",padding:"0 3px",borderRadius:3,margin:"0 1px"}} title="빼야 함">{txt} </span>;
+          }
+          // add는 본문에서 표시 안 함 (가이드에 표시)
+          return null;
+        })}
+      </span>
+      {guides.length > 0 && (
+        <div style={{marginTop:6,padding:"6px 10px",background:"#f0f9f0",border:`1px dashed #66bb6a`,borderRadius:4,fontSize:11}}>
+          <div style={{fontSize:10,fontWeight:700,color:"#2E7D32",marginBottom:3}}>🔧 수정·추가 가이드</div>
+          {guides.map((g,i)=>(
+            <div key={i} style={{color:"#1B5E20",lineHeight:1.6}}>
+              <b>{i+1})</b>{" "}
+              {g.type === "replace" ? (
+                <>
+                  <span style={{textDecoration:"line-through",color:"#C62828"}}>{g.from}</span>
+                  <span style={{margin:"0 4px"}}>→</span>
+                  <b style={{color:"#2E7D32"}}>{g.to}</b>
+                </>
+              ) : (
+                <>
+                  <b style={{color:"#2E7D32"}}>{g.text}</b>
+                  <span style={{marginLeft:4,fontSize:10,color:"#666"}}>(추가)</span>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -2968,7 +3028,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     });
     setAnsEditMode(true);
   };
-  // ★ v23.3: 편집 저장 — 저장 후 자동 재채점 옵션
+  // ★ v23.5: 정답 편집 저장 — GAS 가 자동으로 객관식 재채점까지 처리 (학생앱은 항상 GAS 실시간 조회 → 자동 동기화)
   const saveAnsEdit = async ()=>{
     if (ansEditSaving) return;
     const folderId = ansModalData.meta?.folderId;
@@ -2986,10 +3046,18 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
       if (d.result === "ok") {
         setAnsModalData(p=>({...p, answers:ansEditData.answers, types:ansEditData.types, totalQ:ansEditData.totalQ}));
         setAnsEditMode(false);
-        // ★ v23.3: 저장 직후 자동 재채점 (이미 학생 답안 있으면 즉시 반영)
-        if (window.confirm("✅ 정답 저장 완료!\n\n학생 답안이 이미 있다면 지금 재채점할까요?\n(객관식은 즉시 / 주관식은 밤 11시 AI 채점에 반영)")) {
-          await forceRegradeCurrentExam();
+        const regradedN = d.regraded || 0;
+        const subjN = d.subjectNeedsAI || 0;
+        let msg = "✅ 정답 저장 완료!\n\n";
+        if (regradedN > 0) {
+          msg += `🎯 객관식 ${regradedN}명 자동 재채점 완료\n`;
+          msg += `📡 학생앱도 즉시 새 정답 기준으로 조회됩니다`;
+          if (subjN > 0) msg += `\n📝 주관식 ${subjN}명은 밤 11시 AI 채점에 반영`;
+        } else {
+          msg += `📡 학생앱에 새 정답이 즉시 적용됩니다 (제출자 없음)`;
         }
+        alert(msg);
+        loadDashboard(); // 대시보드 즉시 갱신
       } else {
         alert("저장 실패: " + (d.message||"알 수 없음"));
       }
@@ -3193,10 +3261,9 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
             <div style={{padding:"10px 14px",borderTop:`1px solid ${T.border}`,background:T.bg,display:"flex",gap:6,flexWrap:"wrap"}}>
               {!ansEditMode ? (
                 <>
-                  <button onClick={startAnsEdit} style={{...S.btnG,flex:"1 1 22%",fontSize:12,padding:"8px 10px",background:T.goldDark}}>✏️ 편집</button>
-                  <button onClick={forceRegradeCurrentExam} disabled={regradeRunning} style={{flex:"1 1 22%",fontSize:12,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${T.accent}`,background:regradeRunning?T.borderLight:T.accentLight,color:T.accent,fontWeight:700,cursor:regradeRunning?"wait":"pointer",fontFamily:"inherit"}} title="이 시험의 학생 답안을 현재 정답으로 다시 채점">{regradeRunning?"재채점 중...":"💯 재채점"}</button>
-                  <button onClick={deleteAnsRow} style={{flex:"1 1 22%",fontSize:12,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${T.danger}`,background:T.white,color:T.danger,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>🗑 삭제</button>
-                  <button onClick={()=>setAnsModalOpen(false)} style={{flex:"1 1 22%",fontSize:12,padding:"8px 10px",borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>닫기</button>
+                  <button onClick={startAnsEdit} style={{...S.btnG,flex:"1 1 30%",fontSize:12,padding:"8px 12px",background:T.goldDark}} title="정답을 수정하면 학생앱도 즉시 새 기준으로 채점됩니다">✏️ 편집 (자동 재채점)</button>
+                  <button onClick={deleteAnsRow} style={{flex:"1 1 30%",fontSize:12,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.danger}`,background:T.white,color:T.danger,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}} title="이 시험의 확정 답안 데이터를 삭제 (중복 등록 시 사용)">🗑 답안 삭제</button>
+                  <button onClick={()=>setAnsModalOpen(false)} style={{flex:"1 1 30%",fontSize:12,padding:"8px 12px",borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>닫기</button>
                 </>
               ) : (
                 <>
