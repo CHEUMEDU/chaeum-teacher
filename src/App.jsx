@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+﻿import { useState, useCallback, useEffect, useMemo } from "react";
 /* ============================================================
    채움학원 — 선생님용 시험 등록 v2
    신규: 선생님 이름, 반별 인원, 오늘의 현황 대시보드
@@ -9,6 +9,11 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.8: AI 문제 생성 엔진 — Anthropic Claude Sonnet 호출
+//   chaeum-teacher 프로젝트의 api/generate.js (같은 도메인 → 상대경로)
+//   필요 파일: api/generate.js + lib/prompts.js (둘 다 chaeum-teacher 안에 추가)
+//   환경변수: ANTHROPIC_API_KEY (이미 ai-extract 에서 사용 중이므로 추가 작업 X)
+const GENERATE_URL = "/api/generate";
 const SUBJECTS=["영어","국어","수학"];
 const GRADES=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
 const LV_LEVELS=["SB","B","I","A","SA","전체"];
@@ -210,1097 +215,589 @@ function PrintTab({sheetsUrl, T, S}){
     ))}
   </div>);
 }
-/* ═══ 📚 문제 생성기 탭 ═══ */
-function GeneratorTab({sheetsUrl, T, S, teacherList: _tl}){
-  // ── 상태 ──
-  const[step,setStep]=useState(1); // 1:설정, 2:확인, 3:결과
-  const[textbook,setTextbook]=useState("");
-  const[rangeType,setRangeType]=useState("chapter"); // chapter | page
-  const[chapters,setChapters]=useState([]); // 선택된 챕터 인덱스 배열
-  const[pageFrom,setPageFrom]=useState("");
-  const[pageTo,setPageTo]=useState("");
-  const[testType,setTestType]=useState("grammar"); // grammar | vocab
-  const[questionCount,setQuestionCount]=useState(20);
-  const[diffEasy,setDiffEasy]=useState(30);
-  const[diffMed,setDiffMed]=useState(50);
-  const[diffHard,setDiffHard]=useState(20);
-  // 반 선택 (시험등록과 동일 방식)
-  const[genSubject,setGenSubject]=useState("");
-  const[genGrade,setGenGrade]=useState("");
-  const[genLevel,setGenLevel]=useState("");
-  const[genLevelCustom,setGenLevelCustom]=useState("");
-  const[genLevelCat,setGenLevelCat]=useState("level");
-  const[genLevelMulti,setGenLevelMulti]=useState([]); // ★ 다중선택 (레벨/중/고)
-  const[genClasses,setGenClasses]=useState([]); // [{subject,grade,level,name}]
-  // ★ 문제 생성 — 시험 구분 (이론편/실전편/혼합)
-  const[genSetType,setGenSetType]=useState("");
-  const GEN_SET_TYPES=["이론편","실전편","혼합"];
-  const[targetTeacher,setTargetTeacher]=useState("");
-  const[mcRatio,setMcRatio]=useState(100); // 객관식 비율 (0~100), 기본 100%
-  const[customQCount,setCustomQCount]=useState(""); // 직접입력 문제수
-  const[memo,setMemo]=useState("");
-  // ★ v2: 시험 날짜/시간 (문제 생성 → 구글드라이브 폴더명에 사용)
-  const[examDate,setExamDate]=useState(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;});
-  const[examTime,setExamTime]=useState("19:00");
-  const[sending,setSending]=useState(false);
-  const[sentOk,setSentOk]=useState(false);
-  // 교재 목록 (서버에서 동적 로딩)
-  const[textbookList,setTextbookList]=useState([]);
-  const[tbLoading,setTbLoading]=useState(false);
-  const[tbError,setTbError]=useState("");
-  const[uploading,setUploading]=useState(false);
-  // 히스토리 (생성 요청 목록)
-  const[history,setHistory]=useState([]);
-  const[histLoading,setHistLoading]=useState(false);
-  // ★ v20.5: 히스토리 필터 (선생님 선택 → 본인 자료만 보기) + 페이지네이션
-  const[histFilterTeacher,setHistFilterTeacher]=useState("");
-  const[histVisibleCount,setHistVisibleCount]=useState(3);
-  // 미리보기 (3세트: A/B/C)
-  const[preview,setPreview]=useState(null); // {detail, sets:[{questions},..]}
-  const[prevLoading,setPrevLoading]=useState(false);
-  const[prevRow,setPrevRow]=useState(null);
-  const[selectedSet,setSelectedSet]=useState(0); // 0=A, 1=B, 2=C
-  // ★ v15: 검수 결과 모달 (verification 상세)
-  const[verifyModal,setVerifyModal]=useState(null); // null | {row, verification, startNumber, totalQuestions}
-  // 반 추가 핸들러 — 다중학교 지원
-  const addGenClass=()=>{
-    if(!genSubject)return alert("과목을 선택하세요.");
-    if(!genGrade)return alert("학년을 선택하세요.");
-    if(/^(초|중|고)$/.test(genGrade))return alert("학년을 선택하세요. (예: 1학년, 2학년…)");
-    let lv, displayName;
-    if((genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")&&genLevelMulti.length>0){
-      lv=genLevelMulti.join(",");
-      displayName=genLevelMulti.join("+");
-    }else{
-      const single=genLevelCat==="etc"?genLevelCustom:"";
-      if(!single)return alert("레벨/학교를 선택하세요.");
-      lv=single;displayName=single;
+/* ═══════════════════════════════════════════════════════════
+   📚 AI 문제 생성기 탭 (v23.8 신규) — 즉시 API 호출 + 자동 등록
+   ═══════════════════════════════════════════════════════════
+   - chaeum-test-generator/api/generate 직접 호출 (큐 방식 X)
+   - 7단계 폼 → 60~90초 생성 → 미리보기 → 학생앱 등록
+   - 큐 방식(request_exam_gen) 폐기. 즉시 호출로 일원화
+   ═══════════════════════════════════════════════════════════ */
+const AI_BOOKS = {
+  grammar: ['채움문법 1권 (기초)','채움문법 2권','채움문법 3권','채움문법 4권','채움문법 5권','채움문법 6권 (심화)','채움문법 7권 (고급)'],
+  writing: ['채움서술형 Basic','채움서술형 1권','채움서술형 2권','채움서술형 3권 (심화)'],
+  syntax:  ['채움구문 Basic 30차','채움구문 1권','채움구문 2권','채움구문 3권 (심화)'],
+  vocab:   ['채움VOCA Basic 1','채움VOCA Basic 2','채움VOCA 중등 1권','채움VOCA 중등 2권','채움VOCA 중등 3권','채움VOCA 고등 필수'],
+  reading: ['채움리딩 Level 1','채움리딩 Level 2','채움리딩 Level 3','채움리딩 Level 4'],
+  mock:    ['2025 수능','2024 수능','2023 수능','2025 고1 3월 모의고사','2025 고1 6월 모의고사','2025 고2 3월 모의고사','2025 고2 6월 모의고사']
+};
+const AI_BOOK_CHAPTERS = {
+  '채움문법 1권 (기초)': ['Ch01 품사','Ch02 명사','Ch03 관사','Ch04 형용사','Ch05 부사','Ch06 동사','Ch07 시제'],
+  '채움문법 2권': ['Ch01 시제','Ch02 조동사','Ch03 수동태','Ch04 부정사','Ch05 동명사','Ch06 분사'],
+  '채움문법 3권': ['Ch01 관계대명사','Ch02 관계부사','Ch03 가정법','Ch04 비교','Ch05 일치와 화법'],
+  '채움문법 4권': ['Ch01 분사구문','Ch02 도치','Ch03 강조','Ch04 생략','Ch05 문장 구조'],
+  '채움문법 5권': ['Ch01 시제 종합','Ch02 조동사 종합','Ch03 수동태','Ch04 부정사·동명사','Ch05 분사·분사구문','Ch06 관계사 종합'],
+  '채움문법 6권 (심화)': ['Ch01 가정법 종합','Ch02 도치·강조','Ch03 비교 구문','Ch04 특수 구문','Ch05 화법 전환'],
+  '채움문법 7권 (고급)': ['Ch01 고난도 어법','Ch02 추론형 어법','Ch03 통합 문제'],
+  '채움서술형 Basic': ['Ch01 단문 영작','Ch02 어순 배열','Ch03 빈칸 채우기','Ch04 문장 변형'],
+  '채움서술형 1권': ['Ch01 영작 입문','Ch02 어순','Ch03 변형','Ch04 요약'],
+  '채움서술형 2권': ['Ch01 중급 영작','Ch02 빈칸 추론 영작','Ch03 답안형'],
+  '채움서술형 3권 (심화)': ['Ch01 고급 영작','Ch02 통합 서술형'],
+  '채움구문 Basic 30차': Array.from({length:30}, (_,i) => `${i+1}차 구문`),
+  '채움구문 1권': ['Ch01 5형식','Ch02 시제 구문','Ch03 조동사 구문','Ch04 to부정사','Ch05 동명사'],
+  '채움구문 2권': ['Ch01 분사 구문','Ch02 관계사 구문','Ch03 가정법','Ch04 비교 구문'],
+  '채움구문 3권 (심화)': ['Ch01 도치·강조','Ch02 분사구문 심화','Ch03 특수 구문'],
+  '채움VOCA Basic 1': ['Day 1~5','Day 6~10','Day 11~15','Day 16~20'],
+  '채움VOCA Basic 2': ['Day 1~5','Day 6~10','Day 11~15','Day 16~20'],
+  '채움VOCA 중등 1권': Array.from({length:10}, (_,i) => `Week ${i+1}`),
+  '채움VOCA 중등 2권': Array.from({length:10}, (_,i) => `Week ${i+1}`),
+  '채움VOCA 중등 3권': Array.from({length:10}, (_,i) => `Week ${i+1}`),
+  '채움VOCA 고등 필수': Array.from({length:12}, (_,i) => `Day ${i+1}`),
+  '채움리딩 Level 1': ['Unit 1','Unit 2','Unit 3','Unit 4','Unit 5'],
+  '채움리딩 Level 2': ['Unit 1','Unit 2','Unit 3','Unit 4','Unit 5'],
+  '채움리딩 Level 3': ['Unit 1','Unit 2','Unit 3','Unit 4','Unit 5'],
+  '채움리딩 Level 4': ['Unit 1','Unit 2','Unit 3','Unit 4','Unit 5'],
+  '2025 수능': ['18~20번','21~24번','25~28번','29~31번','32~34번','35~37번','38~39번','40~42번','43~45번'],
+  '2024 수능': ['18~20번','21~24번','25~28번','29~31번','32~34번','35~37번','38~39번','40~42번','43~45번'],
+  '2023 수능': ['18~20번','21~24번','25~28번','29~31번','32~34번','35~37번','38~39번','40~42번','43~45번'],
+  '2025 고1 3월 모의고사': ['18~20번','21~24번','25~28번','29~31번','32~34번','35~37번','38~39번','40~45번'],
+  '2025 고1 6월 모의고사': ['18~20번','21~24번','25~28번','29~31번','32~34번','35~37번','38~39번','40~45번'],
+  '2025 고2 3월 모의고사': ['18~20번','21~24번','25~28번','29~31번','32~34번','35~37번','38~39번','40~45번'],
+  '2025 고2 6월 모의고사': ['18~20번','21~24번','25~28번','29~31번','32~34번','35~37번','38~39번','40~45번']
+};
+const AI_CAT_KR = { grammar: "📝 문법", writing: "✍️ 서술형", syntax: "🔗 구문", vocab: "🔤 단어", reading: "📖 리딩", mock: "📋 모의고사" };
+const AI_TYPE_META = {
+  grammar: { icon: "📝", name: "문법", color: "#C08A2E" },
+  vocab:   { icon: "🔤", name: "단어", color: "#1890FF" },
+  reading: { icon: "📖", name: "리딩", color: "#52C41A" },
+  writing: { icon: "✍️", name: "서술형", color: "#722ED1" },
+  translation: { icon: "🌐", name: "해석", color: "#EB2F96" }
+};
+const AI_SUBTYPES = {
+  grammar:     ["어법 옳/그른 것 고르기","빈칸에 알맞은 어법","문장 변형 (능동→수동 등)","어순 배열","단문 영작"],
+  vocab:       ["영어 → 한국어 뜻 쓰기","한국어 → 영어 단어 쓰기","빈칸에 알맞은 단어","객관식 의미 고르기","동의어 / 반의어","단어로 문장 만들기"],
+  reading:     ["주제 / 제목 / 요지","빈칸 추론","함의 / 심정","글의 순서","문장 삽입","일치 / 불일치","어법·어휘 어색한 곳"],
+  writing:     ["영작 (한 → 영)","어순 배열","빈칸에 단어·구 쓰기","한 줄 요약","답안형 쓰기"],
+  translation: ["영 → 한 번역","구문 분석 (S/V/수식어)","본문 의미 일치 고르기"]
+};
+
+function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
+  // ── 폼 상태 ──
+  const [bookCategory, setBookCategory] = useState("grammar");
+  const [bookName, setBookName] = useState(AI_BOOKS.grammar[0]);
+  const [rangeMode, setRangeMode] = useState("chapter");
+  const [selectedChapters, setSelectedChapters] = useState([0, 1]);
+  const [pageFrom, setPageFrom] = useState("");
+  const [pageTo, setPageTo] = useState("");
+  const [selectedTypes, setSelectedTypes] = useState([{ type: "grammar", percentage: 100, subtypes: [] }]);
+  const [questionCount, setQuestionCount] = useState(30);
+  const [mcRatio, setMcRatio] = useState(60);
+  const [difficulty, setDifficulty] = useState({ easy: 30, mid: 50, hard: 20 });
+
+  // ── 호출/등록 상태 ──
+  const [screen, setScreen] = useState("form"); // form | preview | done
+  const [generating, setGenerating] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [preview, setPreview] = useState(null);
+  const [registering, setRegistering] = useState(false);
+
+  // ── 등록 메타 (학생앱 등록용) ──
+  const todayIso = (()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;})();
+  const [regSubject, setRegSubject] = useState("영어");
+  const [regGrade, setRegGrade] = useState("중2");
+  const [regLevel, setRegLevel] = useState("A");
+  const [regTeacher, setRegTeacher] = useState("");
+  const [regDate, setRegDate] = useState(todayIso);
+
+  // 카테고리 변경 시 책 자동 선택
+  useEffect(() => {
+    if (AI_BOOKS[bookCategory] && !AI_BOOKS[bookCategory].includes(bookName)) {
+      setBookName(AI_BOOKS[bookCategory][0]);
     }
-    const name=`${genSubject} ${genGrade} ${displayName}반`;
-    if(genClasses.some(c=>c.name===name))return alert("이미 추가된 반입니다.");
-    if(genLevelMulti.length>=2){
-      const ok=window.confirm(`다음 ${genLevelMulti.length}개를 하나의 반으로 등록합니다:\n\n  ${genLevelMulti.join(" + ")}\n\n⚠ 반드시 **같은 시험지**를 공유할 때만 사용하세요.\n\n계속하시겠습니까?`);
-      if(!ok)return;
+  }, [bookCategory]);
+
+  // 책 변경 시 챕터 자동 초기화
+  useEffect(() => {
+    const chs = AI_BOOK_CHAPTERS[bookName] || ["전체 범위"];
+    setSelectedChapters([0, 1].filter(i => i < chs.length));
+  }, [bookName]);
+
+  // 유형 토글
+  const toggleType = (type) => {
+    const idx = selectedTypes.findIndex(t => t.type === type);
+    let next;
+    if (idx >= 0) {
+      if (selectedTypes.length === 1) { alert("최소 1개의 시험 유형은 선택해야 합니다."); return; }
+      next = selectedTypes.filter((_, i) => i !== idx);
+    } else {
+      next = [...selectedTypes, { type, percentage: 0, subtypes: [] }];
     }
-    setGenClasses(p=>[...p,{subject:genSubject,grade:genGrade,level:lv,name}]);
-    setGenLevel("");setGenLevelCustom("");setGenLevelMulti([]);
+    // 균등 배분
+    const each = Math.floor(100 / next.length);
+    const extra = 100 - each * next.length;
+    next.forEach((t, i) => { t.percentage = each + (i === 0 ? extra : 0); });
+    setSelectedTypes(next);
   };
-  // ── 교재 목록 (서버에서 동적 로딩) ──
-  const loadTextbooks=useCallback(()=>{
-    setTbLoading(true);setTbError("");
-    fetch(sheetsUrl+"?action=list_textbooks")
-      .then(r=>r.json())
-      .then(d=>{
-        if(d.result==="ok"&&Array.isArray(d.textbooks)){
-          setTextbookList(d.textbooks);
-        }else{
-          setTbError(d.message||"교재 목록 로딩 실패");
-        }
-      })
-      .catch(e=>setTbError("네트워크 오류: "+String(e)))
-      .finally(()=>setTbLoading(false));
-  },[sheetsUrl]);
-  useEffect(()=>{loadTextbooks();},[loadTextbooks]);
-  // 교재 업로드 핸들러
-  const handleUploadTextbook=(e)=>{
-    const file=e.target.files&&e.target.files[0];
-    if(!file)return;
-    if(!file.name.toLowerCase().endsWith(".pdf")){alert("PDF 파일만 업로드할 수 있습니다.");return;}
-    if(file.size>50*1024*1024){alert("파일이 너무 큽니다 (최대 50MB).");return;}
-    setUploading(true);
-    const reader=new FileReader();
-    reader.onload=()=>{
-      const base64=reader.result.split(",")[1];
-      fetch(sheetsUrl,{method:"POST",headers:{"Content-Type":"text/plain"},
-        body:JSON.stringify({action:"upload_textbook",fileName:file.name,fileData:base64,name:file.name.replace(/\.pdf$/i,"").replace(/_/g," ")})
-      }).then(r=>r.json()).then(d=>{
-        if(d.result==="ok"){
-          alert("교재가 등록되었습니다: "+d.textbook.name);
-          loadTextbooks();
-        }else{alert("업로드 실패: "+(d.message||"알 수 없는 오류"));}
-      }).catch(err=>alert("업로드 오류: "+String(err)))
-        .finally(()=>setUploading(false));
-    };
-    reader.readAsDataURL(file);
-    e.target.value=""; // reset input
-  };
-  const TEXTBOOKS=textbookList;
-  const selBook=TEXTBOOKS.find(b=>b.id===textbook);
-  // 챕터 토글
-  const toggleCh=(idx)=>setChapters(p=>p.includes(idx)?p.filter(i=>i!==idx):[...p,idx].sort((a,b)=>a-b));
-  // 난이도 슬라이더 핸들러 (합계 100% 유지)
-  const adjustDiff=(type,val)=>{
-    val=Math.max(0,Math.min(100,val));
-    if(type==="easy"){
-      const remain=100-val;
-      const ratio=diffMed+diffHard>0?diffMed/(diffMed+diffHard):0.5;
-      setDiffEasy(val);setDiffMed(Math.round(remain*ratio));setDiffHard(remain-Math.round(remain*ratio));
-    }else if(type==="med"){
-      const remain=100-val;
-      const ratio=diffEasy+diffHard>0?diffEasy/(diffEasy+diffHard):0.5;
-      setDiffMed(val);setDiffEasy(Math.round(remain*ratio));setDiffHard(remain-Math.round(remain*ratio));
-    }else{
-      const remain=100-val;
-      const ratio=diffEasy+diffMed>0?diffEasy/(diffEasy+diffMed):0.5;
-      setDiffHard(val);setDiffEasy(Math.round(remain*ratio));setDiffMed(remain-Math.round(remain*ratio));
-    }
-  };
-  // 생성 요청
-  const submit=async()=>{
-    if(!textbook)return alert("교재를 선택하세요.");
-    const hasChapters=selBook&&selBook.chapters&&selBook.chapters.length>0;
-    if(rangeType==="chapter"&&hasChapters&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
-    if((rangeType==="page"||!hasChapters)&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
-    if(!targetTeacher)return alert("선생님 이름을 선택하세요.");
-    if(genClasses.length===0)return alert("대상 반을 1개 이상 추가하세요.");
-    setSending(true);
-    try{
-      const effectiveRange=hasChapters?rangeType:"page";
-      const rangeDesc=effectiveRange==="chapter"
-        ?(selBook.chapters||[]).filter((_,i)=>chapters.includes(i)).join(", ")
-        :`p.${pageFrom}~${pageTo}`;
-      const body={
-        action:"request_exam_gen",
-        textbook:selBook.name,
-        textbookId:textbook,
-        textbookFileId:selBook.fileId||"",
-        rangeType,
-        rangeDesc,
-        chapters:rangeType==="chapter"?(selBook.chapters||[]).filter((_,i)=>chapters.includes(i)):[],
-        pageFrom:rangeType==="page"?pageFrom:"",
-        pageTo:rangeType==="page"?pageTo:"",
-        testType,
-        questionCount,
-        difficulty:{easy:diffEasy,medium:diffMed,hard:diffHard},
-        mcRatio,
-        targetClass:genClasses.map(c=>c.name).join(", "),
-        teacher:targetTeacher,
-        setType:genSetType||"",   // ★ 이론편 / 실전편 / 혼합 (선택)
-        examDate,                 // ★ v2: 시험 날짜 (YYYY-MM-DD)
-        examTime,                 // ★ v2: 시험 시간 (HH:MM)
-        memo,
-      };
-      await fetch(sheetsUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-      setSentOk(true);setStep(3);
-    }catch(e){alert("요청 실패: "+e);}
-    setSending(false);
-  };
-  // 미리보기 로드 (Drive 파일 + 시트 정답데이터 두 경로 지원)
-  const loadPreview=async(rowIndex)=>{
-    setPrevLoading(true);setPrevRow(rowIndex);setSelectedSet(0);
-    try{
-      const r=await fetch(`${sheetsUrl}?action=get_exam_gen_detail&rowIndex=${rowIndex}`);
-      const d=await r.json();
-      if(d.result==="ok"&&d.detail){
-        let sets=[];
-        const det=d.detail;
-        // type 정규화: "multiple_choice" → "mc"
-        const normT=(t)=>t==="multiple_choice"||t==="mc"||t==="obj"?"mc":"sub";
-        const normSet=(s,i)=>({
-          style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,
-          questions:(s.questions||[]).map(q=>({...q,type:normT(q.type||"mc")}))
-        });
-        // 경로 1: Drive 파일에서 전체 문제 로드 (questions 필드)
-        if(det.questions){
-          // ★ parseAnswerDoc 으로 이중 인코딩 한 번에 처리
-          const raw=typeof det.questions==="string"?parseAnswerDoc(det.questions):det.questions;
-          if(raw&&raw.sets&&Array.isArray(raw.sets)){
-            sets=raw.sets.map(normSet);
-          }else if(raw&&raw.sets&&typeof raw.sets==="object"&&!Array.isArray(raw.sets)){
-            sets=Object.values(raw.sets).map(normSet);
-          }else if(raw&&raw.questions&&Array.isArray(raw.questions)){
-            sets=[normSet(raw,0)];
-          }else if(Array.isArray(raw)){
-            sets=raw.map(normSet);
-          }
-        }
-        // 경로 2: 시트에 저장된 정답데이터 (answerData 필드) — Drive 실패 시 fallback
-        if(sets.length===0&&det.answerData){
-          // ★ parseAnswerDoc 으로 이중 인코딩 한 번에 처리
-          let ad=typeof det.answerData==="string"?parseAnswerDoc(det.answerData):det.answerData;
-          if(!ad)ad={};
-          const makeQs=(answers,types,qCount)=>(answers||[]).map((ans,qi)=>({
-            number:qi+1,
-            difficulty:qi<(qCount||20)*0.3?"easy":qi<(qCount||20)*0.7?"medium":"hard",
-            type:(types||[])[qi]==="sub"?"sub":"mc",
-            question:`문제 ${qi+1}`,
-            choices:(types||[])[qi]==="sub"?[]:["①","②","③","④","⑤"],
-            answer:ans,
-            explanation:""
-          }));
-          // type 정규화: "multiple_choice" → "mc", "subjective" → "sub"
-          const normType=(t)=>t==="multiple_choice"||t==="mc"||t==="obj"?"mc":"sub";
-          // sets 배열에서 questions 객체를 가져오는 공통 함수
-          const extractSets=(setsArr)=>setsArr.map((s,i)=>{
-            // 포맷 A: {questions:[{number,answer,type,question,choices,...}]} — 스케줄 태스크가 보내는 형식
-            if(s.questions&&Array.isArray(s.questions)&&s.questions.length>0){
-              return{style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,questions:s.questions.map(q=>({
-                ...q,type:normType(q.type||"mc")
-              }))};
-            }
-            // 포맷 B: {answers:[], types:[]} — 간략 정답 데이터
-            if(s.answers&&Array.isArray(s.answers)){
-              return{style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,questions:makeQs(s.answers,s.types,det.questionCount)};
-            }
-            return{style:s.style||s.setName||`스타일 ${["A","B","C"][i]}`,questions:[]};
-          });
-          // 포맷 1: {sets: [...]} — 배열
-          if(ad.sets&&Array.isArray(ad.sets)){
-            sets=extractSets(ad.sets);
-          }
-          // 포맷 2: {sets: {A:{...}, B:{...}, ...}} — 객체
-          else if(ad.sets&&typeof ad.sets==="object"&&!Array.isArray(ad.sets)){
-            sets=extractSets(Object.values(ad.sets));
-          }
-          // 포맷 3: 루트가 배열 [{questions,...}, ...]
-          else if(Array.isArray(ad)){
-            sets=extractSets(ad);
-          }
-          // 포맷 4: flat — {answers:[], types:[]} 단일 세트
-          else if(ad.answers&&Array.isArray(ad.answers)){
-            sets=[{style:"A",questions:makeQs(ad.answers,ad.types,det.questionCount)}];
-          }
-          // 포맷 5: questions 배열 직접 포함 — {questions:[{number,answer,...},...]}
-          else if(ad.questions&&Array.isArray(ad.questions)){
-            sets=[{style:"A",questions:ad.questions.map(q=>({...q,type:normType(q.type||"mc")}))}];
-          }
-        }
-        setPreview({...det, sets, _source:det.questionsSource||"none", _error:det.questionsError||"", answerDataInfo:det.answerDataInfo||null, answerDataRaw:det.answerDataRaw||""});
-        setStep(4);
-      }else{alert("상세 조회 실패: "+(d.message||""));}
-    }catch(e){alert("조회 오류: "+e);}
-    setPrevLoading(false);
-  };
-  // 문제 다시 내기 (재생성 요청)
-  const requestRegenerate=async(rowIndex)=>{
-    if(!confirm("이 시험 문제를 새로 만들까요?\n(기존 문제는 사라지고 약 10분 후 새 문제가 생성됩니다)"))return;
-    setSending(true);
-    try{
-      await fetch(`${sheetsUrl}?action=update_exam_gen_status&rowIndex=${rowIndex}&status=대기`);
-      alert("재생성 요청 완료! 약 10분 후 새 문제가 만들어집니다.");
-      setStep(1);setPreview(null);loadHistory();
-    }catch(e){alert("요청 실패: "+e);}
-    setSending(false);
-  };
-  // ★ 학생앱 자동 등록 (완료된 시험을 정답목록에 등록)
-  const autoRegisterForStudents=async(rowIndex)=>{
-    try{
-      const r=await fetch(`${sheetsUrl}?action=auto_register_exam_gen&rowIndex=${rowIndex}`);
-      const d=await r.json();
-      if(d.result==="ok"){alert("✅ 학생앱에 등록 완료! 학생들이 시험을 찾을 수 있어요.");}
-      else{alert("등록 실패: "+(d.message||""));}
-    }catch(e){alert("등록 오류: "+e);}
-  };
-  // ★ v23.7: A세트 ↔ B세트 교체 — text/plain + 응답 검증 (no-cors silent 실패 제거)
-  const swapExamSet=async(rowIndex,activeNow)=>{
-    const targetLabel=activeNow==="A"?"B":"A";
-    if(!confirm(`현재 ${activeNow}세트가 학생앱에 노출 중입니다.\n${targetLabel}세트로 교체하시겠습니까?\n\n학생들이 보는 시험 문제가 즉시 바뀝니다.`))return;
-    try{
-      const r=await fetch(sheetsUrl,{
-        method:"POST",
-        headers:{"Content-Type":"text/plain;charset=utf-8"},
-        body:JSON.stringify({action:"swap_exam_set",rowIndex})
-      });
-      const text=await r.text();
-      let d; try{d=JSON.parse(text);}catch(_e){d={result:"error",message:text.substring(0,100)};}
-      if(d.result==="ok"||d.result==="success"){
-        alert(`✅ ${targetLabel}세트로 교체 완료!\n학생앱에 즉시 반영됩니다.`);
-        loadHistory();
-      }else{
-        alert(`❌ 교체 실패\n\n사유: ${d.message||"알 수 없는 오류"}\n\n다시 시도해주세요.`);
-      }
-    }catch(e){alert("네트워크 오류: "+String(e));}
-  };
-  // 생성 요청 삭제
-  const deleteExamGen=async(rowIndex)=>{
-    if(!confirm("이 생성 요청을 삭제하시겠습니까?\n(삭제 후 복구할 수 없습니다)"))return;
-    try{
-      const r=await fetch(`${sheetsUrl}?action=delete_exam_gen&rowIndex=${rowIndex}`);
-      const d=await r.json();
-      if(d.result==="ok"){loadHistory();}
-      else{alert("삭제 실패: "+(d.message||""));}
-    }catch(e){alert("삭제 오류: "+e);}
-  };
-  // ★ v23.7: OMR 시험 등록 — 안정화 (응답 검증 + 자동 재시도 + 사후 역검증)
-  // ─ 이전 버그: mode:"no-cors" + application/json 으로 응답을 못 읽어 silent 실패 발생 가능
-  // ─ 신뢰 패턴: text/plain (CORS simple request) → 응답 읽기 → result 검증 → 실패시 재시도
-  const registerExam=async()=>{
-    if(!preview||!preview.sets||preview.sets.length===0)return alert("문제 데이터가 없습니다.");
-    const chosenSet=preview.sets[selectedSet];
-    if(!chosenSet)return alert("세트를 선택하세요.");
-    const qs=chosenSet.questions||[];
-    if(qs.length===0)return alert("문제가 없습니다.");
-    // ─── ① 전송 전 무결성 검증 — 빈 정답·중복 번호·문항수 불일치 차단 ───
-    const answersObj={};const typesObj={};
-    const emptyQs=[];const dupQs=[];
-    qs.forEach((q,i)=>{
-      const qNum=String(q.number||(i+1));
-      if(answersObj[qNum]!==undefined)dupQs.push(qNum);
-      const ans=q.type==="mc"?q.answer:String(q.answer||"");
-      if(ans===undefined||ans===null||String(ans).trim()==="")emptyQs.push(qNum);
-      answersObj[qNum]=ans;
-      typesObj[qNum]=q.type==="mc"?"obj":"sub";
+
+  // 유형 % 변경
+  const setTypePct = (idx, newVal) => {
+    if (selectedTypes.length === 1) return;
+    const v = parseInt(newVal);
+    const diff = v - selectedTypes[idx].percentage;
+    const next = selectedTypes.map((t, i) => i === idx ? { ...t, percentage: v } : { ...t });
+    const others = next.filter((_, i) => i !== idx);
+    const totalOthers = others.reduce((s, t) => s + t.percentage, 0);
+    if (totalOthers === 0 && diff < 0) return;
+    let rem = -diff;
+    others.forEach((t, i) => {
+      const share = i === others.length - 1 ? rem : Math.round((t.percentage / totalOthers) * -diff);
+      t.percentage = Math.max(0, t.percentage + share);
+      rem -= share;
     });
-    if(dupQs.length>0){
-      return alert(`❌ 등록 차단 — 중복된 문항 번호: ${dupQs.join(", ")}\n\n생성기 데이터에 문제가 있어요.\n미리보기를 닫고 재생성하거나 새로고침 후 다시 시도하세요.`);
+    const total = next.reduce((s, t) => s + t.percentage, 0);
+    if (total !== 100) {
+      const lastIdx = next.findIndex((_, i) => i !== idx && next[i].percentage > 0);
+      if (lastIdx >= 0) next[lastIdx].percentage += (100 - total);
     }
-    if(Object.keys(answersObj).length!==qs.length){
-      return alert(`❌ 등록 차단 — 문항 수 불일치\n시도: ${qs.length}개 / 정답 등록 예정: ${Object.keys(answersObj).length}개\n\n번호가 중복되었거나 누락된 것 같아요. 재생성 권장.`);
-    }
-    if(emptyQs.length>0){
-      if(!confirm(`⚠️ 정답이 비어있는 문항: ${emptyQs.join(", ")}\n\n이 문항은 학생이 채점받지 못합니다.\n그래도 등록할까요?`))return;
-    }
-    // ─── ② 메타 추출 ───
-    const tcParts=(preview.targetClass||"").split(/\s+/);
-    const regSubject=tcParts[0]||"영어";
-    const regGrade=tcParts[1]||"";
-    const regLevel=(tcParts[2]||"").replace(/반$/,"");
-    const _pgSetType=(preview.setType||"").trim();
-    const body={
-      action:"save_answer_key",
-      subject:regSubject,
-      grade:regGrade,
-      level:regLevel,
-      examType:"문제생성기",
-      setType:_pgSetType,
-      round:_pgSetType||`세트${["A","B","C"][selectedSet]}`,
-      totalQuestions:qs.length,
-      answers:answersObj,
-      types:typesObj,
-      teacher:preview.teacher||"",
-      studentCount:0,
-      className:preview.targetClass||"",
-      date:new Date().toISOString().split("T")[0].replace(/-/g,".")
-    };
-    setSending(true);
-    // ─── ③ 신뢰 POST — text/plain (CORS simple) + 응답 검증 + 재시도 3회 ───
-    const tryOnce=async()=>{
-      const r=await fetch(sheetsUrl,{
-        method:"POST",
-        headers:{"Content-Type":"text/plain;charset=utf-8"},
-        body:JSON.stringify(body)
+    setSelectedTypes(next);
+  };
+
+  // 서브타입 체크
+  const toggleSubtype = (typeIdx, subName) => {
+    const next = selectedTypes.map((t, i) => {
+      if (i !== typeIdx) return t;
+      const exIdx = t.subtypes.findIndex(s => s.name === subName);
+      let subs = exIdx >= 0 ? t.subtypes.filter((_, k) => k !== exIdx) : [...t.subtypes, { name: subName, percentage: 0 }];
+      const n = subs.length;
+      if (n > 0) {
+        const each = Math.floor(100 / n);
+        const extra = 100 - each * n;
+        subs = subs.map((s, k) => ({ ...s, percentage: each + (k === 0 ? extra : 0) }));
+      }
+      return { ...t, subtypes: subs };
+    });
+    setSelectedTypes(next);
+  };
+
+  // 난이도 변경
+  const diffChanged = (which, val) => {
+    const v = parseInt(val);
+    const { easy, mid, hard } = difficulty;
+    let ne = easy, nm = mid, nh = hard;
+    if (which === "easy") { ne = v; nh = 100 - ne - nm; if (nh < 0) { nm = Math.max(0, 100 - ne); nh = 0; } }
+    else if (which === "mid") { nm = v; nh = 100 - ne - nm; if (nh < 0) { ne = Math.max(0, 100 - nm); nh = 0; } }
+    else { nh = v; nm = 100 - ne - nh; if (nm < 0) { ne = Math.max(0, 100 - nh); nm = 0; } }
+    setDifficulty({ easy: ne, mid: nm, hard: nh });
+  };
+
+  // 비용 추정
+  const estCost = (()=>{ const base = { 10:120, 15:180, 20:240, 25:290, 30:350, 40:450, 50:560 }; return base[questionCount] || Math.round(questionCount * 11.5); })();
+  const mcCount = Math.round((questionCount * mcRatio) / 100);
+  const ssCount = questionCount - mcCount;
+
+  // ── 생성 호출 ──
+  const handleGenerate = async () => {
+    if (rangeMode === "chapter" && selectedChapters.length === 0) return alert("범위를 1개 이상 선택하세요.");
+    if (rangeMode === "page" && (!pageFrom || !pageTo)) return alert("페이지 범위를 입력하세요.");
+
+    const chs = AI_BOOK_CHAPTERS[bookName] || [];
+    const ranges = rangeMode === "chapter"
+      ? selectedChapters.map(i => chs[i]).filter(Boolean)
+      : [`p.${pageFrom}-${pageTo}`];
+
+    setGenerating(true);
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(e => e + 1), 1000);
+
+    try {
+      const body = { bookCategory, bookName, ranges, rangeMode, testTypes: selectedTypes, questionCount, mcRatio, difficulty };
+      const r = await fetch(GENERATE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
       });
-      const text=await r.text();
-      try{return JSON.parse(text);}
-      catch(_e){return{result:"error",message:"응답 파싱 실패: "+text.substring(0,80)};}
+      const json = await r.json();
+      if (!r.ok || !json.success) {
+        alert("생성 실패: " + (json.error || `HTTP ${r.status}`));
+        return;
+      }
+      setPreview(json);
+      setScreen("preview");
+    } catch (e) {
+      alert("네트워크 오류: " + String(e) + "\n\nGENERATE_URL 설정을 확인하세요.");
+    } finally {
+      clearInterval(timer);
+      setGenerating(false);
+    }
+  };
+
+  // ── 학생앱 등록 (이전 v23.7 registerExam 안정화 패턴 그대로) ──
+  const handleRegister = async () => {
+    if (!preview || !preview.questions) return;
+    if (!regSubject || !regGrade || !regLevel) return alert("과목·학년·반을 모두 선택하세요.");
+    if (!regTeacher) return alert("선생님을 선택하세요.");
+
+    const qs = preview.questions;
+    const answersObj = {};
+    const typesObj = {};
+    const emptyQs = [];
+    qs.forEach(q => {
+      const qNum = String(q.id);
+      const ans = q.answer;
+      if (!ans || String(ans).trim() === "") emptyQs.push(qNum);
+      answersObj[qNum] = ans;
+      typesObj[qNum] = q.type === "mc" ? "obj" : "sub";
+    });
+    if (emptyQs.length > 0) {
+      if (!window.confirm(`⚠️ 정답이 비어있는 문항: ${emptyQs.join(", ")}\n그래도 등록할까요?`)) return;
+    }
+
+    const className = `${regSubject} ${regGrade} ${regLevel}반`;
+    const body = {
+      action: "save_answer_key",
+      subject: regSubject, grade: regGrade, level: regLevel,
+      examType: "문제생성기", setType: "", round: "AI생성",
+      totalQuestions: qs.length, answers: answersObj, types: typesObj,
+      teacher: regTeacher, studentCount: 0, className,
+      date: regDate.replace(/-/g, ".")
     };
-    let lastResult=null;
-    for(let attempt=1;attempt<=3;attempt++){
-      try{
-        lastResult=await tryOnce();
-        if(lastResult.result==="success"||lastResult.result==="ok")break;
-      }catch(e){
-        lastResult={result:"error",message:String(e)};
-      }
-      if(attempt<3)await new Promise(r=>setTimeout(r,800*attempt));
+
+    setRegistering(true);
+    const tryOnce = async () => {
+      const r = await fetch(sheetsUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(body)
+      });
+      const text = await r.text();
+      try { return JSON.parse(text); } catch { return { result: "error", message: text.substring(0, 100) }; }
+    };
+
+    let result = null;
+    for (let i = 0; i < 3; i++) {
+      try { result = await tryOnce(); } catch (e) { result = { result: "error", message: String(e) }; }
+      if (result.result === "success" || result.result === "ok") break;
+      if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
     }
-    // ─── ④ 사후 역검증 (1차) — 서버 응답의 savedAnswers / rowIndex 직접 비교 ───
-    let verifyMsg="";
-    if(lastResult&&(lastResult.result==="success"||lastResult.result==="ok")){
-      const savedCnt=Number(lastResult.savedAnswers||0);
-      const rowIdx=lastResult.rowIndex;
-      if(savedCnt>0&&savedCnt===qs.length){
-        verifyMsg=`✅ 서버 검증 OK — 행 #${rowIdx} 에 ${savedCnt}문항 정확히 저장됨`;
-      }else if(lastResult.warning){
-        verifyMsg=`⚠️ ${lastResult.warning}\n시트를 직접 확인하세요.`;
-      }
-      // 2차 역검증 — 학생앱과 동일한 list_exams_by_date 로 외부 시점에서도 보이는지 확인
-      try{
-        const today=new Date().toISOString().split("T")[0].replace(/-/g,".");
-        const vr=await fetch(`${sheetsUrl}?action=admin_list_exams_by_date&date=${encodeURIComponent(today)}`);
-        const vd=await vr.json();
-        if(vd&&vd.result==="ok"&&Array.isArray(vd.exams)){
-          const matched=vd.exams.find(x=>
-            String(x.className||"").trim()===String(preview.targetClass||"").trim()&&
-            String(x.examType||"")==="문제생성기"&&
-            (String(x.setType||"")===_pgSetType||String(x.setType||"")===body.round)
-          );
-          if(!matched){
-            verifyMsg+=`\n⚠️ 외부 조회에서 방금 등록한 시험을 못 찾았어요. 잠시 후 학생앱 확인 필요.`;
-          }
-        }
-      }catch(_e){/* 2차 검증 실패는 등록 자체에 영향 X */}
-    }
-    setSending(false);
-    if(lastResult&&(lastResult.result==="success"||lastResult.result==="ok")){
-      const objCnt=Object.values(typesObj).filter(t=>t==="obj").length;
-      const subCnt=Object.values(typesObj).filter(t=>t==="sub").length;
-      alert(`✅ ${_pgSetType||("세트 "+["A","B","C"][selectedSet])}로 시험이 등록되었습니다!\n\n📝 ${qs.length}문항 (객관식 ${objCnt} · 주관식 ${subCnt})\n${verifyMsg||""}\n\n학생들이 선택할 수 있어요.`);
-      setStep(1);setPreview(null);loadHistory();
-    }else{
-      alert(`❌ 등록 실패 (3회 시도)\n\n사유: ${lastResult?.message||"알 수 없는 오류"}\n\n네트워크 확인 후 다시 시도하거나, 새로고침해주세요.\n중복 등록 방지를 위해 시트의 정답목록도 한 번 확인하시는 게 좋아요.`);
+    setRegistering(false);
+
+    if (result?.result === "success" || result?.result === "ok") {
+      const objCnt = Object.values(typesObj).filter(t => t === "obj").length;
+      const subCnt = Object.values(typesObj).filter(t => t === "sub").length;
+      const verify = (result.savedAnswers === qs.length) ? `\n✅ 서버 검증 OK — 행 #${result.rowIndex}에 ${result.savedAnswers}문항 저장됨` : (result.warning ? `\n⚠️ ${result.warning}` : "");
+      alert(`✅ 학생앱 등록 완료!\n\n📚 ${className}\n📝 ${qs.length}문항 (객관식 ${objCnt} · 주관식 ${subCnt})${verify}\n\n학생들이 즉시 시험을 볼 수 있습니다.`);
+      setScreen("done");
+    } else {
+      alert(`❌ 등록 실패 (3회 시도)\n\n사유: ${result?.message || "알 수 없음"}\n\n다시 시도하거나 시트의 정답목록을 직접 확인하세요.`);
     }
   };
-  // 히스토리 로드
-  const loadHistory=useCallback(async()=>{
-    setHistLoading(true);
-    try{
-      const r=await fetch(`${sheetsUrl}?action=list_exam_gen`);
-      const d=await r.json();
-      setHistory(d.requests||[]);
-    }catch(e){setHistory([]);}
-    setHistLoading(false);
-  },[sheetsUrl]);
-  useEffect(()=>{loadHistory();},[loadHistory]);
-  // 난이도 바 컴포넌트
-  const DiffBar=()=>{
-    const eQ=Math.round(questionCount*diffEasy/100);
-    const mQ=Math.round(questionCount*diffMed/100);
-    const hQ=questionCount-eQ-mQ;
-    return(<div style={{marginTop:8}}>
-      <div style={{display:"flex",height:28,borderRadius:8,overflow:"hidden",border:`1px solid ${T.border}`}}>
-        <div style={{width:`${diffEasy}%`,background:"#81C784",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:diffEasy>8?30:0,transition:"width .2s"}}>{diffEasy>8?`쉬움 ${eQ}`:""}</div>
-        <div style={{width:`${diffMed}%`,background:"#FFB74D",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:diffMed>8?30:0,transition:"width .2s"}}>{diffMed>8?`보통 ${mQ}`:""}</div>
-        <div style={{width:`${diffHard}%`,background:"#E57373",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:diffHard>8?30:0,transition:"width .2s"}}>{diffHard>8?`어려움 ${hQ}`:""}</div>
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginTop:10}}>
-        {[{label:"★☆☆ 쉬움",color:"#4CAF50",val:diffEasy,set:v=>adjustDiff("easy",v)},
-          {label:"★★☆ 보통",color:"#FF9800",val:diffMed,set:v=>adjustDiff("med",v)},
-          {label:"★★★ 어려움",color:"#F44336",val:diffHard,set:v=>adjustDiff("hard",v)}
-        ].map((d,i)=>(<div key={i} style={{textAlign:"center"}}>
-          <div style={{fontSize:11,fontWeight:600,color:d.color,marginBottom:4}}>{d.label}</div>
-          <input type="range" min={0} max={100} step={5} value={d.val}
-            onChange={e=>d.set(parseInt(e.target.value))}
-            style={{width:"100%",accentColor:d.color}}/>
-          <div style={{fontSize:13,fontWeight:700,color:d.color}}>{d.val}% ({Math.round(questionCount*d.val/100)}문제)</div>
-        </div>))}
-      </div>
-    </div>);
-  };
-  // ── Step 1: 설정 화면 ──
-  if(step===1) return(<div style={S.wrap} className="fade-up">
-    <div style={{textAlign:"center",padding:"20px 0 12px"}}>
-      <div style={{fontSize:36,marginBottom:4}}>📚</div>
-      <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>문제 생성기</h1>
-      <p style={{fontSize:13,color:T.textMuted}}>교재에서 자동으로 시험 문제를 만듭니다</p>
-    </div>
-    {/* 교재 선택 */}
-    <div style={S.card}>
-      <div style={S.secLabel}>교재 선택</div>
-      {tbLoading?(<div style={{fontSize:13,color:T.textMuted,padding:"12px 0"}}>교재 목록 불러오는 중...</div>)
-      :tbError?(<div style={{fontSize:13,color:T.danger,padding:"12px 0"}}>{tbError} <button onClick={loadTextbooks} style={{fontSize:12,color:T.blue,border:"none",background:"none",cursor:"pointer",textDecoration:"underline"}}>다시 시도</button></div>)
-      :(<>
-        <select style={S.inp} value={textbook} onChange={e=>{
-          const val=e.target.value;setTextbook(val);setChapters([]);
-          const bk=TEXTBOOKS.find(b=>b.id===val);
-          if(bk&&(!bk.chapters||bk.chapters.length===0))setRangeType("page");
-        }}>
-          <option value="">-- 교재를 선택하세요 ({TEXTBOOKS.length}권) --</option>
-          {TEXTBOOKS.map(b=><option key={b.id} value={b.id}>{b.name}{b.totalPages?` (${b.totalPages}쪽)`:""}</option>)}
-        </select>
-        {TEXTBOOKS.length===0&&<div style={{fontSize:12,color:T.textMuted,marginTop:6}}>등록된 교재가 없습니다. 아래에서 PDF를 업로드하거나, Google Drive의 "채움학원 시험자료/교재" 폴더에 PDF를 넣어주세요.</div>}
-      </>)}
-      {/* 교재 추가 영역 */}
-      <div style={{marginTop:12,paddingTop:12,borderTop:`1px solid ${T.borderLight}`}}>
-        <div style={{fontSize:12,fontWeight:600,color:T.textSub,marginBottom:8}}>교재 추가하기</div>
-        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          <label style={{display:"inline-flex",alignItems:"center",gap:6,padding:"8px 14px",fontSize:13,fontWeight:600,borderRadius:10,border:`1.5px solid ${T.goldDark}`,background:T.goldLight,color:T.goldDark,cursor:uploading?"wait":"pointer"}}>
-            {uploading?"업로드 중...":"📤 PDF 업로드"}
-            <input type="file" accept=".pdf" onChange={handleUploadTextbook} disabled={uploading} style={{display:"none"}} />
-          </label>
-          <span style={{fontSize:11,color:T.textMuted}}>또는 Google Drive "채움학원 시험자료/교재" 폴더에 직접 넣으면 자동 감지됩니다</span>
+
+  // ────────────────────────────────────────────
+  // 화면 1: 폼 (7단계)
+  // ────────────────────────────────────────────
+  if (screen === "form") {
+    const chs = AI_BOOK_CHAPTERS[bookName] || ["전체 범위"];
+    const totalTypePct = selectedTypes.reduce((s, t) => s + t.percentage, 0);
+    return (
+      <div style={S.wrap} className="fade-up">
+        <div style={{ textAlign: "center", padding: "20px 0 12px" }}>
+          <div style={{ fontSize: 36, marginBottom: 4 }}>📚</div>
+          <h1 style={{ fontSize: 24, fontWeight: 800, color: T.text, marginBottom: 4 }}>AI 문제 생성</h1>
+          <p style={{ fontSize: 13, color: T.textMuted }}>Claude Sonnet 4.6 · 즉시 생성 · 자가 검증</p>
         </div>
-        {TEXTBOOKS.length>0&&!tbLoading&&<button onClick={loadTextbooks} style={{marginTop:8,fontSize:11,color:T.blue,border:"none",background:"none",cursor:"pointer",textDecoration:"underline",padding:0}}>🔄 교재 목록 새로고침</button>}
-      </div>
-    </div>
-    {/* 범위 설정 */}
-    {textbook&&selBook&&<div style={S.card}>
-      <div style={S.secLabel}>범위 설정</div>
-      {selBook.chapters&&selBook.chapters.length>0?(
-      <div style={{display:"flex",gap:6,marginBottom:12}}>
-        {[{k:"chapter",label:"📖 챕터로 선택"},{k:"page",label:"📄 페이지로 선택"}].map(r=>(
-          <button key={r.k} onClick={()=>setRangeType(r.k)} style={{flex:1,padding:"10px",fontSize:13,fontWeight:rangeType===r.k?700:500,borderRadius:10,border:`1.5px solid ${rangeType===r.k?T.goldDark:T.border}`,background:rangeType===r.k?T.goldDark:T.white,color:rangeType===r.k?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{r.label}</button>
-        ))}
-      </div>
-      ):(<div style={{marginBottom:8}}>
-        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>이 교재는 아직 챕터 정보가 없습니다. 아래 버튼으로 챕터를 분석하거나 페이지 범위로 선택하세요.</div>
-        <button onClick={async()=>{
-          if(!selBook)return;
-          const chStr=prompt("챕터 목록을 입력하세요.\n각 챕터를 || 로 구분 (예: Chapter1.동사(p.4)||Chapter2.명사(p.6))\n\n또는 Claude Cowork에서 교재 분석 후 자동 등록됩니다.");
-          if(!chStr||!chStr.trim())return;
-          try{
-            const r=await fetch(`${sheetsUrl}?action=update_textbook_chapters&textbookId=${encodeURIComponent(selBook.id)}&chapters=${encodeURIComponent(chStr.trim())}`);
-            const d=await r.json();
-            if(d.result==="ok"){alert("챕터 등록 완료! 목록을 새로고침합니다.");loadTextbooks();}
-            else alert("챕터 등록 실패: "+(d.message||""));
-          }catch(e){alert("오류: "+e);}
-        }} style={{padding:"8px 14px",fontSize:12,fontWeight:600,borderRadius:10,border:`1.5px solid ${T.goldDark}`,background:T.goldLight,color:T.goldDark,cursor:"pointer",fontFamily:"inherit",marginBottom:8}}>📖 챕터 직접 등록하기</button>
-      </div>)}
-      {rangeType==="chapter"&&selBook.chapters&&selBook.chapters.length>0?(<div>
-        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>챕터를 선택하세요 (여러 개 가능)</div>
-        <div style={{display:"flex",flexDirection:"column",gap:4}}>
-          {selBook.chapters.map((ch,i)=>{
-            const sel=chapters.includes(i);
-            return(<button key={i} onClick={()=>toggleCh(i)} style={{
-              padding:"10px 14px",fontSize:13,fontWeight:sel?700:500,borderRadius:10,
-              border:`1.5px solid ${sel?T.goldDark:T.border}`,background:sel?T.goldLight:T.white,
-              color:sel?T.goldDeep:T.textSub,cursor:"pointer",fontFamily:"inherit",textAlign:"left",
-              transition:"all .12s"
-            }}>{sel?"✅ ":"　"}{ch}</button>);
-          })}
+
+        {/* STEP 1: 교재 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>1. 교재 선택</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+            {Object.keys(AI_CAT_KR).map(cat => (
+              <button key={cat} onClick={() => setBookCategory(cat)}
+                style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${bookCategory === cat ? T.goldDark : T.border}`, background: bookCategory === cat ? T.goldLight : T.white, color: bookCategory === cat ? T.goldDark : T.textSub, fontWeight: bookCategory === cat ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+                {AI_CAT_KR[cat]}
+              </button>
+            ))}
+          </div>
+          <select style={S.inp} value={bookName} onChange={e => setBookName(e.target.value)}>
+            {(AI_BOOKS[bookCategory] || []).map(b => <option key={b}>{b}</option>)}
+          </select>
         </div>
-        {chapters.length>0&&<div style={{marginTop:8,fontSize:12,fontWeight:600,color:T.goldDark}}>
-          선택: {chapters.length}개 챕터
-        </div>}
-      </div>):(<div>
-        <div style={{fontSize:12,color:T.textMuted,marginBottom:8}}>페이지 범위를 입력하세요{selBook.totalPages?` (1~${selBook.totalPages})`:""}</div>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
-          <input style={{...S.inp,maxWidth:100,textAlign:"center"}} placeholder="시작" value={pageFrom}
-            onChange={e=>setPageFrom(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric"/>
-          <span style={{fontSize:14,color:T.textMuted,fontWeight:600}}>~</span>
-          <input style={{...S.inp,maxWidth:100,textAlign:"center"}} placeholder="끝" value={pageTo}
-            onChange={e=>setPageTo(e.target.value.replace(/[^0-9]/g,""))} inputMode="numeric"/>
-          <span style={{fontSize:12,color:T.textMuted}}>쪽</span>
+
+        {/* STEP 2: 범위 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>2. 범위</div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+            <button onClick={() => setRangeMode("chapter")} style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${rangeMode === "chapter" ? T.goldDark : T.border}`, background: rangeMode === "chapter" ? T.goldLight : T.white, color: rangeMode === "chapter" ? T.goldDark : T.textSub, fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>📖 챕터로</button>
+            <button onClick={() => setRangeMode("page")} style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${rangeMode === "page" ? T.goldDark : T.border}`, background: rangeMode === "page" ? T.goldLight : T.white, color: rangeMode === "page" ? T.goldDark : T.textSub, fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>📄 페이지로</button>
+          </div>
+          {rangeMode === "chapter" ? (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {chs.map((ch, i) => (
+                <button key={i} onClick={() => setSelectedChapters(p => p.includes(i) ? p.filter(x => x !== i) : [...p, i])}
+                  style={{ padding: "8px 14px", borderRadius: 18, border: `1.5px solid ${selectedChapters.includes(i) ? T.goldDark : T.border}`, background: selectedChapters.includes(i) ? T.goldLight : T.white, color: selectedChapters.includes(i) ? T.goldDark : T.textSub, fontSize: 12, fontWeight: selectedChapters.includes(i) ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                  {ch}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <input type="number" placeholder="시작" value={pageFrom} onChange={e => setPageFrom(e.target.value)} style={{ ...S.inp, width: 90 }} />
+              <span>~</span>
+              <input type="number" placeholder="끝" value={pageTo} onChange={e => setPageTo(e.target.value)} style={{ ...S.inp, width: 90 }} />
+              <span style={{ color: T.textMuted, fontSize: 13 }}>p.</span>
+            </div>
+          )}
         </div>
-      </div>)}
-    </div>}
-    {/* 유형 설정 */}
-    {textbook&&<div style={S.card}>
-      <div style={S.secLabel}>시험 유형</div>
-      <div style={{display:"flex",gap:6}}>
-        {[{k:"grammar",icon:"📝",label:"문법/독해",desc:"객관식+주관식 혼합"},
-          {k:"vocab",icon:"🔤",label:"단어 테스트",desc:"단답형 (주관식)"}
-        ].map(t=>{
-          const sel=testType===t.k;
-          return(<button key={t.k} onClick={()=>setTestType(t.k)} style={{
-            flex:1,padding:"14px 10px",borderRadius:12,
-            border:`1.5px solid ${sel?T.goldDark:T.border}`,background:sel?T.goldLight:T.white,
-            cursor:"pointer",fontFamily:"inherit",textAlign:"center",transition:"all .12s"
-          }}>
-            <div style={{fontSize:24,marginBottom:4}}>{t.icon}</div>
-            <div style={{fontSize:13,fontWeight:sel?700:600,color:sel?T.goldDeep:T.text}}>{t.label}</div>
-            <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{t.desc}</div>
-          </button>);
-        })}
-      </div>
-    </div>}
-    {/* 문제 수 + 난이도 + 객관식/서술형 */}
-    {textbook&&<div style={S.card}>
-      <div style={S.secLabel}>문제 수 · 난이도</div>
-      <div style={S.label}>문제 수</div>
-      <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap"}}>
-        {[10,15,20,25,30,35,40].map(n=>{
-          const sel=questionCount===n&&!customQCount;
-          return(<button key={n} onClick={()=>{setQuestionCount(n);setCustomQCount("");}} style={{
-            padding:"8px 14px",borderRadius:20,border:`1.5px solid ${sel?T.goldDark:T.border}`,
-            background:sel?T.goldDark:T.white,color:sel?T.white:T.textSub,
-            fontWeight:sel?700:500,fontSize:14,cursor:"pointer",fontFamily:"inherit"
-          }}>{n}문제</button>);
-        })}
-        {(()=>{const sel=!!customQCount;return(<button onClick={()=>{if(!customQCount)setCustomQCount(String(questionCount));}} style={{
-          padding:"8px 14px",borderRadius:20,border:`1.5px solid ${sel?T.goldDark:T.border}`,
-          background:sel?T.goldDark:T.white,color:sel?T.white:T.textSub,
-          fontWeight:sel?700:500,fontSize:14,cursor:"pointer",fontFamily:"inherit"
-        }}>✏️ 직접입력</button>);})()}
-      </div>
-      {customQCount!==undefined&&customQCount!==""&&<div style={{display:"flex",gap:8,alignItems:"center",marginBottom:16}}>
-        <input style={{...S.inp,maxWidth:100,textAlign:"center",fontSize:16,fontWeight:700}} value={customQCount} inputMode="numeric"
-          onChange={e=>{const v=e.target.value.replace(/[^0-9]/g,"");setCustomQCount(v);if(v&&parseInt(v)>0)setQuestionCount(parseInt(v));}}
-          placeholder="문제수"/>
-        <span style={{fontSize:13,color:T.textMuted,fontWeight:600}}>문제</span>
-        {parseInt(customQCount)>50&&<span style={{fontSize:11,color:T.danger}}>⚠️ 50문제 이상은 생성 시간이 오래 걸릴 수 있어요</span>}
-      </div>}
-      <div style={S.label}>객관식 / 서술형 비율</div>
-      <div style={{marginBottom:16}}>
-        <div style={{display:"flex",height:28,borderRadius:8,overflow:"hidden",border:`1px solid ${T.border}`,marginBottom:8}}>
-          <div style={{width:`${mcRatio}%`,background:"#1E88E5",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:mcRatio>10?40:0,transition:"width .2s"}}>{mcRatio>10?`객관식 ${Math.round(questionCount*mcRatio/100)}`:""}</div>
-          <div style={{width:`${100-mcRatio}%`,background:"#AB47BC",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#fff",minWidth:(100-mcRatio)>10?40:0,transition:"width .2s"}}>{(100-mcRatio)>10?`서술형 ${questionCount-Math.round(questionCount*mcRatio/100)}`:""}</div>
-        </div>
-        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
-          {[{v:100,label:"전체 객관식"},{v:80,label:"객관식 80%"},{v:60,label:"객관식 60%"},{v:50,label:"반반"},{v:0,label:"전체 서술형"}].map(o=>{
-            const sel=mcRatio===o.v;
-            return(<button key={o.v} onClick={()=>setMcRatio(o.v)} style={{
-              padding:"6px 12px",borderRadius:16,border:`1.5px solid ${sel?"#1E88E5":T.border}`,
-              background:sel?"#1E88E5":T.white,color:sel?T.white:T.textSub,
-              fontWeight:sel?700:500,fontSize:12,cursor:"pointer",fontFamily:"inherit"
-            }}>{o.label}</button>);
-          })}
-        </div>
-        <input type="range" min={0} max={100} step={10} value={mcRatio}
-          onChange={e=>setMcRatio(parseInt(e.target.value))}
-          style={{width:"100%",accentColor:"#1E88E5"}}/>
-        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:T.textMuted,marginTop:4}}>
-          <span>객관식 {mcRatio}% ({Math.round(questionCount*mcRatio/100)}문제)</span>
-          <span>서술형 {100-mcRatio}% ({questionCount-Math.round(questionCount*mcRatio/100)}문제)</span>
-        </div>
-      </div>
-      <div style={S.label}>난이도 배분</div>
-      <DiffBar/>
-    </div>}
-    {/* 대상 반 + 선생님 */}
-    {textbook&&<div style={S.card}>
-      <div style={S.secLabel}>대상 정보</div>
-      {/* 선생님 드롭다운 (시험등록과 동일) */}
-      <div style={{marginBottom:14}}>
-        <div style={S.label}>선생님 이름 <span style={{color:T.danger}}>*</span></div>
-        {_tl&&_tl.length>0?(
-          <select style={S.inp} value={targetTeacher} onChange={e=>setTargetTeacher(e.target.value)}>
-            <option value="">-- 선생님 선택 --</option>
-            {["국어","영어","수학","과학","사회"].map(sub=>{
-              const subT=_tl.filter(t=>t.subject===sub);
-              if(subT.length===0)return null;
-              return(<optgroup key={sub} label={sub+"과"}>{subT.map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>);
+
+        {/* STEP 3: 시험 유형 (다중 선택) */}
+        <div style={S.card}>
+          <div style={S.secLabel}>3. 시험 유형 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(여러 개 선택 가능)</span></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
+            {Object.keys(AI_TYPE_META).map(type => {
+              const m = AI_TYPE_META[type];
+              const active = selectedTypes.some(t => t.type === type);
+              return (
+                <button key={type} onClick={() => toggleType(type)}
+                  style={{ padding: "14px 4px", borderRadius: 10, border: `2px solid ${active ? T.goldDark : T.border}`, background: active ? T.goldLight : T.white, cursor: "pointer", fontFamily: "inherit", position: "relative", textAlign: "center" }}>
+                  {active && <span style={{ position: "absolute", top: 4, right: 6, color: T.goldDark, fontWeight: 900, fontSize: 12 }}>✓</span>}
+                  <div style={{ fontSize: 20, marginBottom: 2 }}>{m.icon}</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: active ? T.goldDark : T.text }}>{m.name}</div>
+                </button>
+              );
             })}
-            {_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).length>0&&(
-              <optgroup label="기타">{_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).map(t=>(<option key={t.name} value={t.name}>{t.name}</option>))}</optgroup>
-            )}
-          </select>
-        ):(<input style={S.inp} placeholder="예: 김선생 (목록 로딩 중…)" value={targetTeacher} onChange={e=>setTargetTeacher(e.target.value)}/>)}
-      </div>
-      {/* 반 추가 (시험등록과 동일 방식) */}
-      <div style={{marginBottom:14}}>
-        <div style={S.label}>과목 <span style={{color:T.danger}}>*</span></div>
-        <div style={S.cw}>{SUBJECTS.map(o=>{const a=genSubject===o;return(<button key={o} onClick={()=>setGenSubject(genSubject===o?"":o)} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500}}>{o}</button>);})}</div>
-      </div>
-      {/* 학년 — 2단 드롭다운 */}
-      <div style={{marginBottom:14}}>
-        <div style={S.label}>학년 <span style={{color:T.danger}}>*</span></div>
-        <div style={{display:"flex",gap:8}}>
-          <select style={{...S.inp,flex:"1 1 50%",cursor:"pointer"}} value={genGrade==="초등"?"초등":((genGrade.match(/^(초|중|고)/)||[""])[0]||"")} onChange={e=>{
-            const sch=e.target.value;
-            if(!sch){setGenGrade("");return;}
-            if(sch==="초등"){setGenGrade("초등");return;}
-            const curNum=(genGrade.match(/\d+/)||[""])[0];
-            const maxN=sch==="초"?6:3;
-            setGenGrade(curNum&&parseInt(curNum)<=maxN?sch+curNum:sch);
-          }}>
-            <option value="">학교급 선택</option>
-            <option value="초">초등학교</option>
-            <option value="초등">초등 (학년 무관)</option>
-            <option value="중">중학교</option>
-            <option value="고">고등학교</option>
-          </select>
-          <select style={{...S.inp,flex:"1 1 50%",cursor:"pointer"}} value={(genGrade.match(/\d+/)||[""])[0]||""} disabled={!genGrade||genGrade==="초등"} onChange={e=>{
-            const n=e.target.value;
-            const sch=(genGrade.match(/^(초|중|고)/)||[""])[0];
-            if(!sch)return;
-            setGenGrade(n?sch+n:sch);
-          }}>
-            <option value="">학년 선택</option>
-            {(genGrade.startsWith("초")&&genGrade!=="초등"?[1,2,3,4,5,6]:genGrade?[1,2,3]:[]).map(n=>(<option key={n} value={String(n)}>{n}학년</option>))}
-          </select>
+          </div>
+          {/* 유형별 패널 */}
+          {selectedTypes.map((t, idx) => {
+            const m = AI_TYPE_META[t.type];
+            return (
+              <div key={t.type} style={{ padding: 12, background: T.bg, borderRadius: 8, marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 16 }}>{m.icon}</span>
+                  <span style={{ fontWeight: 700, fontSize: 13, flex: 1 }}>{m.name}</span>
+                  <input type="range" min="0" max="100" step="5" value={t.percentage} disabled={selectedTypes.length === 1}
+                    onChange={e => setTypePct(idx, e.target.value)} style={{ flex: 1, accentColor: T.goldDark }} />
+                  <span style={{ fontWeight: 700, color: T.goldDark, minWidth: 36, textAlign: "right", fontSize: 13 }}>{t.percentage}%</span>
+                </div>
+                <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 6 }}>세부 유형 (체크 없으면 전체 균등)</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {AI_SUBTYPES[t.type].map(sn => {
+                    const checked = t.subtypes.some(s => s.name === sn);
+                    return (
+                      <button key={sn} onClick={() => toggleSubtype(idx, sn)}
+                        style={{ padding: "4px 10px", borderRadius: 14, border: `1px solid ${checked ? T.goldDark : T.border}`, background: checked ? T.goldLight : T.white, color: checked ? T.goldDark : T.textSub, fontSize: 11, fontWeight: checked ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                        {checked ? "✓ " : ""}{sn}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {selectedTypes.length > 1 && (
+            <div style={{ marginTop: 8, padding: "6px 10px", background: totalTypePct === 100 ? T.accentLight : T.dangerLight, borderRadius: 6, fontSize: 11, fontWeight: 700, color: totalTypePct === 100 ? T.accent : T.danger, textAlign: "right" }}>
+              합계 {totalTypePct}% {totalTypePct === 100 ? "✓" : "(100%로 맞춰주세요)"}
+            </div>
+          )}
         </div>
-      </div>
-      {/* 레벨 / 학교 — 다중선택 */}
-      <div style={{marginBottom:14}}>
-        <div style={S.label}>레벨 / 학교 <span style={{color:T.danger}}>*</span></div>
-        <div style={{display:"flex",gap:5,marginBottom:8}}>{LV_CATS.map(c=>{const a=genLevelCat===c.key;return(<button key={c.key} onClick={()=>{setGenLevelCat(c.key);setGenLevel("");setGenLevelCustom("");setGenLevelMulti([]);}} style={{padding:"6px 12px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>{c.label}</button>);})}</div>
-        {(genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")?(<>
-          <div style={S.cw}>{(LV_CATS.find(c=>c.key===genLevelCat)?.opts||[]).map(o=>{const a=genLevelMulti.includes(o);return(<button key={o} onClick={()=>setGenLevelMulti(p=>p.includes(o)?p.filter(x=>x!==o):[...p,o])} style={{...S.ch,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,borderColor:a?T.goldDark:T.border,fontWeight:a?700:500,fontSize:12,padding:"7px 12px"}}>{a?"☑ ":"☐ "}{o}</button>);})}</div>
-          {genLevelMulti.length>0&&(<div style={{marginTop:6}}>
-            <button onClick={()=>setGenLevelMulti([])} style={{padding:"4px 10px",fontSize:11,fontWeight:600,borderRadius:6,border:`1px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>초기화</button>
-          </div>)}
-          {genLevelMulti.length>=2&&(<div style={{marginTop:8,padding:"8px 10px",background:"#FFF8E6",border:`1px solid ${T.goldMuted||"#E8D8A0"}`,borderRadius:8,fontSize:11,color:T.textSub,lineHeight:1.5}}>
-            ⚠ <b>{genLevelMulti.length}개를 하나의 반으로 등록</b>합니다. 반드시 <b>같은 시험지</b>를 공유할 때만 사용하세요.
-          </div>)}
-        </>):(<input style={{...S.inp,marginTop:4}} placeholder="직접 입력 (예: 특별반)" value={genLevelCustom} onChange={e=>{setGenLevelCustom(e.target.value);setGenLevel(e.target.value);}}/>)}
-      </div>
-      {genSubject&&genGrade&&(((genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")&&genLevelMulti.length>0)||(genLevelCat==="etc"&&genLevelCustom))&&(<div style={S.addRow}>
-        <div style={{fontSize:14,fontWeight:700,color:T.goldDark}}>{genSubject} {genGrade} {(genLevelCat==="middle"||genLevelCat==="high"||genLevelCat==="level")?genLevelMulti.join("+"):genLevelCustom}반</div>
-        <button onClick={addGenClass} style={S.addBtn}>+ 반 추가</button>
-      </div>)}
-      {genClasses.length>0&&(<div style={{marginTop:12,marginBottom:14}}>
-        <div style={{fontSize:12,fontWeight:600,color:T.textMuted,marginBottom:6}}>추가된 반 ({genClasses.length}개)</div>
-        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{genClasses.map((c,i)=>(<div key={i} style={S.tag}><span>{c.name}</span><button onClick={()=>setGenClasses(p=>p.filter((_,j)=>j!==i))} style={S.tagX}>×</button></div>))}</div>
-      </div>)}
-      {/* ★ 시험 구분 (이론편/실전편/혼합) — Claude에게 문제 유형 지시 */}
-      <div style={{marginBottom:14,padding:"12px 14px",border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-        <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📚 시험 구분 (선택) — Claude에게 문제 유형 지시</div>
-        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-          {GEN_SET_TYPES.map(st=>{
-            const a=genSetType===st;
-            const emj=st==="이론편"?"📘":st==="실전편"?"📕":"📗";
-            const desc=st==="이론편"?"개념·기본 확인 위주":st==="실전편"?"실전 문제 풀이 중심":"이론+실전 섞음";
-            return(<button key={st} onClick={()=>setGenSetType(genSetType===st?"":st)} style={{padding:"10px 14px",fontSize:12,fontWeight:a?700:500,borderRadius:8,border:`1.5px solid ${a?T.goldDark:T.border}`,background:a?T.goldDark:T.white,color:a?T.white:T.textSub,cursor:"pointer",fontFamily:"inherit",display:"flex",flexDirection:"column",alignItems:"flex-start",gap:2,minWidth:110}}>
-              <span>{emj} {st}</span><span style={{fontSize:10,fontWeight:400,opacity:.8}}>{desc}</span>
-            </button>);
+
+        {/* STEP 4: 문제 수 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>4. 문제 수</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {[10, 15, 20, 25, 30, 40, 50].map(n => (
+              <button key={n} onClick={() => setQuestionCount(n)}
+                style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${questionCount === n ? T.goldDark : T.border}`, background: questionCount === n ? T.goldLight : T.white, color: questionCount === n ? T.goldDark : T.textSub, fontWeight: questionCount === n ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* STEP 5: 객/서 비율 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>5. 객관식 / 서술형 비율</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: 12, color: T.textSub }}>서술형</span>
+            <input type="range" min="0" max="100" step="10" value={mcRatio} onChange={e => setMcRatio(parseInt(e.target.value))} style={{ flex: 1, accentColor: T.goldDark }} />
+            <span style={{ fontSize: 12, color: T.textSub }}>객관식</span>
+            <span style={{ fontWeight: 700, color: T.goldDark, minWidth: 44, textAlign: "right" }}>{mcRatio}%</span>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: T.textSub, textAlign: "right" }}>
+            👉 객관식 <strong style={{ color: T.goldDark }}>{mcCount}</strong>문제 · 서술형 <strong>{ssCount}</strong>문제
+          </div>
+        </div>
+
+        {/* STEP 6: 난이도 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>6. 난이도 분포</div>
+          <div style={{ height: 10, borderRadius: 5, overflow: "hidden", display: "flex", marginBottom: 8 }}>
+            <div style={{ flex: difficulty.easy || 0.01, background: "#52C41A" }} />
+            <div style={{ flex: difficulty.mid || 0.01, background: "#FAAD14" }} />
+            <div style={{ flex: difficulty.hard || 0.01, background: "#FF4D4F" }} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, marginBottom: 12 }}>
+            <span style={{ color: "#52C41A" }}>쉬움 {difficulty.easy}%</span>
+            <span style={{ color: "#FAAD14" }}>보통 {difficulty.mid}%</span>
+            <span style={{ color: "#FF4D4F" }}>어려움 {difficulty.hard}%</span>
+          </div>
+          {["easy", "mid", "hard"].map(level => {
+            const colors = { easy: "#52C41A", mid: "#FAAD14", hard: "#FF4D4F" };
+            const names = { easy: "쉬움", mid: "보통", hard: "어려움" };
+            return (
+              <div key={level} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 14, background: colors[level] + "22", color: colors[level], minWidth: 48, textAlign: "center" }}>{names[level]}</span>
+                <input type="range" min="0" max="100" step="5" value={difficulty[level]} onChange={e => diffChanged(level, e.target.value)} style={{ flex: 1, accentColor: colors[level] }} />
+                <span style={{ fontWeight: 700, fontSize: 13, color: colors[level], minWidth: 40, textAlign: "right" }}>{difficulty[level]}%</span>
+              </div>
+            );
           })}
         </div>
-        <div style={{fontSize:11,color:T.textMuted,marginTop:6,lineHeight:1.5}}>선택하면 Claude가 해당 유형에 맞춰 문제를 생성합니다. 비워두면 기본(혼합) 유형.</div>
-      </div>
-      {/* ★ v2: 시험 날짜/시간 */}
-      <div style={{marginBottom:14,padding:"12px 14px",border:`1.5px solid ${T.goldMuted}`,borderRadius:10,background:T.goldPale}}>
-        <div style={{fontSize:13,fontWeight:700,color:T.goldDeep,marginBottom:8}}>📅 시험 날짜 / 시간</div>
-        <div style={{display:"flex",gap:8}}>
-          <div style={{flex:1}}>
-            <div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>시험 날짜</div>
-            <input type="date" style={{...S.inp,width:"100%"}} value={examDate} onChange={e=>setExamDate(e.target.value)}/>
-          </div>
-          <div style={{flex:1}}>
-            <div style={{fontSize:11,color:T.textMuted,marginBottom:4}}>시험 시간</div>
-            <input type="time" style={{...S.inp,width:"100%"}} value={examTime} onChange={e=>setExamTime(e.target.value)}/>
-          </div>
-        </div>
-        <div style={{fontSize:11,color:T.textMuted,marginTop:6,lineHeight:1.5}}>선택한 날짜 폴더 아래 선생님 폴더에 문제가 저장됩니다. (예: 2026.04.24 / 김선생 / …)</div>
-      </div>
-      <div style={S.label}>메모 (선택)</div>
-      <input style={S.inp} placeholder="추가 요청사항 (예: 서술형 포함)" value={memo}
-        onChange={e=>setMemo(e.target.value)}/>
-    </div>}
-    {/* 확인 버튼 */}
-    {textbook&&<button style={{...S.btnG,opacity:sending?0.5:1}} disabled={sending}
-      onClick={()=>{
-        if(!textbook)return alert("교재를 선택하세요.");
-        const _hasChap=selBook&&selBook.chapters&&selBook.chapters.length>0;
-        if(rangeType==="chapter"&&_hasChap&&chapters.length===0)return alert("챕터를 1개 이상 선택하세요.");
-        if((rangeType==="page"||!_hasChap)&&(!pageFrom||!pageTo))return alert("페이지 범위를 입력하세요.");
-        if(!targetTeacher)return alert("선생님 이름을 선택하세요.");
-        if(genClasses.length===0)return alert("대상 반을 1개 이상 추가하세요.");
-        setStep(2);
-      }}>
-      다음: 생성 요청 확인 →
-    </button>}
-    {/* 히스토리 */}
-    <div style={{marginTop:24}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-        <div style={{fontSize:14,fontWeight:700,color:T.text}}>📋 생성 요청 내역</div>
-        <div style={{display:"flex",gap:10}}>
-          <button onClick={async()=>{
-            try{
-              const r=await fetch(`${sheetsUrl}?action=scan_exam_gen_results`);
-              const d=await r.json();
-              if(d.result==="ok"){alert("✅ Drive 스캔 완료 — 학생앱에서 검색 가능합니다.\n(자동처리로그 시트에서 상세 확인)");loadHistory();}
-              else alert("스캔 실패: "+(d.message||""));
-            }catch(e){alert("스캔 실패: "+String(e));}
-          }} style={{fontSize:11,color:T.accent,fontWeight:700,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>📂 Drive 결과 스캔</button>
-          <button onClick={loadHistory} style={{fontSize:11,color:T.goldDark,fontWeight:600,background:"none",border:"none",cursor:"pointer",fontFamily:"inherit"}}>🔄 새로고침</button>
-        </div>
-      </div>
-      {/* ★ v20.5: 선생님 필터 — 본인 자료만 보기 */}
-      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,padding:"8px 10px",background:T.bg,borderRadius:8}}>
-        <span style={{fontSize:11,color:T.textMuted,whiteSpace:"nowrap"}}>👤 선생님</span>
-        {_tl&&_tl.length>0?(
-          <select value={histFilterTeacher} onChange={e=>{setHistFilterTeacher(e.target.value);setHistVisibleCount(3);}} style={{...S.inp,flex:1,fontSize:12,padding:"6px 8px"}}>
-            <option value="">전체 선생님 ({history.length}건)</option>
-            {["국어","영어","수학","과학","사회"].map(sub=>{
-              const subT=_tl.filter(t=>t.subject===sub);
-              if(subT.length===0)return null;
-              return(<optgroup key={sub} label={sub+"과"}>{subT.map(t=>{
-                const cnt=history.filter(h=>h.teacher===t.name).length;
-                return(<option key={t.name} value={t.name}>{t.name} ({cnt}건)</option>);
-              })}</optgroup>);
-            })}
-            {_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).length>0&&(
-              <optgroup label="기타">{_tl.filter(t=>!["국어","영어","수학","과학","사회"].includes(t.subject)).map(t=>{
-                const cnt=history.filter(h=>h.teacher===t.name).length;
-                return(<option key={t.name} value={t.name}>{t.name} ({cnt}건)</option>);
-              })}</optgroup>
-            )}
-          </select>
-        ):(<input style={{...S.inp,flex:1,fontSize:12,padding:"6px 8px"}} placeholder="선생님 이름" value={histFilterTeacher} onChange={e=>{setHistFilterTeacher(e.target.value);setHistVisibleCount(3);}}/>)}
-        {histFilterTeacher&&<button onClick={()=>{setHistFilterTeacher("");setHistVisibleCount(3);}} style={{fontSize:11,padding:"4px 8px",border:`1px solid ${T.border}`,borderRadius:6,background:T.white,color:T.textMuted,cursor:"pointer",fontFamily:"inherit"}}>초기화</button>}
-      </div>
-      {(()=>{
-        const filteredHistory=histFilterTeacher?history.filter(h=>h.teacher===histFilterTeacher):history;
-        const visible=filteredHistory.slice(0,histVisibleCount);
-        if(histLoading)return<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>로딩 중…</div>;
-        if(filteredHistory.length===0)return<div style={{textAlign:"center",padding:20,color:T.textMuted,fontSize:13}}>{histFilterTeacher?`${histFilterTeacher} 선생님의 생성 요청이 없습니다`:"아직 생성 요청이 없습니다"}</div>;
-        return<>{visible.map((h,i)=>{
-         const statusColor=h.status==="완료"?T.accent:h.status==="생성중"?"#FF9800":h.status==="실패"?T.danger:T.textMuted;
-         const statusBg=h.status==="완료"?T.accentLight:h.status==="생성중"?"#FFF3E0":h.status==="실패"?T.dangerLight:T.bg;
-         return(<div key={i} style={{...S.card,marginBottom:8}}>
-           <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",marginBottom:6}}>
-             <div style={{flex:1}}>
-               <div style={{fontSize:14,fontWeight:700,color:T.text}}>{h.textbook}</div>
-               <div style={{fontSize:12,color:T.textSub,marginTop:2}}>{h.rangeDesc} · {h.testType==="vocab"?"단어":"문법/독해"} · {h.questionCount}문제{h.mcRatio!=null&&h.mcRatio<100?` · 객${h.mcRatio}%`:""}</div>
-               <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>👤 {h.teacher} · {h.targetClass} · {h.requestedAt||""}</div>
-             </div>
-             <div style={{display:"flex",alignItems:"center",gap:6}}>
-               {/* ★ v15: 검수 뱃지 — 정답 PDF 분석 검증 결과 */}
-               {h.status==="완료"&&h.verification&&(()=>{
-                 const vs=String(h.verificationStatus||h.verification.status||"").toLowerCase();
-                 const wn=(h.verification.warnings||[]).length;
-                 const isErr=vs==="error";
-                 const isWarn=vs==="warning"||wn>0;
-                 const ok=!isErr&&!isWarn;
-                 const color=ok?"#2E7D32":isErr?"#C62828":"#E65100";
-                 const bg=ok?"#E8F5E9":isErr?"#FFEBEE":"#FFF3E0";
-                 const ic=ok?"✅":isErr?"❌":"⚠️";
-                 const txt=ok?"검증":isErr?`오류${wn?` ${wn}`:""}`:`경고${wn?` ${wn}`:""}`;
-                 return(<button onClick={(ev)=>{ev.stopPropagation();setVerifyModal({row:h.rowIndex,verification:h.verification,startNumber:h.startNumber||1,totalQuestions:h.questionCount||h.totalQuestions||0,textbook:h.textbook,targetClass:h.targetClass});}}
-                   title="검수 상세 보기" style={{padding:"4px 8px",borderRadius:12,background:bg,color:color,fontSize:11,fontWeight:700,border:"none",cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>{ic} {txt}</button>);
-               })()}
-               <span style={{padding:"4px 10px",borderRadius:20,background:statusBg,color:statusColor,fontSize:11,fontWeight:700,whiteSpace:"nowrap"}}>{h.status||"대기"}</span>
-               <button onClick={(ev)=>{ev.stopPropagation();deleteExamGen(h.rowIndex);}}
-                 title="삭제" style={{width:24,height:24,borderRadius:"50%",border:`1px solid ${T.border}`,background:T.bg,color:T.textMuted,fontSize:14,lineHeight:"22px",textAlign:"center",cursor:"pointer",padding:0,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"}}>✕</button>
-             </div>
-           </div>
-           {h.status==="완료"&&<div>
-             {/* ★ v14: 활성 세트 뱃지 + B세트 보유 여부 안내 */}
-             {(h.resultFileIdB||h.activeSet)&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:4,fontSize:11}}>
-               <span style={{padding:"2px 8px",borderRadius:10,background:(h.activeSet||"A")==="A"?"#E8F5E9":"#E3F2FD",color:(h.activeSet||"A")==="A"?"#2E7D32":"#1565C0",fontWeight:700}}>
-                 현재 노출: {h.activeSet||"A"}세트
-               </span>
-               {h.resultFileIdB?<span style={{color:T.textMuted}}>· B세트 백업 있음</span>:<span style={{color:T.textMuted}}>· 백업 없음(단일 세트)</span>}
-             </div>}
-             <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
-               <button onClick={()=>loadPreview(h.rowIndex)} disabled={prevLoading&&prevRow===h.rowIndex}
-                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}}>
-                 {prevLoading&&prevRow===h.rowIndex?"로딩…":"👁️ 미리보기"}
-               </button>
-               <button onClick={()=>autoRegisterForStudents(h.rowIndex)}
-                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:"none",background:T.accent,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>📱 학생앱 등록</button>
-               {/* ★ v20.5: 개별 다운로드 — Drive 결과파일 직접 다운로드 */}
-               {h.resultFileId&&<button onClick={()=>{
-                 window.open(`https://drive.google.com/uc?export=download&id=${h.resultFileId}`,"_blank");
-               }} title="결과 파일(JSON) 다운로드"
-                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>
-                 📥 다운로드{h.resultFileIdB?" (A)":""}
-               </button>}
-               {h.resultFileIdB&&<button onClick={()=>{
-                 window.open(`https://drive.google.com/uc?export=download&id=${h.resultFileIdB}`,"_blank");
-               }} title="B세트 결과 파일(JSON) 다운로드"
-                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}}>
-                 📥 다운로드 (B)
-               </button>}
-               {h.resultFileIdB&&<button onClick={()=>swapExamSet(h.rowIndex,h.activeSet||"A")}
-                 title={`현재 ${h.activeSet||"A"}세트가 노출 중 — ${(h.activeSet||"A")==="A"?"B":"A"}세트로 교체`}
-                 style={{flex:"1 1 30%",padding:"8px",fontSize:12,fontWeight:700,borderRadius:8,border:"none",background:"#FFB300",color:T.white,cursor:"pointer",fontFamily:"inherit"}}>
-                 🔄 {(h.activeSet||"A")==="A"?"B":"A"}세트로 교체
-               </button>}
-             </div>
-           </div>}
-           {h.status==="생성중"&&<div style={{padding:"6px 10px",borderRadius:8,background:"#FFF3E0",fontSize:12,color:"#E65100",fontWeight:600,textAlign:"center",marginTop:6}}>
-             ⏳ Claude가 문제를 만들고 있어요… (약 10분)
-           </div>}
-         </div>);
-       })}
-       {/* ★ v20.5: 더보기 / 접기 */}
-       {filteredHistory.length>histVisibleCount&&<button onClick={()=>setHistVisibleCount(c=>c+5)}
-         style={{width:"100%",padding:"10px",marginTop:4,fontSize:12,fontWeight:600,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.bg,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>
-         ⬇ 더보기 ({filteredHistory.length-histVisibleCount}건 더 / 총 {filteredHistory.length}건)
-       </button>}
-       {histVisibleCount>3&&filteredHistory.length<=histVisibleCount&&<button onClick={()=>setHistVisibleCount(3)}
-         style={{width:"100%",padding:"8px",marginTop:4,fontSize:11,fontWeight:500,borderRadius:10,border:`1px dashed ${T.border}`,background:"transparent",color:T.textMuted,cursor:"pointer",fontFamily:"inherit"}}>
-         ⬆ 3개만 보기
-       </button>}
-       </>;
-      })()}
-    </div>
-    {/* ★ v15: 검수 결과 상세 모달 */}
-    {verifyModal&&(()=>{
-      const v=verifyModal.verification||{};
-      const ws=v.warnings||[];
-      const sc=v.subjectiveCount||{};
-      const ma=v.multipleAnswerQuestions||[];
-      const sq=v.subjectiveQuestions||[];
-      const status=String(v.status||(v.crossCheckPassed?"ok":"warning")).toLowerCase();
-      const isOk=status==="ok"&&ws.length===0;
-      const headerColor=isOk?"#2E7D32":status==="error"?"#C62828":"#E65100";
-      const headerBg=isOk?"#E8F5E9":status==="error"?"#FFEBEE":"#FFF3E0";
-      const headerIc=isOk?"✅":status==="error"?"❌":"⚠️";
-      return(<div onClick={()=>setVerifyModal(null)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:9999,padding:16}}>
-        <div onClick={(e)=>e.stopPropagation()} style={{background:T.white,borderRadius:14,maxWidth:480,width:"100%",maxHeight:"85vh",overflowY:"auto",boxShadow:"0 8px 32px rgba(0,0,0,.22)"}}>
-          <div style={{padding:"14px 16px",background:headerBg,borderRadius:"14px 14px 0 0",borderBottom:`1px solid ${T.border}`}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div style={{fontSize:15,fontWeight:800,color:headerColor}}>{headerIc} 검수 결과</div>
-              <button onClick={()=>setVerifyModal(null)} style={{border:"none",background:"none",fontSize:18,cursor:"pointer",color:T.textMuted,padding:4}}>✕</button>
+
+        {/* STEP 7: 생성 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>7. 생성</div>
+          <div style={{ padding: 14, background: T.goldPale, border: `1px solid ${T.gold}`, borderRadius: 10, marginBottom: 12 }}>
+            <div style={{ fontSize: 13, color: T.textSub, lineHeight: 1.8 }}>
+              💰 예상 비용: <strong style={{ color: T.goldDark }}>약 {estCost}원</strong> (5분 내 재호출 시 90% 할인)<br />
+              ⏱ 예상 시간: 약 60~90초 · Claude Sonnet 4.6
             </div>
-            <div style={{fontSize:12,color:T.textSub,marginTop:4}}>{verifyModal.textbook} · {verifyModal.targetClass}</div>
           </div>
-          <div style={{padding:"14px 16px"}}>
-            <div style={{fontSize:12,fontWeight:700,color:T.textSub,marginBottom:6}}>📋 문제 수 검증</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>시험지</div><div style={{fontSize:18,fontWeight:700,color:T.text}}>{v.examQuestionCount??"-"}</div></div>
-              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정답지</div><div style={{fontSize:18,fontWeight:700,color:T.text}}>{v.answerCount??verifyModal.totalQuestions}</div></div>
-              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정보파일</div><div style={{fontSize:18,fontWeight:700,color:T.text}}>{v.infoQuestionCount??"-"}</div></div>
-            </div>
-            <div style={{fontSize:12,fontWeight:700,color:T.textSub,marginBottom:6}}>✏️ 주관식 검증</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>시험지</div><div style={{fontSize:16,fontWeight:700,color:T.accent}}>{sc.exam??"-"}</div></div>
-              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정답지</div><div style={{fontSize:16,fontWeight:700,color:T.accent}}>{sc.answer??"-"}</div></div>
-              <div style={{padding:8,borderRadius:8,background:T.bg,textAlign:"center"}}><div style={{fontSize:10,color:T.textMuted}}>정보파일</div><div style={{fontSize:16,fontWeight:700,color:T.accent}}>{sc.info??"-"}</div></div>
-            </div>
-            <div style={{padding:"8px 12px",borderRadius:8,background:T.bg,marginBottom:10,fontSize:13}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:T.textMuted}}>시작번호</span><span style={{fontWeight:700,color:T.text}}>{verifyModal.startNumber}번부터</span></div>
-              {sq.length>0&&<div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:T.textMuted}}>주관식 문항</span><span style={{fontWeight:600,color:T.text,fontSize:11}}>{sq.join(", ")}</span></div>}
-              {ma.length>0&&<div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}><span style={{color:T.textMuted}}>복수정답 문항</span><span style={{fontWeight:600,color:T.text,fontSize:11}}>{ma.join(", ")}</span></div>}
-              {v.processedAt&&<div style={{display:"flex",justifyContent:"space-between"}}><span style={{color:T.textMuted}}>처리시각</span><span style={{fontWeight:500,color:T.textSub,fontSize:11}}>{String(v.processedAt).replace("T"," ").replace("Z","")}</span></div>}
-            </div>
-            {ws.length>0&&<div style={{marginTop:10}}>
-              <div style={{fontSize:12,fontWeight:700,color:"#E65100",marginBottom:6}}>⚠️ 경고 ({ws.length}개)</div>
-              {ws.map((w,wi)=><div key={wi} style={{padding:"6px 10px",borderRadius:6,background:"#FFF3E0",color:"#BF360C",fontSize:12,marginBottom:4}}>{String(w)}</div>)}
-            </div>}
-            {isOk&&<div style={{padding:10,borderRadius:8,background:"#E8F5E9",color:"#1B5E20",fontSize:12,fontWeight:600,textAlign:"center",marginTop:10}}>
-              ✅ 모든 검증을 통과했습니다
-            </div>}
-          </div>
-        </div>
-      </div>);
-    })()}
-  </div>);
-  // ── Step 2: 확인 화면 ──
-  if(step===2){
-    if(!selBook){setStep(1);return null;}
-    const rangeDesc=rangeType==="chapter"
-      ?chapters.map(i=>(selBook.chapters||[])[i]||`챕터${i+1}`).join("\n")
-      :`p.${pageFrom} ~ p.${pageTo}`;
-    const eQ=Math.round(questionCount*diffEasy/100);
-    const mQ=Math.round(questionCount*diffMed/100);
-    const hQ=questionCount-eQ-mQ;
-    return(<div style={S.wrap} className="fade-up">
-      <div style={{textAlign:"center",padding:"20px 0 12px"}}>
-        <div style={{fontSize:36,marginBottom:4}}>📋</div>
-        <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>생성 요청 확인</h1>
-        <p style={{fontSize:13,color:T.textMuted}}>아래 내용으로 문제를 생성합니다</p>
-      </div>
-      <div style={S.card}>
-        <div style={S.resRow}><span>📚 교재</span><span style={{fontWeight:600}}>{selBook?.name}</span></div>
-        <div style={S.resRow}><span>📖 범위</span><span style={{fontWeight:600,textAlign:"right",maxWidth:"60%",whiteSpace:"pre-line",fontSize:12}}>{rangeDesc}</span></div>
-        <div style={S.resRow}><span>📝 유형</span><span style={{fontWeight:600}}>{testType==="vocab"?"단어 테스트 (단답형)":"문법/독해 (혼합)"}</span></div>
-        <div style={S.resRow}><span>🔢 문제 수</span><span style={{fontWeight:600}}>{questionCount}문제</span></div>
-        <div style={S.resRow}><span>📊 난이도</span><span style={{fontWeight:600,fontSize:12}}>쉬움 {eQ} · 보통 {mQ} · 어려움 {hQ}</span></div>
-        <div style={S.resRow}><span>📝 출제형태</span><span style={{fontWeight:600,fontSize:12}}>객관식 {mcRatio}% ({Math.round(questionCount*mcRatio/100)}문제) · 서술형 {100-mcRatio}% ({questionCount-Math.round(questionCount*mcRatio/100)}문제)</span></div>
-        <div style={S.resRow}><span>👤 선생님</span><span style={{fontWeight:600}}>{targetTeacher}</span></div>
-        <div style={S.resRow}><span>🏫 대상 반</span><span style={{fontWeight:600}}>{genClasses.map(c=>c.name).join(", ")}</span></div>
-        {memo&&<div style={S.resRow}><span>💬 메모</span><span style={{fontWeight:600,fontSize:12}}>{memo}</span></div>}
-      </div>
-      <div style={{padding:"12px 14px",borderRadius:10,background:"#FFF8E1",fontSize:13,color:"#F57F17",fontWeight:600,textAlign:"center",marginBottom:16}}>
-        ⏱️ 생성에 약 10분 소요됩니다. Slack으로 완료 알림을 보내드려요!
-      </div>
-      <div style={{display:"flex",gap:8}}>
-        <button onClick={()=>setStep(1)} style={{...S.btnO,flex:1}}>← 수정</button>
-        <button onClick={submit} disabled={sending} style={{...S.btnG,flex:2,opacity:sending?0.5:1}}>
-          {sending?"요청 중…":"🚀 생성 요청!"}
-        </button>
-      </div>
-    </div>);
-  }
-  // ── Step 3: 완료 ──
-  if(step===3) return(<div style={S.wrap} className="fade-up">
-    <div style={{textAlign:"center",padding:"40px 0 20px"}}>
-      <div style={{fontSize:56,marginBottom:12}}>🎉</div>
-      <h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:8}}>생성 요청 완료!</h1>
-      <p style={{fontSize:14,color:T.textSub,lineHeight:1.6}}>
-        Claude가 교재를 분석해서 문제를 만들고 있어요.<br/>
-        약 <b>10분 후</b> Slack으로 알림이 갑니다.
-      </p>
-      <div style={{marginTop:16,padding:"14px",borderRadius:12,background:"#E8F5E9",fontSize:13,color:T.accent,fontWeight:600}}>
-        💡 기다리는 동안 다른 일을 하셔도 됩니다!<br/>
-        완료되면 앱에서 문제를 확인하고 등록할 수 있어요.
-      </div>
-    </div>
-    <button onClick={()=>{setStep(1);setSentOk(false);loadHistory();}} style={S.btnG}>
-      📚 새로운 문제 생성하기
-    </button>
-    <button onClick={()=>{setStep(1);setSentOk(false);loadHistory();}} style={{...S.btnO,width:"100%",marginTop:8}}>
-      📋 생성 내역 확인
-    </button>
-  </div>);
-  // ── Step 4: 미리보기 (3세트 탭 전환 + 재생성) ──
-  if(step===4&&preview){
-    const sets=preview.sets||[];
-    const setLabels=["A","B","C"];
-    const setColors=["#1E88E5","#43A047","#FB8C00"];
-    const curSet=sets[selectedSet];
-    const qs=curSet?.questions||[];
-    const diffColors={easy:"#4CAF50",medium:"#FF9800",hard:"#F44336"};
-    const diffLabels={easy:"★☆☆ 쉬움",medium:"★★☆ 보통",hard:"★★★ 어려움"};
-    const grouped={easy:[],medium:[],hard:[]};
-    qs.forEach(q=>{if(grouped[q.difficulty])grouped[q.difficulty].push(q);else grouped.medium.push(q);});
-    return(<div style={S.wrap} className="fade-up">
-      <div style={{textAlign:"center",padding:"20px 0 12px"}}>
-        <div style={{fontSize:36,marginBottom:4}}>👁️</div>
-        <h1 style={{fontSize:24,fontWeight:800,color:T.text}}>문제 미리보기</h1>
-        <p style={{fontSize:13,color:T.textMuted}}>{preview.textbook} · {preview.rangeDesc}</p>
-      </div>
-      {/* 3세트 탭 */}
-      {sets.length>1&&<div style={{display:"flex",gap:6,marginBottom:16}}>
-        {sets.map((s,i)=>{
-          const active=selectedSet===i;
-          const label=`세트 ${setLabels[i]}`;
-          const desc=s.style||`스타일 ${i+1}`;
-          return(<button key={i} onClick={()=>setSelectedSet(i)} style={{
-            flex:1,padding:"12px 8px",borderRadius:12,
-            border:`2px solid ${active?setColors[i]:T.border}`,
-            background:active?setColors[i]+"15":T.white,
-            cursor:"pointer",fontFamily:"inherit",textAlign:"center",transition:"all .15s"
-          }}>
-            <div style={{fontSize:14,fontWeight:active?800:600,color:active?setColors[i]:T.textSub}}>{label}</div>
-            <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{desc}</div>
-            <div style={{fontSize:11,color:T.textMuted,marginTop:2}}>{(s.questions||[]).length}문제</div>
-          </button>);
-        })}
-      </div>}
-      {/* 선택된 세트 표시 */}
-      {sets.length>1&&<div style={{padding:"8px 14px",borderRadius:10,background:setColors[selectedSet]+"15",border:`1.5px solid ${setColors[selectedSet]}`,fontSize:13,fontWeight:700,color:setColors[selectedSet],textAlign:"center",marginBottom:12}}>
-        현재 보고 있는 시험지: 세트 {setLabels[selectedSet]}
-      </div>}
-      {/* 요약 카드 */}
-      <div style={{...S.card,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center"}}>
-        <div><div style={{fontSize:11,color:T.textMuted}}>문제 수</div><div style={{fontSize:18,fontWeight:800,color:T.text}}>{qs.length}</div></div>
-        <div><div style={{fontSize:11,color:T.textMuted}}>유형</div><div style={{fontSize:18,fontWeight:800,color:T.text}}>{preview.testType==="vocab"?"단어":"문법"}</div></div>
-        <div><div style={{fontSize:11,color:T.textMuted}}>선생님</div><div style={{fontSize:14,fontWeight:700,color:T.text}}>{preview.teacher}</div></div>
-      </div>
-      {/* 데이터 소스 표시 */}
-      {preview._source==="sheet"&&<div style={{padding:"6px 12px",borderRadius:8,background:"#E3F2FD",fontSize:11,color:"#1565C0",marginBottom:8,textAlign:"center"}}>
-        📋 시트 정답데이터에서 로드됨 (간략 미리보기)
-      </div>}
-      {preview._error&&<div style={{padding:"8px 12px",borderRadius:8,background:"#FFF3E0",border:"1px solid #FFB74D",fontSize:11,color:"#E65100",marginBottom:8}}>
-        ⚠️ {preview._error}
-      </div>}
-      {/* 디버그: answerData 구조 정보 (문제 0개일 때만 표시) */}
-      {qs.length===0&&preview.answerDataInfo&&<div style={{padding:"6px 12px",borderRadius:8,background:"#F3E5F5",fontSize:10,color:"#6A1B9A",marginBottom:8}}>
-        🔍 answerData 구조: type={preview.answerDataInfo.type}, isArray={String(preview.answerDataInfo.isArray)}, keys=[{(preview.answerDataInfo.keys||[]).join(",")}], sets={preview.answerDataInfo.setsType}
-      </div>}
-      {qs.length===0&&preview.answerDataRaw&&<div style={{padding:"6px 12px",borderRadius:8,background:"#FCE4EC",fontSize:10,color:"#880E4F",marginBottom:8,wordBreak:"break-all"}}>
-        📄 원본 데이터(200자): {preview.answerDataRaw}
-      </div>}
-      {/* 난이도별 문제 */}
-      {qs.length===0?<div style={{textAlign:"center",padding:30,color:T.textMuted}}>
-        {preview._error?"⚠️ 문제 데이터를 불러올 수 없습니다.\nApps Script를 최신 버전(v10)으로 배포해주세요.":"이 세트에 문제가 없습니다."}
-      </div>:
-      ["easy","medium","hard"].map(diff=>{
-        const items=grouped[diff];
-        if(items.length===0)return null;
-        return(<div key={diff} style={{marginBottom:16}}>
-          <div style={{fontSize:14,fontWeight:700,color:diffColors[diff],marginBottom:8,padding:"6px 12px",background:diff==="easy"?"#E8F5E9":diff==="medium"?"#FFF3E0":"#FFEBEE",borderRadius:8,display:"inline-block"}}>
-            {diffLabels[diff]} ({items.length}문제)
-          </div>
-          {items.map((q,qi)=>(<div key={qi} style={{...S.card,marginBottom:8,borderLeft:`4px solid ${diffColors[diff]}`}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"start",marginBottom:6}}>
-              <span style={{fontSize:12,fontWeight:700,color:T.white,background:diffColors[diff],padding:"2px 8px",borderRadius:10}}>{q.number}번</span>
-              <span style={{fontSize:11,color:T.textMuted,padding:"2px 8px",borderRadius:10,background:T.bg}}>{q.type==="mc"?"객관식":"주관식"}</span>
-            </div>
-            <div style={{fontSize:14,color:T.text,lineHeight:1.6,whiteSpace:"pre-wrap",marginBottom:8}}>{q.question}</div>
-            {q.choices&&q.choices.length>0&&(<div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:8}}>
-              {q.choices.map((c,ci)=>{
-                const isAns=(ci+1)===q.answer;
-                return(<div key={ci} style={{padding:"8px 12px",borderRadius:8,fontSize:13,
-                  background:isAns?"#E8F5E9":T.bg,
-                  border:`1px solid ${isAns?"#4CAF50":T.border}`,
-                  color:isAns?T.accent:T.text,
-                  fontWeight:isAns?700:400
-                }}>{isAns&&"✅ "}{c}</div>);
-              })}
-            </div>)}
-            {q.type==="sub"&&(<div style={{padding:"8px 12px",borderRadius:8,background:"#E8F5E9",border:`1px solid #4CAF50`,fontSize:13,color:T.accent,fontWeight:600}}>
-              💡 정답: {q.answer}
-            </div>)}
-            {q.explanation&&(<div style={{marginTop:6,padding:"8px 12px",borderRadius:8,background:"#F3E5F5",fontSize:12,color:"#7B1FA2",lineHeight:1.5}}>
-              📖 {q.explanation}
-            </div>)}
-          </div>))}
-        </div>);
-      })}
-      {/* 하단 액션 */}
-      <div style={{position:"sticky",bottom:0,background:T.white,padding:"12px 0",borderTop:`1px solid ${T.border}`}}>
-        <div style={{display:"flex",gap:8,marginBottom:8}}>
-          <button onClick={()=>{setStep(1);setPreview(null);}} style={{...S.btnO,flex:1,padding:"10px"}}>← 돌아가기</button>
-          <button onClick={()=>requestRegenerate(prevRow)} disabled={sending}
-            style={{flex:1,padding:"10px",fontSize:13,fontWeight:600,borderRadius:12,border:`1.5px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}}>
-            🔄 문제 다시 내기
+          <button onClick={handleGenerate} disabled={generating}
+            style={{ ...S.btnG, width: "100%", opacity: generating ? 0.7 : 1, cursor: generating ? "wait" : "pointer" }}>
+            {generating ? `🤖 생성 중... ${elapsed}초 경과 (60~90초 소요)` : "🚀 문제 생성하기"}
           </button>
         </div>
-        <button onClick={registerExam} disabled={sending} style={{...S.btnG,opacity:sending?0.5:1}}>
-          {sending?"등록 중…":`✅ 세트 ${setLabels[selectedSet]}로 시험 등록`}
-        </button>
       </div>
-    </div>);
+    );
   }
-  // fallback
-  return null;
+
+  // ────────────────────────────────────────────
+  // 화면 2: 미리보기 + 등록
+  // ────────────────────────────────────────────
+  if (screen === "preview") {
+    const qs = preview?.questions || [];
+    const sum = preview?.summary || {};
+    const warnings = preview?.warnings || [];
+    const teachers = teacherList || [];
+    return (
+      <div style={S.wrap} className="fade-up">
+        <div style={{ textAlign: "center", padding: "16px 0" }}>
+          <h2 style={{ fontSize: 22, fontWeight: 800, color: T.text }}>✅ 생성 완료</h2>
+          <p style={{ fontSize: 13, color: T.textMuted, marginTop: 4 }}>{qs.length}문항 · 검토 후 학생앱에 등록하세요</p>
+        </div>
+
+        {/* 요약 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>📊 요약</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, fontSize: 12 }}>
+            <div style={{ padding: 10, background: T.bg, borderRadius: 8, textAlign: "center" }}>
+              <div style={{ color: T.textMuted, marginBottom: 2 }}>총</div>
+              <div style={{ fontWeight: 800, fontSize: 18, color: T.goldDark }}>{sum.total || qs.length}</div>
+            </div>
+            <div style={{ padding: 10, background: T.bg, borderRadius: 8, textAlign: "center" }}>
+              <div style={{ color: T.textMuted, marginBottom: 2 }}>객관식</div>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>{sum.mcCount}</div>
+            </div>
+            <div style={{ padding: 10, background: T.bg, borderRadius: 8, textAlign: "center" }}>
+              <div style={{ color: T.textMuted, marginBottom: 2 }}>서술형</div>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>{sum.ssCount}</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 11, color: T.textSub, textAlign: "center" }}>
+            난이도: 쉬움 {sum.easyCount} · 보통 {sum.midCount} · 어려움 {sum.hardCount} | 비용: <strong>{preview?.meta?.cost?.krw || "?"}원</strong>{preview?.meta?.cost?.cached ? " (캐시 적중 ✓)" : ""} | 재생성: {preview?.meta?.regenerationAttempts || 0}회
+          </div>
+        </div>
+
+        {/* 경고 */}
+        {warnings.length > 0 && (
+          <div style={{ padding: 12, background: "#FFFBE6", border: "1px solid #FAAD14", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
+            <div style={{ fontWeight: 700, color: "#D48806", marginBottom: 4 }}>⚠️ 검증 경고 ({warnings.length}건)</div>
+            <div style={{ color: "#874D00", maxHeight: 100, overflowY: "auto" }}>
+              {warnings.map((w, i) => (<div key={i}>{w.kind}{w.message ? `: ${w.message}` : ""}{w.count ? ` (${w.count}건)` : ""}</div>))}
+            </div>
+          </div>
+        )}
+
+        {/* 문제 미리보기 (간단) */}
+        <div style={S.card}>
+          <div style={S.secLabel}>📝 문제 (상위 5개 미리보기)</div>
+          <div style={{ maxHeight: 320, overflowY: "auto", paddingRight: 4 }}>
+            {qs.slice(0, 5).map(q => (
+              <div key={q.id} style={{ padding: 10, border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 6, fontSize: 12, lineHeight: 1.6 }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ fontWeight: 800, color: T.goldDark }}>Q{q.id}.</span>
+                  <span style={{ padding: "1px 6px", borderRadius: 8, background: q.type === "mc" ? T.goldLight : "#E8F4FF", color: q.type === "mc" ? T.goldDark : "#1890FF", fontSize: 10, fontWeight: 600 }}>{q.type === "mc" ? "객관식" : "서술형"}</span>
+                  <span style={{ fontSize: 10, color: T.textMuted }}>{q.subtype}</span>
+                </div>
+                <div style={{ fontWeight: 600, marginBottom: 2 }}>{q.questionText}</div>
+                {q.passage && <div style={{ padding: "4px 8px", background: T.bg, borderRadius: 4, fontSize: 11, marginBottom: 4 }}>{q.passage}</div>}
+                <div style={{ color: T.accent, fontSize: 11 }}>정답: {q.answer}</div>
+              </div>
+            ))}
+            {qs.length > 5 && <div style={{ textAlign: "center", fontSize: 11, color: T.textMuted, padding: 8 }}>...외 {qs.length - 5}문제</div>}
+          </div>
+        </div>
+
+        {/* 등록 메타 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>📚 학생앱 등록 정보</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>과목</div>
+              <select style={S.inp} value={regSubject} onChange={e => setRegSubject(e.target.value)}>
+                {SUBJECTS.map(s => <option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>학년</div>
+              <select style={S.inp} value={regGrade} onChange={e => setRegGrade(e.target.value)}>
+                {GRADES.map(g => <option key={g}>{g}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>반</div>
+              <input style={S.inp} type="text" value={regLevel} onChange={e => setRegLevel(e.target.value)} placeholder="A" />
+            </div>
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>선생님</div>
+            <select style={S.inp} value={regTeacher} onChange={e => setRegTeacher(e.target.value)}>
+              <option value="">-- 선택 --</option>
+              {teachers.map(t => <option key={t.name || t["이름"]}>{t.name || t["이름"]}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 날짜</div>
+            <input style={S.inp} type="date" value={regDate} onChange={e => setRegDate(e.target.value)} />
+          </div>
+        </div>
+
+        {/* 버튼 */}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={() => setScreen("form")} disabled={registering}
+            style={{ ...S.btnO, flex: 1 }}>← 다시 만들기</button>
+          <button onClick={handleRegister} disabled={registering}
+            style={{ ...S.btnG, flex: 2, opacity: registering ? 0.7 : 1, cursor: registering ? "wait" : "pointer" }}>
+            {registering ? "📡 등록 중..." : "📚 학생앱에 등록 →"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ────────────────────────────────────────────
+  // 화면 3: 완료
+  // ────────────────────────────────────────────
+  return (
+    <div style={S.wrap} className="fade-up">
+      <div style={{ textAlign: "center", padding: "60px 20px" }}>
+        <div style={{ fontSize: 56, marginBottom: 16 }}>✅</div>
+        <h2 style={{ fontSize: 24, fontWeight: 800, color: T.text, marginBottom: 8 }}>등록 완료!</h2>
+        <p style={{ fontSize: 14, color: T.textSub, marginBottom: 24 }}>학생들이 즉시 시험을 볼 수 있습니다.</p>
+        <button onClick={() => { setScreen("form"); setPreview(null); }} style={{ ...S.btnG, padding: "12px 32px" }}>새 문제 만들기</button>
+      </div>
+    </div>
+  );
 }
+
 /* ═══ 반별 성적 탭 (v20.5) ═══
    - 필터 순서: [날짜모드: 단일/기간] [날짜] [과목] [선생님] [학년]
    - 기본 = 오늘 + 전체 과목 + 전체 선생님 + 전체 학년
@@ -4250,8 +3747,8 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
       {/* ★ v23.1: 일괄 프린트 탭 제거 — 오늘의 현황의 "파일 일괄 다운로드" 버튼으로 대체 */}
       {/* ═══ 반별 성적 탭 (v20.4) ═══ */}
       {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
-      {/* ═══ 문제 생성기 탭 ═══ */}
-      {screen==="home"&&tab==="generator"&&(<GeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
+      {/* ═══ 문제 생성기 탭 (v23.8: 즉시 호출 + 자가 검증 + 자동 등록) ═══ */}
+      {screen==="home"&&tab==="generator"&&(<AiGeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
       {screen==="home"&&tab==="register"&&(<div style={S.wrap} className="fade-up">
         <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📋</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 등록</h1><p style={{fontSize:13,color:T.textMuted}}>시험 대상 반과 정보를 설정하세요</p></div>
