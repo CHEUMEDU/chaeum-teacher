@@ -1,33 +1,45 @@
 // ============================================================
-// 📄 api/generate.js  |  v1.3  |  2026-05-11
+// 📄 api/generate.js  |  v1.4  |  2026-05-11
 // Vercel Serverless Function — POST /api/generate
 // chaeum-teacher 프로젝트의 api/generate.js 로 들어가는 파일
 // ============================================================
-// 💡 OMR 선생님앱 통합 배포 메모:
-//   - 이 파일은 chaeum-teacher 프로젝트의 api/ 폴더에 들어감
-//   - ai-extract.js 와 동일한 패턴 (fetch 로 Claude 직접 호출 — SDK 의존성 X)
-//   - 함께 필요: lib/prompts.js (프로젝트 루트의 lib/ 폴더)
-//   - 환경변수 ANTHROPIC_API_KEY (이미 ai-extract 에서 설정됨)
-// ============================================================
+// v1.4 변경 (2026-05-11):
+//   - PDF 첨부 입력 지원 (Claude document content) — 교재 본문 직접 활용
+//   - max_tokens: 16000 → 32000 (50~100문제 생성 안정화)
+//   - maxDuration: 60 → 120초 (대량 문제 + 재생성 여유)
+//   - body 크기 제한 확대 (Vercel 기본 4.5MB → bodyParser sizeLimit 25MB)
 // v1.3 변경 (2026-05-11):
 //   - @anthropic-ai/sdk 제거 → fetch 로 직접 호출 (ai-extract.js 와 동일 패턴)
 //   - 패키지 의존성 추가 불필요 (FUNCTION_INVOCATION_FAILED 해결)
-//   - thinking/output_config (SDK 전용) 제거
-//   - maxDuration: 60초 (Vercel Node Runtime 한도)
-//   - 모델: claude-sonnet-4-5-20250929 (ai-extract 와 동일, 실제 존재 모델)
+//   - 모델: claude-sonnet-4-5-20250929 (실제 존재 모델)
 // v1.2 변경 (2026-05-11):
-//   - 자가 검증 함수 추가 (보기 개수, 정답 일치, ID 연속성, 해설 길이, 난이도 분포)
+//   - 자가 검증 함수 추가 (보기 개수·정답 일치·ID 연속성·해설 길이·난이도 분포)
 //   - 부분 재생성 (실패 ID만 모델에 재요청, 최대 2회)
 //   - 서술형 스키마 확장 (answer + recommendedAnswer + acceptableAnswers)
 //   - warnings 배열 (재생성으로도 해결 안 된 항목 사용자에게 노출)
 // ============================================================
+// 💡 OMR 선생님앱 통합 배포 메모:
+//   - chaeum-teacher 프로젝트의 api/ 폴더에 들어감
+//   - 필요 파일: lib/prompts.js v3.0 (출판사 출제위원 페르소나 포함)
+//   - 환경변수 ANTHROPIC_API_KEY (이미 ai-extract 에서 설정됨)
+//   - PDF 입력: body.pdfFiles = [{name, base64}, ...] (최대 3개, 합계 25MB)
+// ============================================================
 
 import { SYSTEM_PROMPT } from "../lib/prompts.js";
 
-export const maxDuration = 60;  // Vercel Node Runtime 60초 한도
+export const maxDuration = 120;  // Vercel Node Runtime 한도 (Pro 플랜)
 
-const VERSION = "v1.3";
-const MODEL = "claude-sonnet-4-5-20250929";  // ai-extract.js 와 동일 (실제 존재 모델)
+// body 크기 제한 확대 (PDF 첨부용)
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: '25mb'
+    }
+  }
+};
+
+const VERSION = "v1.4";
+const MODEL = "claude-sonnet-4-5-20250929";
 
 const PRICING = {
   "claude-sonnet-4-5-20250929": { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 }
@@ -46,10 +58,7 @@ const CORS_HEADERS = {
 export default async function handler(req, res) {
   Object.keys(CORS_HEADERS).forEach(k => res.setHeader(k, CORS_HEADERS[k]));
 
-  if (req.method === 'OPTIONS') {
-    res.status(204).end();
-    return;
-  }
+  if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   if (req.method !== 'POST') {
     res.status(405).json({ ok: false, error: 'POST only', version: VERSION });
     return;
@@ -74,10 +83,19 @@ export default async function handler(req, res) {
 
   try {
     const params = body;
+    const pdfFiles = Array.isArray(params.pdfFiles) ? params.pdfFiles.filter(f => f && f.base64) : [];
     const userPrompt = buildUserPrompt(params);
 
+    console.log('[generate] params:', JSON.stringify({
+      bookCategory: params.bookCategory,
+      bookName: params.bookName,
+      questionCount: params.questionCount,
+      pdfCount: pdfFiles.length,
+      pdfNames: pdfFiles.map(f => f.name)
+    }));
+
     // ── 1차 생성 ──
-    const first = await callClaude(apiKey, userPrompt);
+    const first = await callClaude(apiKey, userPrompt, pdfFiles);
     if (first.error) {
       res.status(500).json({ ok: false, error: first.error, debug: first.debug || null, version: VERSION });
       return;
@@ -102,6 +120,7 @@ export default async function handler(req, res) {
         break;
       }
 
+      // 재생성은 PDF 빼고 (이미 본문 정보가 questions 안에 들어있음 + 비용 절감)
       const regen = await regenerateFailedQuestions(apiKey, failedIds, errors, questions, params);
       if (regen.error) {
         warnings.push({ kind: "regen_failed", message: regen.error });
@@ -125,6 +144,7 @@ export default async function handler(req, res) {
       meta: {
         model: MODEL,
         version: VERSION,
+        pdfAttached: pdfFiles.length,
         usage: {
           inputTokens: totalUsage.input_tokens || 0,
           outputTokens: totalUsage.output_tokens || 0,
@@ -149,20 +169,39 @@ export default async function handler(req, res) {
 }
 
 // ============================================================
-// Claude API 호출 (fetch 방식 — ai-extract.js 와 동일 패턴)
+// Claude API 호출 (fetch 방식 + PDF document 입력 지원)
 // ============================================================
-async function callClaude(apiKey, userPrompt) {
+async function callClaude(apiKey, userPrompt, pdfFiles = []) {
+  // user content 구성: PDF 첨부가 있으면 document 블록 + text 블록
+  const userContent = [];
+
+  pdfFiles.forEach(f => {
+    if (f.base64) {
+      userContent.push({
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
+          data: stripDataUrl(f.base64)
+        }
+      });
+    }
+  });
+
+  // 텍스트 프롬프트는 항상 마지막에 (PDF 분석 결과를 반영하라는 지시)
+  userContent.push({ type: 'text', text: userPrompt });
+
   const payload = {
     model: MODEL,
-    max_tokens: 16000,
+    max_tokens: 32000,  // 50~100문제 안정 생성
     system: [
       {
         type: "text",
         text: SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral" }  // 기본 5분 TTL (1시간은 베타 헤더 필요)
+        cache_control: { type: "ephemeral" }  // 5분 TTL (시스템 프롬프트 캐싱)
       }
     ],
-    messages: [{ role: "user", content: userPrompt }]
+    messages: [{ role: "user", content: userContent }]
   };
 
   let r;
@@ -223,8 +262,15 @@ async function callClaude(apiKey, userPrompt) {
   };
 }
 
+// data URL 접두사 제거 (data:application/pdf;base64,XXXX → XXXX)
+function stripDataUrl(s) {
+  if (typeof s !== 'string') return '';
+  const idx = s.indexOf('base64,');
+  return idx >= 0 ? s.substring(idx + 7) : s;
+}
+
 // ============================================================
-// 자가 검증 — Layer 5 체크리스트 코드로 구현
+// 자가 검증 — Layer 6 체크리스트 코드로 구현
 // ============================================================
 function validateQuestions(questions, params) {
   const errors = [];
@@ -306,7 +352,7 @@ function computeExpected(params) {
 }
 
 // ============================================================
-// 부분 재생성 — 실패한 ID만 모델에 재요청
+// 부분 재생성 — 실패한 ID만 모델에 재요청 (PDF 없이)
 // ============================================================
 async function regenerateFailedQuestions(apiKey, failedIds, errors, currentQuestions, params) {
   const failedQs = currentQuestions.filter(q => failedIds.includes(q.id));
@@ -317,9 +363,9 @@ async function regenerateFailedQuestions(apiKey, failedIds, errors, currentQuest
     )
     .join('\n');
 
-  const regenPrompt = '[부분 재생성 요청]\n\n다음 문제들이 검증에서 실패했습니다. 같은 `id`를 유지한 채 검증 오류를 모두 해결해 다시 작성해주세요.\n\n## 검증 오류\n' + errorSummary + '\n\n## 재작성 대상 문제 (현재 상태)\n' + JSON.stringify(failedQs, null, 2) + '\n\n## 요구사항\n- 위 문제들과 동일한 `id` 유지: ' + failedIds.join(', ') + '\n- 시스템 가이드(Layer 1~5) 모든 룰 준수\n- 특히 객관식은 `choices` 개수(easy=4, mid/hard=5)와 `answer`가 `choices`에 정확히 포함되는지 다시 확인\n- `explanation` 글자수 (easy≥60, mid≥100, hard≥150)\n- 응답은 다음 JSON 형식: `{"questions": [...]}`\n- 재작성한 문제만 포함 (정상 문제는 넣지 말 것)\n- JSON 외 일체 텍스트 금지';
+  const regenPrompt = '[부분 재생성 요청]\n\n다음 문제들이 검증에서 실패했습니다. 같은 `id`를 유지한 채 검증 오류를 모두 해결해 다시 작성해주세요.\n\n## 검증 오류\n' + errorSummary + '\n\n## 재작성 대상 문제 (현재 상태)\n' + JSON.stringify(failedQs, null, 2) + '\n\n## 요구사항\n- 위 문제들과 동일한 `id` 유지: ' + failedIds.join(', ') + '\n- 시스템 가이드(Layer 1~6) 모든 룰 준수\n- 특히 객관식은 `choices` 개수(easy=4, mid/hard=5)와 `answer`가 `choices`에 정확히 포함되는지 다시 확인\n- `explanation` 글자수 (easy≥60, mid≥100, hard≥150)\n- 응답은 다음 JSON 형식: `{"questions": [...]}`\n- 재작성한 문제만 포함 (정상 문제는 넣지 말 것)\n- JSON 외 일체 텍스트 금지';
 
-  const result = await callClaude(apiKey, regenPrompt);
+  const result = await callClaude(apiKey, regenPrompt, []);  // PDF 없이 재호출
   if (result.error) return { error: result.error };
   return { questions: result.questions, usage: result.usage };
 }
@@ -386,7 +432,8 @@ function buildUserPrompt(p) {
     testTypes = [{ type: "grammar", percentage: 100, subtypes: [] }],
     questionCount = 30,
     mcRatio = 60,
-    difficulty = { easy: 30, mid: 50, hard: 20 }
+    difficulty = { easy: 30, mid: 50, hard: 20 },
+    pdfFiles = []
   } = p;
 
   const mcCount   = Math.round((questionCount * mcRatio) / 100);
@@ -410,20 +457,29 @@ function buildUserPrompt(p) {
     return '- **' + typeKr + '**: ' + t.percentage + '% (약 ' + typeCount + '문제)\n' + subLines;
   }).join("\n");
 
+  // PDF 첨부 가이드 (있을 때만)
+  const pdfBlock = pdfFiles.length > 0
+    ? '\n## 📎 첨부 교재 PDF (' + pdfFiles.length + '개)\n' +
+      pdfFiles.map((f, i) => '- ' + (i+1) + '. ' + (f.name || '교재' + (i+1) + '.pdf')).join('\n') +
+      '\n\n**중요**: 첨부된 PDF 본문을 우선 분석한 후, 본문에 등장한 어휘·문장·예문을 기반으로 문제를 출제하세요.\n' +
+      '본문에 없는 어휘·문법을 정답 근거로 사용하지 마세요.\n'
+    : '\n## 📎 교재 PDF\n첨부되지 않음. "' + bookName + '"의 일반적 수준 기준으로 출제하세요.\n';
+
   return '다음 조건에 맞춰 영어 시험 문제 ' + questionCount + '개를 생성해주세요.\n\n' +
     '## 교재 정보\n' +
     '- 분류: ' + (CATEGORY_KR[bookCategory] || bookCategory) + '\n' +
     '- 교재명: ' + bookName + '\n' +
-    '- 범위 (' + (rangeMode === "chapter" ? "챕터" : "페이지") + '): ' + rangesLine + '\n\n' +
+    '- 범위 (' + (rangeMode === "chapter" ? "챕터" : "페이지") + '): ' + rangesLine + '\n' +
+    pdfBlock + '\n' +
     '## 시험 유형 (혼합 출제)\n' + typeBlock + '\n\n' +
     '## 문항 구성\n' +
     '- 총 문항수: ' + questionCount + '개\n' +
     '- 객관식: ' + mcCount + '개 (' + mcRatio + '%)\n' +
     '- 서술형: ' + ssCount + '개 (' + (100 - mcRatio) + '%)\n\n' +
     '## 난이도 분포\n' +
-    '- 쉬움(easy): ' + easyCount + '개 (' + difficulty.easy + '%)\n' +
-    '- 보통(mid): ' + midCount + '개 (' + difficulty.mid + '%)\n' +
-    '- 어려움(hard): ' + hardCount + '개 (' + difficulty.hard + '%)\n\n' +
+    '- 쉬움(easy): ' + easyCount + '개 (' + difficulty.easy + '%) — 보기 4개\n' +
+    '- 보통(mid): ' + midCount + '개 (' + difficulty.mid + '%) — 보기 5개\n' +
+    '- 어려움(hard): ' + hardCount + '개 (' + difficulty.hard + '%) — 보기 5개\n\n' +
     '## 출력 규칙 (반드시 준수)\n' +
     '1. 응답은 **JSON 객체 하나만** 반환합니다.\n' +
     '2. 마크다운 코드 블록(```)으로 감싸지 마세요.\n' +
@@ -432,8 +488,9 @@ function buildUserPrompt(p) {
     '5. `summary` 필드의 값들도 위 분포와 정확히 일치해야 합니다.\n' +
     '6. `passage`가 필요 없는 문제(예: 단어 단답)는 빈 문자열 `""` 사용.\n' +
     '7. 서술형(`type: "ss"`)은 `choices`를 빈 배열 `[]`로, `recommendedAnswer`/`acceptableAnswers` 필드를 반드시 포함.\n' +
-    '8. 객관식은 easy=4지, mid/hard=5지선다. `answer`는 `choices` 안에 정확히 포함된 문자열.\n' +
-    '9. 응답 직전 Layer 5 자가 검증 체크리스트를 모두 통과시키세요.\n\n' +
+    '8. 객관식은 easy=4지, mid/hard=5지선다. `answer`는 `choices` 안에 정확히 포함된 문자열 (대소문자·구두점 완전 일치).\n' +
+    '9. 응답 직전 Layer 6 자가 검수 체크리스트 16개 항목을 모두 통과시키세요.\n\n' +
+    '⚠️ 가장 자주 발생하는 실수: 객관식 `answer`와 `choices` 안 정답 문자열이 미세하게 다른 경우 (앞뒤 공백·구두점). 반드시 일치시키세요.\n\n' +
     '지금 바로 JSON으로 응답하세요.';
 }
 
