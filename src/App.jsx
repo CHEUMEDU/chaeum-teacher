@@ -290,9 +290,9 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
 
   // ── 폼 상태 ──
   const [bookCategory, setBookCategory] = useState("grammar");
-  const [bookName, setBookName] = useState(AI_BOOKS.grammar[0]);
+  const [bookName, setBookName] = useState("");  // ★ v23.11: 자유 입력
   const [rangeMode, setRangeMode] = useState("chapter");
-  const [selectedChapters, setSelectedChapters] = useState([0, 1]);
+  const [chapterText, setChapterText] = useState("");  // ★ v23.11: 챕터 자유 입력
   const [pageFrom, setPageFrom] = useState("");
   const [pageTo, setPageTo] = useState("");
   const [selectedTypes, setSelectedTypes] = useState([{ type: "grammar", percentage: 100, subtypes: [] }]);
@@ -302,6 +302,7 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   const [difficulty, setDifficulty] = useState({ easy: 30, mid: 50, hard: 20 });
   const [setType, setSetType] = useState(""); // 이론편 | 실전편 | 혼합 | (기본)
   const [memo, setMemo] = useState("");
+  const [pdfFiles, setPdfFiles] = useState([]);  // ★ v23.11: 1회용 PDF [{name, base64, sizeMB}]
 
   // ── 학생앱 등록 정보 ──
   const todayIso = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
@@ -319,18 +320,7 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   const [registeringRow, setRegisteringRow] = useState(null);
   const [autoRegister, setAutoRegister] = useState(true); // 완료 시 자동 학생앱 등록
 
-  // ── 카테고리 변경 시 책 자동 선택 ──
-  useEffect(() => {
-    if (AI_BOOKS[bookCategory] && !AI_BOOKS[bookCategory].includes(bookName)) {
-      setBookName(AI_BOOKS[bookCategory][0]);
-    }
-  }, [bookCategory]);
-
-  // ── 책 변경 시 챕터 자동 초기화 ──
-  useEffect(() => {
-    const chs = AI_BOOK_CHAPTERS[bookName] || ["전체 범위"];
-    setSelectedChapters([0, 1].filter(i => i < chs.length));
-  }, [bookName]);
+  // ★ v23.11: 자유 입력 방식 — useEffect 자동 초기화 제거
 
   // ── 유형 토글 ──
   const toggleType = (type) => {
@@ -465,16 +455,57 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   const mcCount = Math.round((questionCount * mcRatio) / 100);
   const ssCount = questionCount - mcCount;
 
+  // ★ v23.11: 1회용 PDF 업로드 핸들러
+  const handlePdfUpload = async (fileList) => {
+    const arr = Array.from(fileList || []);
+    if (arr.length === 0) return;
+    if (pdfFiles.length + arr.length > 3) {
+      alert("PDF는 최대 3개까지 첨부 가능합니다.");
+      return;
+    }
+    const newFiles = [];
+    for (const f of arr) {
+      if (!f.name.toLowerCase().endsWith('.pdf')) {
+        alert(`${f.name} 은(는) PDF가 아닙니다.`);
+        continue;
+      }
+      const sizeMB = f.size / 1024 / 1024;
+      if (sizeMB > 10) {
+        alert(`${f.name} 은(는) ${sizeMB.toFixed(1)}MB로 너무 큽니다 (최대 10MB).\n큰 PDF는 Drive에 직접 업로드하세요.`);
+        continue;
+      }
+      try {
+        const base64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result;
+            const idx = result.indexOf('base64,');
+            resolve(idx >= 0 ? result.substring(idx + 7) : result);
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(f);
+        });
+        newFiles.push({ name: f.name, base64, sizeMB: parseFloat(sizeMB.toFixed(2)) });
+      } catch (e) {
+        alert(`${f.name} 읽기 실패: ${e.message}`);
+      }
+    }
+    if (newFiles.length > 0) setPdfFiles(p => [...p, ...newFiles]);
+  };
+
+  const removePdf = (idx) => setPdfFiles(p => p.filter((_, i) => i !== idx));
+
   // ── 예약 신청 ──
   const handleSubmit = async () => {
-    if (rangeMode === "chapter" && selectedChapters.length === 0) return alert("범위를 1개 이상 선택하세요.");
+    if (!bookName.trim()) return alert("교재명을 입력하세요.");
+    if (rangeMode === "chapter" && !chapterText.trim()) return alert("챕터 범위를 입력하세요.");
     if (rangeMode === "page" && (!pageFrom || !pageTo)) return alert("페이지 범위를 입력하세요.");
     if (!regTeacher) return alert("선생님을 선택하세요.");
     if (!regSubject || !regGrade || !regLevel) return alert("과목·학년·반을 모두 입력하세요.");
 
-    const chs = AI_BOOK_CHAPTERS[bookName] || [];
+    // 챕터 자유 입력 → 배열 분리 (쉼표·콤마·세미콜론 구분)
     const ranges = rangeMode === "chapter"
-      ? selectedChapters.map(i => chs[i]).filter(Boolean)
+      ? chapterText.split(/[,，;；]/).map(s => s.trim()).filter(Boolean)
       : [`p.${pageFrom}-${pageTo}`];
     const rangeDesc = ranges.join(", ");
 
@@ -517,7 +548,9 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
       requestedBy: currentTeacher || regTeacher,
       requestedAt: new Date().toISOString(),
       autoRegister: autoRegister,
-      singleSet: true
+      singleSet: true,
+      // ★ v23.11: 1회용 PDF (있을 때만)
+      pdfFiles: pdfFiles.map(f => ({ name: f.name, base64: f.base64, sizeMB: f.sizeMB }))
     };
 
     setSubmitting(true);
@@ -640,9 +673,11 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   // 화면 1: 예약 폼
   // ════════════════════════════════════════════════════════════
   if (screen === "form") {
-    const chs = AI_BOOK_CHAPTERS[bookName] || ["전체 범위"];
     const totalTypePct = selectedTypes.reduce((s, t) => s + t.percentage, 0);
     const pendingCount = queue.filter(q => q.status === "대기" || q.status === "생성중").length;
+    const rangeSummary = rangeMode === "chapter"
+      ? (chapterText.trim() || "(미입력)")
+      : (pageFrom && pageTo ? `p.${pageFrom}-${pageTo}` : "(미입력)");
 
     return (
       <div style={S.wrap} className="fade-up">
@@ -658,10 +693,12 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           📋 진행 상황 확인 {pendingCount > 0 && <span style={{ color: T.danger, marginLeft: 8 }}>(처리 중 {pendingCount}건)</span>}
         </button>
 
-        {/* STEP 1: 교재 */}
+        {/* STEP 1: 교재 (v23.11 — 자유 입력) */}
         <div style={S.card}>
           <div style={S.secLabel}>1. 교재 선택</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+          {/* 카테고리 선택 */}
+          <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6, fontWeight: 700 }}>📂 카테고리</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
             {Object.keys(AI_CAT_KR).map(cat => (
               <button key={cat} onClick={() => setBookCategory(cat)}
                 style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${bookCategory === cat ? T.goldDark : T.border}`, background: bookCategory === cat ? T.goldLight : T.white, color: bookCategory === cat ? T.goldDark : T.textSub, fontWeight: bookCategory === cat ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
@@ -669,15 +706,33 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
               </button>
             ))}
           </div>
-          <select style={S.inp} value={bookName} onChange={e => setBookName(e.target.value)}>
-            {(AI_BOOKS[bookCategory] || []).map(b => <option key={b}>{b}</option>)}
-          </select>
-          <div style={{ marginTop: 8, padding: "6px 10px", background: T.bg, borderRadius: 6, fontSize: 11, color: T.textSub }}>
-            💡 교재 PDF가 Drive `채움학원 시험자료/교재/{bookName}` 에 있으면 클로드가 자동 인식합니다.
+          {/* 교재명 자유 입력 */}
+          <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6, fontWeight: 700 }}>📖 교재명 (직접 입력)</div>
+          <input style={S.inp} type="text" value={bookName}
+            onChange={e => setBookName(e.target.value)}
+            placeholder={`예: ${(AI_BOOKS[bookCategory] && AI_BOOKS[bookCategory][0]) || '채움문법 1권'}`} />
+          {/* 자주 쓰는 교재 quick pick */}
+          {(AI_BOOKS[bookCategory] || []).length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>⚡ 빠른 입력 (클릭하면 자동 입력)</div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {(AI_BOOKS[bookCategory] || []).map(b => (
+                  <button key={b} onClick={() => setBookName(b)}
+                    style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${bookName === b ? T.goldDark : T.border}`, background: bookName === b ? T.goldLight : T.white, color: bookName === b ? T.goldDark : T.textSub, fontSize: 11, fontWeight: bookName === b ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                    {b}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div style={{ marginTop: 10, padding: "8px 10px", background: T.bg, borderRadius: 6, fontSize: 11, color: T.textSub, lineHeight: 1.6 }}>
+            💡 클로드는 Google Drive <strong>채움학원 시험자료/교재/{bookName || "<교재명>"}</strong> 폴더에서 PDF를 찾아 본문을 분석합니다.<br />
+            💡 해당 교재 폴더가 없으면 교재명·범위 기반으로 일반 수준의 문제를 생성합니다.<br />
+            💡 1회용 PDF는 아래 별도 슬롯에서 첨부하세요.
           </div>
         </div>
 
-        {/* STEP 2: 범위 */}
+        {/* STEP 2: 범위 (v23.11 — 자유 입력) */}
         <div style={S.card}>
           <div style={S.secLabel}>2. 범위</div>
           <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
@@ -685,20 +740,64 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
             <button onClick={() => setRangeMode("page")} style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${rangeMode === "page" ? T.goldDark : T.border}`, background: rangeMode === "page" ? T.goldLight : T.white, color: rangeMode === "page" ? T.goldDark : T.textSub, fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>📄 페이지로</button>
           </div>
           {rangeMode === "chapter" ? (
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {chs.map((ch, i) => (
-                <button key={i} onClick={() => setSelectedChapters(p => p.includes(i) ? p.filter(x => x !== i) : [...p, i])}
-                  style={{ padding: "8px 14px", borderRadius: 18, border: `1.5px solid ${selectedChapters.includes(i) ? T.goldDark : T.border}`, background: selectedChapters.includes(i) ? T.goldLight : T.white, color: selectedChapters.includes(i) ? T.goldDark : T.textSub, fontSize: 12, fontWeight: selectedChapters.includes(i) ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
-                  {ch}
-                </button>
-              ))}
-            </div>
+            <>
+              <input style={S.inp} type="text" value={chapterText}
+                onChange={e => setChapterText(e.target.value)}
+                placeholder="예: Ch01, Ch02, Ch05 또는 1단원~3단원" />
+              {(AI_BOOK_CHAPTERS[bookName] || []).length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>⚡ 자주 쓰는 챕터 (클릭하면 추가)</div>
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {(AI_BOOK_CHAPTERS[bookName] || []).map((ch, i) => (
+                      <button key={i} onClick={() => setChapterText(t => t.trim() ? `${t}, ${ch}` : ch)}
+                        style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${T.border}`, background: T.white, color: T.textSub, fontSize: 11, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }}>
+                        + {ch}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div style={{ marginTop: 8, fontSize: 10, color: T.textMuted, lineHeight: 1.5 }}>
+                💡 쉼표(,) 또는 세미콜론(;)으로 여러 챕터를 구분하세요.
+              </div>
+            </>
           ) : (
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <input type="number" placeholder="시작" value={pageFrom} onChange={e => setPageFrom(e.target.value)} style={{ ...S.inp, width: 90 }} />
               <span>~</span>
               <input type="number" placeholder="끝" value={pageTo} onChange={e => setPageTo(e.target.value)} style={{ ...S.inp, width: 90 }} />
               <span style={{ color: T.textMuted, fontSize: 13 }}>p.</span>
+            </div>
+          )}
+        </div>
+
+        {/* ★ v23.11: STEP 2.5 — 1회용 PDF 업로드 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>🎫 1회용 PDF 첨부 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(선택 · 이번 생성만 사용)</span></div>
+          <div style={{ fontSize: 11, color: T.textSub, marginBottom: 8, lineHeight: 1.6 }}>
+            💡 이번 시험만 쓰고 버릴 PDF 첨부. <strong>이번 생성에만</strong> 사용됩니다 (Drive 영구 저장 X).<br />
+            💡 Drive `채움학원 시험자료/교재` 에 이미 영구 저장된 교재는 첨부 불필요 (자동 인식).
+          </div>
+          <input type="file" accept="application/pdf,.pdf" multiple
+            onChange={e => { handlePdfUpload(e.target.files); e.target.value = ''; }}
+            style={{ display: "block", marginBottom: 8, fontSize: 12 }} />
+          <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 8 }}>최대 3개 · 각 10MB · PDF만</div>
+          {pdfFiles.length > 0 && (
+            <div style={{ marginTop: 4 }}>
+              {pdfFiles.map((f, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: T.bg, borderRadius: 6, marginBottom: 4, fontSize: 12 }}>
+                  <span style={{ fontSize: 14 }}>🎫</span>
+                  <span style={{ flex: 1, color: T.text, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                  <span style={{ color: T.textMuted, fontSize: 11 }}>{f.sizeMB}MB</span>
+                  <button onClick={() => removePdf(i)}
+                    style={{ padding: "2px 8px", borderRadius: 4, border: `1px solid ${T.danger}`, background: T.white, color: T.danger, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
+                    ✕ 삭제
+                  </button>
+                </div>
+              ))}
+              <div style={{ marginTop: 6, padding: "6px 10px", background: T.accentLight, borderRadius: 4, fontSize: 11, color: T.accent, fontWeight: 600 }}>
+                ✓ {pdfFiles.length}개 첨부됨 — 이번 생성만 사용 (저장 안 함)
+              </div>
             </div>
           )}
         </div>
@@ -939,7 +1038,7 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
         {/* 신청 버튼 */}
         <div style={S.card}>
           <div style={{ padding: 12, background: T.goldPale, border: `1px solid ${T.gold}`, borderRadius: 10, marginBottom: 12, fontSize: 12, color: T.textSub, lineHeight: 1.7 }}>
-            📚 <strong>{bookName}</strong> · {rangeMode === "chapter" ? `${selectedChapters.length}개 챕터` : `p.${pageFrom}-${pageTo}`}<br />
+            📚 <strong>{bookName || "(교재 미입력)"}</strong> · {rangeSummary}{pdfFiles.length > 0 ? ` · 🎫 PDF ${pdfFiles.length}개` : ""}<br />
             📝 {questionCount}문제 (객관식 {mcCount} · 서술형 {ssCount}) · {regSubject} {regGrade} {regLevel}반<br />
             📅 {examDate} {examTime} · 👤 {regTeacher || "(미선택)"}
           </div>
