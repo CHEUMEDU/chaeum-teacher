@@ -3268,6 +3268,47 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     loadReviewCount();
   }, [dashDate, sheetsUrl, loadReviewCount]);
   useEffect(()=>{ loadDashboard(); }, [loadDashboard]);
+  // ★ v23.7: 시험 전체 취소 — 정답목록 행 삭제 + (선택) Drive 파일 정리 → 학생앱에서 즉시 사라짐
+  const cancelDashExam = useCallback(async (ex)=>{
+    const examLabel = `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}${ex.setType?` (${ex.setType})`:""}`;
+    if (!ex.rowIndex) {
+      alert("⚠️ 이 시험은 행 정보가 없어 직접 취소할 수 없습니다.\n새로고침 후 다시 시도하거나, 시트에서 직접 확인하세요.");
+      return;
+    }
+    // 1차 확인
+    if (!window.confirm(`이 시험을 취소할까요?\n\n📚 ${examLabel}\n📝 ${ex.totalQuestions||0}문항\n\n취소하면 학생앱에서 즉시 사라집니다.\n(잘못 등록했거나 답지를 교체해야 할 때 사용)`)) return;
+    // Drive 파일 옵션 (folderId가 있을 때만 물어봄)
+    let trashFiles = false;
+    if (ex.folderId) {
+      trashFiles = window.confirm(`Drive에 올린 시험지·답지 파일도 함께 휴지통으로 보낼까요?\n\n[확인] = 정답 + 파일 모두 정리 (휴지통, 30일 복구 가능)\n[취소] = 정답 데이터만 삭제 (파일은 Drive 그대로 유지)`);
+    }
+    // 2차 최종 확인
+    if (!window.confirm(`정말 취소하시겠습니까? (마지막 확인)\n\n📚 ${examLabel}\n\n진행 후엔:\n· 학생앱에서 이 시험이 즉시 사라집니다\n· 정답 데이터는 '정답목록_취소백업_…' 시트에 자동 보관\n${trashFiles?"· Drive 파일도 휴지통으로 (30일 내 복구 가능)":"· Drive 파일은 그대로 유지"}\n\n진행할까요?`)) return;
+    try {
+      const params = new URLSearchParams({
+        action: "cancel_dash_exam",
+        rowIndex: String(ex.rowIndex),
+        confirm: "YES",
+        trashFiles: trashFiles ? "1" : "0",
+        folderId: ex.folderId || ""
+      });
+      const r = await fetch(`${sheetsUrl}?${params.toString()}`);
+      const d = await r.json();
+      if (d.result === "ok") {
+        alert(`✅ 시험 취소 완료\n\n📚 ${examLabel}\n학생앱에서 즉시 사라집니다.\n${d.trashedFiles>0?`\n📁 Drive 파일 ${d.trashedFiles}개 휴지통 이동`:""}\n\n🛟 복구용 백업: ${d.backupSheet}`);
+        // 즉시 갱신 (캐시 무효화 + 강제 재조회)
+        try {
+          const todayParam = encodeURIComponent(dashDate);
+          await fetch(`${sheetsUrl}?action=teacher_dashboard&date=${todayParam}&nocache=1&force_scan=1`);
+        } catch(_e) {}
+        loadDashboard();
+      } else {
+        alert("❌ 취소 실패: " + (d.message||"알 수 없는 오류"));
+      }
+    } catch(e) {
+      alert("네트워크 오류: " + String(e));
+    }
+  }, [sheetsUrl, loadDashboard, dashDate]);
   // ★ v23.7: 시험지/답지 파일 삭제 — 2차 확인 후 휴지통 이동
   const deleteDashFile = useCallback(async (fl, examLabel)=>{
     const kindLabel = fl.kind==="answer" ? "답지" : "시험지";
@@ -3569,6 +3610,8 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
                             <span style={{padding:"2px 6px",borderRadius:8,background:fileBadge.bg,color:fileBadge.c,fontWeight:700}}>{fileBadge.txt}</span>
                             {/* ★ v23.1: 정답 보기 버튼 */}
                             <button onClick={()=>openAnswerModal({...ex, date:dashDate})} style={{marginLeft:"auto",padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}} title="등록된 정답 확인 (관리자/선생님 검토용)">🔑 정답 보기</button>
+                            {/* ★ v23.7: 시험 전체 취소 — 정답목록 행 삭제 → 학생앱에서 즉시 사라짐 */}
+                            <button onClick={()=>cancelDashExam(ex)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}} title="시험 취소 — 학생앱에서 이 시험을 즉시 숨김 (잘못 등록한 경우)">🚫 시험 취소</button>
                           </div>
                           {/* 첨부 파일 (펼침) */}
                           {filesArr.length>0&&(
