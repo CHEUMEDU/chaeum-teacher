@@ -9,11 +9,9 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
-// ★ v23.8: AI 문제 생성 엔진 — Anthropic Claude Sonnet 호출
-//   chaeum-teacher 프로젝트의 api/generate.js (같은 도메인 → 상대경로)
-//   필요 파일: api/generate.js + lib/prompts.js (둘 다 chaeum-teacher 안에 추가)
-//   환경변수: ANTHROPIC_API_KEY (이미 ai-extract 에서 사용 중이므로 추가 작업 X)
-const GENERATE_URL = "/api/generate";
+// ★ v23.10: 문제 생성 — 큐 예약 방식으로 회귀 (test-generator v17)
+//   클로드가 별도 환경에서 GAS 큐를 읽고 처리 → 완료 시 자동 학생앱 등록
+//   더 이상 즉시 호출 X (api/generate.js, lib/prompts.js 불필요)
 const SUBJECTS=["영어","국어","수학"];
 const GRADES=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
 const LV_LEVELS=["SB","B","I","A","SA","전체"];
@@ -216,11 +214,10 @@ function PrintTab({sheetsUrl, T, S}){
   </div>);
 }
 /* ═══════════════════════════════════════════════════════════
-   📚 AI 문제 생성기 탭 (v23.8 신규) — 즉시 API 호출 + 자동 등록
+   📚 문제 생성 — 공용 데이터 정의 (교재·챕터·유형·세부유형)
    ═══════════════════════════════════════════════════════════
-   - chaeum-test-generator/api/generate 직접 호출 (큐 방식 X)
-   - 7단계 폼 → 60~90초 생성 → 미리보기 → 학생앱 등록
-   - 큐 방식(request_exam_gen) 폐기. 즉시 호출로 일원화
+   GeneratorTab(v23.10 큐 예약 방식)이 사용. AI_BOOKS, AI_BOOK_CHAPTERS,
+   AI_CAT_KR, AI_TYPE_META, AI_SUBTYPES.
    ═══════════════════════════════════════════════════════════ */
 const AI_BOOKS = {
   grammar: ['채움문법 1권 (기초)','채움문법 2권','채움문법 3권','채움문법 4권','채움문법 5권','채움문법 6권 (심화)','채움문법 7권 (고급)'],
@@ -280,7 +277,17 @@ const AI_SUBTYPES = {
   translation: ["영 → 한 번역","구문 분석 (S/V/수식어)","본문 의미 일치 고르기"]
 };
 
-function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
+/* ═══════════════════════════════════════════════════════════
+   📚 문제 생성 예약 탭 (v23.10) — 큐 방식 (test-generator v17)
+   ═══════════════════════════════════════════════════════════
+   - GAS 큐 시트(정답목록 또는 별도)에 예약 등록 → 클로드가 처리 → 완료 시 자동 학생앱 등록
+   - test-generator 가이드 v17: A세트 1개만 생성 (B세트 폐기)
+   - examDate/examTime 필드로 폴더 분기, mcRatio로 객/서 비율 강제
+   ═══════════════════════════════════════════════════════════ */
+function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
+  // ── 화면 ──
+  const [screen, setScreen] = useState("form"); // form | queue
+
   // ── 폼 상태 ──
   const [bookCategory, setBookCategory] = useState("grammar");
   const [bookName, setBookName] = useState(AI_BOOKS.grammar[0]);
@@ -290,40 +297,42 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
   const [pageTo, setPageTo] = useState("");
   const [selectedTypes, setSelectedTypes] = useState([{ type: "grammar", percentage: 100, subtypes: [] }]);
   const [questionCount, setQuestionCount] = useState(30);
-  const [customCountMode, setCustomCountMode] = useState(false);  // ★ v23.9: 문제수 직접입력 토글
+  const [customCountMode, setCustomCountMode] = useState(false);
   const [mcRatio, setMcRatio] = useState(60);
   const [difficulty, setDifficulty] = useState({ easy: 30, mid: 50, hard: 20 });
-  const [pdfFiles, setPdfFiles] = useState([]);  // ★ v23.9: PDF 첨부 [{name, base64, sizeMB}]
+  const [setType, setSetType] = useState(""); // 이론편 | 실전편 | 혼합 | (기본)
+  const [memo, setMemo] = useState("");
 
-  // ── 호출/등록 상태 ──
-  const [screen, setScreen] = useState("form"); // form | preview | done
-  const [generating, setGenerating] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
-  const [preview, setPreview] = useState(null);
-  const [registering, setRegistering] = useState(false);
-
-  // ── 등록 메타 (학생앱 등록용) ──
-  const todayIso = (()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;})();
+  // ── 학생앱 등록 정보 ──
+  const todayIso = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
   const [regSubject, setRegSubject] = useState("영어");
   const [regGrade, setRegGrade] = useState("중2");
   const [regLevel, setRegLevel] = useState("A");
-  const [regTeacher, setRegTeacher] = useState("");
-  const [regDate, setRegDate] = useState(todayIso);
+  const [regTeacher, setRegTeacher] = useState(currentTeacher || "");
+  const [examDate, setExamDate] = useState(todayIso);
+  const [examTime, setExamTime] = useState("19:00");
 
-  // 카테고리 변경 시 책 자동 선택
+  // ── 큐 상태 ──
+  const [queue, setQueue] = useState([]);
+  const [loadingQueue, setLoadingQueue] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [registeringRow, setRegisteringRow] = useState(null);
+  const [autoRegister, setAutoRegister] = useState(true); // 완료 시 자동 학생앱 등록
+
+  // ── 카테고리 변경 시 책 자동 선택 ──
   useEffect(() => {
     if (AI_BOOKS[bookCategory] && !AI_BOOKS[bookCategory].includes(bookName)) {
       setBookName(AI_BOOKS[bookCategory][0]);
     }
   }, [bookCategory]);
 
-  // 책 변경 시 챕터 자동 초기화
+  // ── 책 변경 시 챕터 자동 초기화 ──
   useEffect(() => {
     const chs = AI_BOOK_CHAPTERS[bookName] || ["전체 범위"];
     setSelectedChapters([0, 1].filter(i => i < chs.length));
   }, [bookName]);
 
-  // 유형 토글
+  // ── 유형 토글 ──
   const toggleType = (type) => {
     const idx = selectedTypes.findIndex(t => t.type === type);
     let next;
@@ -333,14 +342,13 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
     } else {
       next = [...selectedTypes, { type, percentage: 0, subtypes: [] }];
     }
-    // 균등 배분
     const each = Math.floor(100 / next.length);
     const extra = 100 - each * next.length;
     next.forEach((t, i) => { t.percentage = each + (i === 0 ? extra : 0); });
     setSelectedTypes(next);
   };
 
-  // 유형 % 변경
+  // ── 유형 % 변경 ──
   const setTypePct = (idx, newVal) => {
     if (selectedTypes.length === 1) return;
     const v = parseInt(newVal);
@@ -363,7 +371,7 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
     setSelectedTypes(next);
   };
 
-  // 서브타입 체크
+  // ── 서브타입 토글 ──
   const toggleSubtype = (typeIdx, subName) => {
     const next = selectedTypes.map((t, i) => {
       if (i !== typeIdx) return t;
@@ -380,7 +388,38 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
     setSelectedTypes(next);
   };
 
-  // 난이도 변경
+  // ── 서브타입 비중 슬라이더 ──
+  const setSubtypePct = (typeIdx, subIdx, newVal) => {
+    const v = Math.max(0, Math.min(100, parseInt(newVal) || 0));
+    const next = selectedTypes.map((t, i) => {
+      if (i !== typeIdx) return t;
+      if (t.subtypes.length < 2) return t;
+      const oldVal = t.subtypes[subIdx].percentage;
+      const diff = v - oldVal;
+      const updated = t.subtypes.map((s, k) => k === subIdx ? { ...s, percentage: v } : { ...s });
+      const others = updated.map((s, k) => ({ ...s, _idx: k })).filter(s => s._idx !== subIdx);
+      const totalOthers = others.reduce((acc, s) => acc + s.percentage, 0);
+      if (totalOthers === 0 && diff < 0) return t;
+      let rem = -diff;
+      others.forEach((s, k) => {
+        const share = k === others.length - 1
+          ? rem
+          : Math.round((s.percentage / Math.max(1, totalOthers)) * -diff);
+        const idx2 = s._idx;
+        updated[idx2].percentage = Math.max(0, updated[idx2].percentage + share);
+        rem -= share;
+      });
+      const total = updated.reduce((acc, s) => acc + s.percentage, 0);
+      if (total !== 100) {
+        const otherIdx = updated.findIndex((_, k) => k !== subIdx && updated[k].percentage > 0);
+        if (otherIdx >= 0) updated[otherIdx].percentage += (100 - total);
+      }
+      return { ...t, subtypes: updated };
+    });
+    setSelectedTypes(next);
+  };
+
+  // ── 난이도 변경 ──
   const diffChanged = (which, val) => {
     const v = parseInt(val);
     const { easy, mid, hard } = difficulty;
@@ -391,171 +430,233 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
     setDifficulty({ easy: ne, mid: nm, hard: nh });
   };
 
-  // 비용 추정 (PDF 첨부 시 +30% 가산)
-  const estCost = (()=>{
-    const base = { 10:120, 15:180, 20:240, 25:290, 30:350, 40:450, 50:560, 60:670, 70:780, 80:890, 100:1100 };
-    const raw = base[questionCount] || Math.round(questionCount * 11.5);
-    const withPdf = pdfFiles.length > 0 ? Math.round(raw * 1.3) : raw;
-    return withPdf;
-  })();
+  // ── 큐 로드 ──
+  const loadQueue = useCallback(async () => {
+    setLoadingQueue(true);
+    try {
+      const r = await fetch(`${sheetsUrl}?action=list_exam_gen`);
+      const text = await r.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = {}; }
+      if (Array.isArray(json.requests)) {
+        const sorted = [...json.requests].sort((a, b) => {
+          const ta = new Date(a.requestedAt || 0).getTime();
+          const tb = new Date(b.requestedAt || 0).getTime();
+          return tb - ta;
+        });
+        setQueue(sorted);
+      }
+    } catch (e) {
+      console.error("[loadQueue]", e);
+    } finally {
+      setLoadingQueue(false);
+    }
+  }, [sheetsUrl]);
+
+  // ── 큐 자동 새로고침 (10초마다) ──
+  useEffect(() => {
+    if (screen !== "queue") return;
+    loadQueue();
+    const t = setInterval(loadQueue, 10000);
+    return () => clearInterval(t);
+  }, [screen, loadQueue]);
+
+  // ── 비용/카운트 ──
   const mcCount = Math.round((questionCount * mcRatio) / 100);
   const ssCount = questionCount - mcCount;
 
-  // ★ v23.9: PDF 업로드 핸들러
-  const handlePdfUpload = async (fileList) => {
-    const arr = Array.from(fileList || []);
-    if (arr.length === 0) return;
-    if (pdfFiles.length + arr.length > 3) {
-      alert("PDF는 최대 3개까지 첨부 가능합니다.");
-      return;
-    }
-    const newFiles = [];
-    for (const f of arr) {
-      if (!f.name.toLowerCase().endsWith('.pdf')) {
-        alert(`${f.name} 은(는) PDF가 아닙니다. PDF 파일만 첨부 가능합니다.`);
-        continue;
-      }
-      const sizeMB = f.size / 1024 / 1024;
-      if (sizeMB > 20) {
-        alert(`${f.name} 은(는) ${sizeMB.toFixed(1)}MB로 너무 큽니다 (최대 20MB).`);
-        continue;
-      }
-      try {
-        const base64 = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = reader.result;
-            const idx = result.indexOf('base64,');
-            resolve(idx >= 0 ? result.substring(idx + 7) : result);
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(f);
-        });
-        newFiles.push({ name: f.name, base64, sizeMB: parseFloat(sizeMB.toFixed(2)) });
-      } catch (e) {
-        alert(`${f.name} 읽기 실패: ${e.message}`);
-      }
-    }
-    if (newFiles.length > 0) setPdfFiles(p => [...p, ...newFiles]);
-  };
-
-  const removePdf = (idx) => setPdfFiles(p => p.filter((_, i) => i !== idx));
-
-  // ── 생성 호출 ──
-  const handleGenerate = async () => {
+  // ── 예약 신청 ──
+  const handleSubmit = async () => {
     if (rangeMode === "chapter" && selectedChapters.length === 0) return alert("범위를 1개 이상 선택하세요.");
     if (rangeMode === "page" && (!pageFrom || !pageTo)) return alert("페이지 범위를 입력하세요.");
+    if (!regTeacher) return alert("선생님을 선택하세요.");
+    if (!regSubject || !regGrade || !regLevel) return alert("과목·학년·반을 모두 입력하세요.");
 
     const chs = AI_BOOK_CHAPTERS[bookName] || [];
     const ranges = rangeMode === "chapter"
       ? selectedChapters.map(i => chs[i]).filter(Boolean)
       : [`p.${pageFrom}-${pageTo}`];
+    const rangeDesc = ranges.join(", ");
 
-    setGenerating(true);
-    setElapsed(0);
-    const timer = setInterval(() => setElapsed(e => e + 1), 1000);
+    // 시험 유형 직렬화 (memo에 기록 — Claude가 읽을 수 있도록)
+    const typeBlock = selectedTypes.map(t => {
+      const tCount = Math.round(questionCount * t.percentage / 100);
+      const subBlock = t.subtypes.length > 0
+        ? t.subtypes.map(s => `      • ${s.name}: ${s.percentage}% (약 ${Math.round(tCount * s.percentage / 100)}개)`).join("\n")
+        : "      • (전체 세부 유형 균등 분포)";
+      return `  - ${AI_TYPE_META[t.type]?.name || t.type}: ${t.percentage}% (약 ${tCount}개)\n${subBlock}`;
+    }).join("\n");
 
-    try {
-      // ★ v23.9: PDF 첨부 포함
-      const body = {
-        bookCategory, bookName, ranges, rangeMode,
-        testTypes: selectedTypes, questionCount, mcRatio, difficulty,
-        pdfFiles: pdfFiles.map(f => ({ name: f.name, base64: f.base64 }))
-      };
-      const r = await fetch(GENERATE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      const json = await r.json();
-      if (!r.ok || !json.success) {
-        alert("생성 실패: " + (json.error || `HTTP ${r.status}`));
-        return;
-      }
-      setPreview(json);
-      setScreen("preview");
-    } catch (e) {
-      alert("네트워크 오류: " + String(e) + "\n\nGENERATE_URL 설정을 확인하세요.");
-    } finally {
-      clearInterval(timer);
-      setGenerating(false);
-    }
-  };
+    const mainType = selectedTypes[0]?.type || "grammar";
 
-  // ── 학생앱 등록 (이전 v23.7 registerExam 안정화 패턴 그대로) ──
-  const handleRegister = async () => {
-    if (!preview || !preview.questions) return;
-    if (!regSubject || !regGrade || !regLevel) return alert("과목·학년·반을 모두 선택하세요.");
-    if (!regTeacher) return alert("선생님을 선택하세요.");
+    // memo: [출제형태] + [유형분포] + [단일세트] + 사용자 memo
+    const directive =
+      `[출제형태] 객관식 ${mcCount}문제 + 서술형 ${ssCount}문제 (mcRatio=${mcRatio}%) — 절대 어기지 말 것.\n` +
+      `[유형 분포]\n${typeBlock}\n` +
+      `[단일세트] A세트 1개만 생성 (B세트 생성 금지 — v17)`;
+    const fullMemo = memo.trim() ? `${directive}\n[추가 메모]\n${memo}` : directive;
 
-    const qs = preview.questions;
-    const answersObj = {};
-    const typesObj = {};
-    const emptyQs = [];
-    qs.forEach(q => {
-      const qNum = String(q.id);
-      const ans = q.answer;
-      if (!ans || String(ans).trim() === "") emptyQs.push(qNum);
-      answersObj[qNum] = ans;
-      typesObj[qNum] = q.type === "mc" ? "obj" : "sub";
-    });
-    if (emptyQs.length > 0) {
-      if (!window.confirm(`⚠️ 정답이 비어있는 문항: ${emptyQs.join(", ")}\n그래도 등록할까요?`)) return;
-    }
-
-    const className = `${regSubject} ${regGrade} ${regLevel}반`;
     const body = {
-      action: "save_answer_key",
-      subject: regSubject, grade: regGrade, level: regLevel,
-      examType: "문제생성기", setType: "", round: "AI생성",
-      totalQuestions: qs.length, answers: answersObj, types: typesObj,
-      teacher: regTeacher, studentCount: 0, className,
-      date: regDate.replace(/-/g, ".")
+      action: "request_exam_gen",
+      textbook: bookName,
+      rangeType: rangeMode,
+      rangeDesc,
+      testType: mainType,
+      setType: setType || "",
+      questionCount,
+      mcRatio,
+      difficulty: { easy: difficulty.easy, medium: difficulty.mid, hard: difficulty.hard },
+      teacher: regTeacher,
+      targetClass: `${regSubject} ${regGrade} ${regLevel}반`,
+      subject: regSubject,
+      grade: regGrade,
+      level: regLevel,
+      examDate,
+      examTime,
+      memo: fullMemo,
+      requestedBy: currentTeacher || regTeacher,
+      requestedAt: new Date().toISOString(),
+      autoRegister: autoRegister,
+      singleSet: true
     };
 
-    setRegistering(true);
-    const tryOnce = async () => {
+    setSubmitting(true);
+    try {
       const r = await fetch(sheetsUrl, {
         method: "POST",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify(body)
       });
       const text = await r.text();
-      try { return JSON.parse(text); } catch { return { result: "error", message: text.substring(0, 100) }; }
-    };
+      let json;
+      try { json = JSON.parse(text); } catch { json = { result: "error", message: text.substring(0, 200) }; }
 
-    let result = null;
-    for (let i = 0; i < 3; i++) {
-      try { result = await tryOnce(); } catch (e) { result = { result: "error", message: String(e) }; }
-      if (result.result === "success" || result.result === "ok") break;
-      if (i < 2) await new Promise(r => setTimeout(r, 800 * (i + 1)));
-    }
-    setRegistering(false);
-
-    if (result?.result === "success" || result?.result === "ok") {
-      const objCnt = Object.values(typesObj).filter(t => t === "obj").length;
-      const subCnt = Object.values(typesObj).filter(t => t === "sub").length;
-      const verify = (result.savedAnswers === qs.length) ? `\n✅ 서버 검증 OK — 행 #${result.rowIndex}에 ${result.savedAnswers}문항 저장됨` : (result.warning ? `\n⚠️ ${result.warning}` : "");
-      alert(`✅ 학생앱 등록 완료!\n\n📚 ${className}\n📝 ${qs.length}문항 (객관식 ${objCnt} · 주관식 ${subCnt})${verify}\n\n학생들이 즉시 시험을 볼 수 있습니다.`);
-      setScreen("done");
-    } else {
-      alert(`❌ 등록 실패 (3회 시도)\n\n사유: ${result?.message || "알 수 없음"}\n\n다시 시도하거나 시트의 정답목록을 직접 확인하세요.`);
+      if (json.result === "success" || json.result === "ok") {
+        alert(`✅ 예약 등록 완료!\n\n📚 ${body.targetClass} · ${bookName}\n📝 ${questionCount}문항 (객관식 ${mcCount} + 서술형 ${ssCount})\n📅 ${examDate} ${examTime}\n👤 ${regTeacher}\n\n클로드가 큐를 처리하면${autoRegister ? " 자동으로 학생앱에 등록" : " 미리보기 후 수동 등록"}됩니다.\n\n진행 상황은 "📋 진행 상황" 메뉴에서 확인하세요.`);
+        setScreen("queue");
+      } else {
+        alert(`❌ 예약 실패: ${json.message || "알 수 없음"}`);
+      }
+    } catch (e) {
+      alert(`네트워크 오류: ${e.message}`);
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // ────────────────────────────────────────────
-  // 화면 1: 폼 (7단계)
-  // ────────────────────────────────────────────
+  // ── 완료된 요청을 학생앱에 수동 등록 ──
+  const handleManualRegister = async (request) => {
+    const ad = request.answerData;
+    const qs = ad?.sets?.[0]?.questions;
+    if (!qs || !Array.isArray(qs) || qs.length === 0) {
+      alert("이 요청은 결과 데이터가 없습니다.\n클로드가 아직 완료하지 않았거나 오류가 발생했을 수 있습니다.");
+      return;
+    }
+
+    const answersObj = {};
+    const typesObj = {};
+    qs.forEach(q => {
+      const qNum = String(q.number);
+      answersObj[qNum] = String(q.answer != null ? q.answer : "");
+      typesObj[qNum] = q.type === "multiple_choice" ? "obj" : "sub";
+    });
+
+    const cls = String(request.targetClass || "");
+    let subject = request.subject || "영어";
+    let grade = request.grade || "";
+    let level = request.level || "";
+    if (!grade || !level) {
+      // "영어 중1 A반" → 파싱
+      const m = cls.match(/^(\S+)\s+(\S+)\s+(\S+)반?$/);
+      if (m) { subject = m[1]; grade = m[2]; level = m[3].replace(/반$/, ''); }
+    }
+
+    const body = {
+      action: "save_answer_key",
+      subject, grade, level,
+      examType: "문제생성기",
+      setType: request.setType || "",
+      round: "AI생성",
+      totalQuestions: qs.length,
+      answers: answersObj, types: typesObj,
+      teacher: request.teacher || "",
+      studentCount: 0,
+      className: cls,
+      date: String(request.examDate || "").replace(/-/g, ".")
+    };
+
+    setRegisteringRow(request.rowIndex);
+    try {
+      const r = await fetch(sheetsUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(body)
+      });
+      const text = await r.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = { result: "error", message: text.substring(0, 200) }; }
+
+      if (json.result === "success" || json.result === "ok") {
+        const objCnt = Object.values(typesObj).filter(t => t === "obj").length;
+        const subCnt = Object.values(typesObj).filter(t => t === "sub").length;
+        const verify = (json.savedAnswers === qs.length) ? `\n✅ 서버 검증 OK — 행 #${json.rowIndex}에 ${json.savedAnswers}문항 저장됨` : "";
+        alert(`✅ 학생앱 등록 완료!\n\n📚 ${cls}\n📝 ${qs.length}문항 (객관식 ${objCnt} · 주관식 ${subCnt})${verify}`);
+        loadQueue();
+      } else {
+        alert(`❌ 등록 실패: ${json.message || "알 수 없음"}`);
+      }
+    } catch (e) {
+      alert(`네트워크 오류: ${e.message}`);
+    } finally {
+      setRegisteringRow(null);
+    }
+  };
+
+  // ── 요청 취소 (대기 상태인 것만) ──
+  const handleCancel = async (request) => {
+    if (!window.confirm(`이 예약을 취소하시겠습니까?\n\n📚 ${request.textbook}\n📅 ${request.examDate} ${request.examTime}`)) return;
+    try {
+      const r = await fetch(sheetsUrl, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ action: "cancel_exam_gen", rowIndex: request.rowIndex })
+      });
+      const text = await r.text();
+      let json;
+      try { json = JSON.parse(text); } catch { json = { result: "error", message: text.substring(0, 200) }; }
+
+      if (json.result === "success" || json.result === "ok") {
+        alert("✅ 예약 취소됨");
+        loadQueue();
+      } else {
+        alert(`❌ 취소 실패: ${json.message || "알 수 없음"}`);
+      }
+    } catch (e) {
+      alert(`네트워크 오류: ${e.message}`);
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════
+  // 화면 1: 예약 폼
+  // ════════════════════════════════════════════════════════════
   if (screen === "form") {
     const chs = AI_BOOK_CHAPTERS[bookName] || ["전체 범위"];
     const totalTypePct = selectedTypes.reduce((s, t) => s + t.percentage, 0);
+    const pendingCount = queue.filter(q => q.status === "대기" || q.status === "생성중").length;
+
     return (
       <div style={S.wrap} className="fade-up">
         <div style={{ textAlign: "center", padding: "20px 0 12px" }}>
           <div style={{ fontSize: 36, marginBottom: 4 }}>📚</div>
-          <h1 style={{ fontSize: 24, fontWeight: 800, color: T.text, marginBottom: 4 }}>AI 문제 생성</h1>
-          <p style={{ fontSize: 13, color: T.textMuted }}>Claude Sonnet 4.5 · PDF 첨부 가능 · 자가 검증</p>
+          <h1 style={{ fontSize: 24, fontWeight: 800, color: T.text, marginBottom: 4 }}>문제 생성 예약</h1>
+          <p style={{ fontSize: 13, color: T.textMuted }}>클로드 큐 처리 · 고품질 문항 · 단일 세트 (v17)</p>
         </div>
+
+        {/* 진행 상황 보기 버튼 (대기/생성중 카운트 표시) */}
+        <button onClick={() => { setScreen("queue"); loadQueue(); }}
+          style={{ ...S.btnO, width: "100%", marginBottom: 12, padding: "12px", fontSize: 14, fontWeight: 700 }}>
+          📋 진행 상황 확인 {pendingCount > 0 && <span style={{ color: T.danger, marginLeft: 8 }}>(처리 중 {pendingCount}건)</span>}
+        </button>
 
         {/* STEP 1: 교재 */}
         <div style={S.card}>
@@ -571,6 +672,9 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
           <select style={S.inp} value={bookName} onChange={e => setBookName(e.target.value)}>
             {(AI_BOOKS[bookCategory] || []).map(b => <option key={b}>{b}</option>)}
           </select>
+          <div style={{ marginTop: 8, padding: "6px 10px", background: T.bg, borderRadius: 6, fontSize: 11, color: T.textSub }}>
+            💡 교재 PDF가 Drive `채움학원 시험자료/교재/{bookName}` 에 있으면 클로드가 자동 인식합니다.
+          </div>
         </div>
 
         {/* STEP 2: 범위 */}
@@ -599,7 +703,7 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
           )}
         </div>
 
-        {/* STEP 3: 시험 유형 (다중 선택) */}
+        {/* STEP 3: 시험 유형 + 세부 비중 슬라이더 */}
         <div style={S.card}>
           <div style={S.secLabel}>3. 시험 유형 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(여러 개 선택 가능)</span></div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, marginBottom: 12 }}>
@@ -616,7 +720,6 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
               );
             })}
           </div>
-          {/* 유형별 패널 */}
           {selectedTypes.map((t, idx) => {
             const m = AI_TYPE_META[t.type];
             return (
@@ -628,8 +731,8 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
                     onChange={e => setTypePct(idx, e.target.value)} style={{ flex: 1, accentColor: T.goldDark }} />
                   <span style={{ fontWeight: 700, color: T.goldDark, minWidth: 36, textAlign: "right", fontSize: 13 }}>{t.percentage}%</span>
                 </div>
-                <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 6 }}>세부 유형 (체크 없으면 전체 균등)</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 6 }}>세부 유형 (체크하면 비중 조절 가능)</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}>
                   {AI_SUBTYPES[t.type].map(sn => {
                     const checked = t.subtypes.some(s => s.name === sn);
                     return (
@@ -640,6 +743,42 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
                     );
                   })}
                 </div>
+                {t.subtypes.length >= 1 && (
+                  <div style={{ padding: 10, background: T.white, borderRadius: 6, border: `1px dashed ${T.border}` }}>
+                    <div style={{ fontSize: 10, color: T.textMuted, fontWeight: 700, marginBottom: 8 }}>
+                      📊 선택한 세부 유형 비중 ({t.subtypes.length}개)
+                    </div>
+                    {t.subtypes.map((s, sIdx) => {
+                      const typeTotal = Math.round((questionCount * t.percentage) / 100);
+                      const subCount = Math.round((typeTotal * s.percentage) / 100);
+                      return (
+                        <div key={s.name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, color: T.text, flex: 1, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {s.name}
+                          </span>
+                          <input type="range" min="0" max="100" step="5" value={s.percentage}
+                            disabled={t.subtypes.length === 1}
+                            onChange={e => setSubtypePct(idx, sIdx, e.target.value)}
+                            style={{ width: 90, accentColor: m.color }} />
+                          <span style={{ fontSize: 11, fontWeight: 700, color: m.color, minWidth: 36, textAlign: "right" }}>
+                            {s.percentage}%
+                          </span>
+                          <span style={{ fontSize: 10, color: T.textMuted, minWidth: 38, textAlign: "right" }}>
+                            ≈{subCount}개
+                          </span>
+                        </div>
+                      );
+                    })}
+                    {t.subtypes.length > 1 && (() => {
+                      const sumSub = t.subtypes.reduce((acc, s) => acc + s.percentage, 0);
+                      return (
+                        <div style={{ marginTop: 4, fontSize: 10, fontWeight: 700, color: sumSub === 100 ? T.accent : T.danger, textAlign: "right" }}>
+                          합계 {sumSub}% {sumSub === 100 ? "✓" : "(자동 보정 중)"}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -650,11 +789,11 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
           )}
         </div>
 
-        {/* STEP 4: 문제 수 ★ v23.9: 직접입력 옵션 추가 */}
+        {/* STEP 4: 문제 수 */}
         <div style={S.card}>
-          <div style={S.secLabel}>4. 문제 수 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(최대 150개)</span></div>
+          <div style={S.secLabel}>4. 문제 수</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-            {[10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 100].map(n => (
+            {[10, 15, 20, 25, 30, 40, 50].map(n => (
               <button key={n} onClick={() => { setQuestionCount(n); setCustomCountMode(false); }}
                 style={{ padding: "8px 16px", borderRadius: 20, border: `1.5px solid ${!customCountMode && questionCount === n ? T.goldDark : T.border}`, background: !customCountMode && questionCount === n ? T.goldLight : T.white, color: !customCountMode && questionCount === n ? T.goldDark : T.textSub, fontWeight: !customCountMode && questionCount === n ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
                 {n}
@@ -668,47 +807,9 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
           {customCountMode && (
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
               <input type="number" min="1" max="150" value={questionCount}
-                onChange={e => {
-                  const v = Math.max(1, Math.min(150, parseInt(e.target.value) || 1));
-                  setQuestionCount(v);
-                }}
+                onChange={e => { const v = Math.max(1, Math.min(150, parseInt(e.target.value) || 1)); setQuestionCount(v); }}
                 style={{ ...S.inp, width: 120 }} placeholder="문제수" />
               <span style={{ fontSize: 12, color: T.textSub }}>문제 (1~150)</span>
-            </div>
-          )}
-          {questionCount > 70 && (
-            <div style={{ marginTop: 8, padding: "6px 10px", background: "#FFF7E6", border: "1px solid #FAAD14", borderRadius: 6, fontSize: 11, color: "#874D00" }}>
-              ⚠️ {questionCount}문제는 생성에 2~3분 정도 걸릴 수 있습니다.
-            </div>
-          )}
-        </div>
-
-        {/* ★ v23.9: STEP 4.5 — PDF 교재 첨부 (선택) */}
-        <div style={S.card}>
-          <div style={S.secLabel}>📎 교재 PDF 첨부 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(선택 · 최대 3개 · 각 20MB)</span></div>
-          <div style={{ fontSize: 11, color: T.textSub, marginBottom: 8, lineHeight: 1.6 }}>
-            💡 첨부하면 PDF 본문을 직접 분석해서 거기 나온 어휘·문장·예문 기반으로 출제합니다.<br />
-            첨부 안 해도 교재명·범위 기반으로 일반 수준의 문제 생성됩니다.
-          </div>
-          <input type="file" accept="application/pdf,.pdf" multiple
-            onChange={e => { handlePdfUpload(e.target.files); e.target.value = ''; }}
-            style={{ display: "block", marginBottom: 8, fontSize: 12 }} />
-          {pdfFiles.length > 0 && (
-            <div style={{ marginTop: 4 }}>
-              {pdfFiles.map((f, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: T.bg, borderRadius: 6, marginBottom: 4, fontSize: 12 }}>
-                  <span style={{ fontSize: 14 }}>📄</span>
-                  <span style={{ flex: 1, color: T.text, fontWeight: 600 }}>{f.name}</span>
-                  <span style={{ color: T.textMuted, fontSize: 11 }}>{f.sizeMB}MB</span>
-                  <button onClick={() => removePdf(i)}
-                    style={{ padding: "2px 8px", borderRadius: 4, border: `1px solid ${T.danger}`, background: T.white, color: T.danger, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
-                    ✕ 삭제
-                  </button>
-                </div>
-              ))}
-              <div style={{ marginTop: 6, padding: "4px 8px", background: T.accentLight, borderRadius: 4, fontSize: 11, color: T.accent, fontWeight: 600 }}>
-                ✓ {pdfFiles.length}개 PDF 첨부됨 — 본문 기반 출제로 진행됩니다
-              </div>
             </div>
           )}
         </div>
@@ -753,94 +854,28 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
           })}
         </div>
 
-        {/* STEP 7: 생성 */}
+        {/* STEP 7: 출제 스타일 */}
         <div style={S.card}>
-          <div style={S.secLabel}>7. 생성</div>
-          <div style={{ padding: 14, background: T.goldPale, border: `1px solid ${T.gold}`, borderRadius: 10, marginBottom: 12 }}>
-            <div style={{ fontSize: 13, color: T.textSub, lineHeight: 1.8 }}>
-              💰 예상 비용: <strong style={{ color: T.goldDark }}>약 {estCost}원</strong>{pdfFiles.length > 0 ? ` (PDF ${pdfFiles.length}개 분석 +30%)` : ""} (5분 내 재호출 시 90% 할인)<br />
-              ⏱ 예상 시간: 약 {questionCount > 70 ? "120~180" : questionCount > 40 ? "80~120" : "60~90"}초 · Claude Sonnet 4.5{pdfFiles.length > 0 ? " + PDF 분석" : ""}
-            </div>
-          </div>
-          <button onClick={handleGenerate} disabled={generating}
-            style={{ ...S.btnG, width: "100%", opacity: generating ? 0.7 : 1, cursor: generating ? "wait" : "pointer" }}>
-            {generating ? `🤖 생성 중... ${elapsed}초 경과 (${questionCount}문제${pdfFiles.length > 0 ? ` + PDF ${pdfFiles.length}개` : ""})` : "🚀 문제 생성하기"}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ────────────────────────────────────────────
-  // 화면 2: 미리보기 + 등록
-  // ────────────────────────────────────────────
-  if (screen === "preview") {
-    const qs = preview?.questions || [];
-    const sum = preview?.summary || {};
-    const warnings = preview?.warnings || [];
-    const teachers = teacherList || [];
-    return (
-      <div style={S.wrap} className="fade-up">
-        <div style={{ textAlign: "center", padding: "16px 0" }}>
-          <h2 style={{ fontSize: 22, fontWeight: 800, color: T.text }}>✅ 생성 완료</h2>
-          <p style={{ fontSize: 13, color: T.textMuted, marginTop: 4 }}>{qs.length}문항 · 검토 후 학생앱에 등록하세요</p>
-        </div>
-
-        {/* 요약 */}
-        <div style={S.card}>
-          <div style={S.secLabel}>📊 요약</div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, fontSize: 12 }}>
-            <div style={{ padding: 10, background: T.bg, borderRadius: 8, textAlign: "center" }}>
-              <div style={{ color: T.textMuted, marginBottom: 2 }}>총</div>
-              <div style={{ fontWeight: 800, fontSize: 18, color: T.goldDark }}>{sum.total || qs.length}</div>
-            </div>
-            <div style={{ padding: 10, background: T.bg, borderRadius: 8, textAlign: "center" }}>
-              <div style={{ color: T.textMuted, marginBottom: 2 }}>객관식</div>
-              <div style={{ fontWeight: 800, fontSize: 18 }}>{sum.mcCount}</div>
-            </div>
-            <div style={{ padding: 10, background: T.bg, borderRadius: 8, textAlign: "center" }}>
-              <div style={{ color: T.textMuted, marginBottom: 2 }}>서술형</div>
-              <div style={{ fontWeight: 800, fontSize: 18 }}>{sum.ssCount}</div>
-            </div>
-          </div>
-          <div style={{ marginTop: 10, fontSize: 11, color: T.textSub, textAlign: "center" }}>
-            난이도: 쉬움 {sum.easyCount} · 보통 {sum.midCount} · 어려움 {sum.hardCount} | 비용: <strong>{preview?.meta?.cost?.krw || "?"}원</strong>{preview?.meta?.cost?.cached ? " (캐시 적중 ✓)" : ""} | 재생성: {preview?.meta?.regenerationAttempts || 0}회
-          </div>
-        </div>
-
-        {/* 경고 */}
-        {warnings.length > 0 && (
-          <div style={{ padding: 12, background: "#FFFBE6", border: "1px solid #FAAD14", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>
-            <div style={{ fontWeight: 700, color: "#D48806", marginBottom: 4 }}>⚠️ 검증 경고 ({warnings.length}건)</div>
-            <div style={{ color: "#874D00", maxHeight: 100, overflowY: "auto" }}>
-              {warnings.map((w, i) => (<div key={i}>{w.kind}{w.message ? `: ${w.message}` : ""}{w.count ? ` (${w.count}건)` : ""}</div>))}
-            </div>
-          </div>
-        )}
-
-        {/* 문제 미리보기 (간단) */}
-        <div style={S.card}>
-          <div style={S.secLabel}>📝 문제 (상위 5개 미리보기)</div>
-          <div style={{ maxHeight: 320, overflowY: "auto", paddingRight: 4 }}>
-            {qs.slice(0, 5).map(q => (
-              <div key={q.id} style={{ padding: 10, border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 6, fontSize: 12, lineHeight: 1.6 }}>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 4 }}>
-                  <span style={{ fontWeight: 800, color: T.goldDark }}>Q{q.id}.</span>
-                  <span style={{ padding: "1px 6px", borderRadius: 8, background: q.type === "mc" ? T.goldLight : "#E8F4FF", color: q.type === "mc" ? T.goldDark : "#1890FF", fontSize: 10, fontWeight: 600 }}>{q.type === "mc" ? "객관식" : "서술형"}</span>
-                  <span style={{ fontSize: 10, color: T.textMuted }}>{q.subtype}</span>
-                </div>
-                <div style={{ fontWeight: 600, marginBottom: 2 }}>{q.questionText}</div>
-                {q.passage && <div style={{ padding: "4px 8px", background: T.bg, borderRadius: 4, fontSize: 11, marginBottom: 4 }}>{q.passage}</div>}
-                <div style={{ color: T.accent, fontSize: 11 }}>정답: {q.answer}</div>
-              </div>
+          <div style={S.secLabel}>7. 출제 스타일 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(선택)</span></div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {[
+              { val: "", label: "기본형", desc: "균형 잡힌 출제" },
+              { val: "이론편", label: "📘 이론편", desc: "개념·문법 위주" },
+              { val: "실전편", label: "📝 실전편", desc: "응용·종합 문제" },
+              { val: "혼합", label: "📚 혼합", desc: "이론 + 실전" }
+            ].map(opt => (
+              <button key={opt.val} onClick={() => setSetType(opt.val)}
+                title={opt.desc}
+                style={{ padding: "8px 14px", borderRadius: 18, border: `1.5px solid ${setType === opt.val ? T.goldDark : T.border}`, background: setType === opt.val ? T.goldLight : T.white, color: setType === opt.val ? T.goldDark : T.textSub, fontSize: 12, fontWeight: setType === opt.val ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                {opt.label}
+              </button>
             ))}
-            {qs.length > 5 && <div style={{ textAlign: "center", fontSize: 11, color: T.textMuted, padding: 8 }}>...외 {qs.length - 5}문제</div>}
           </div>
         </div>
 
-        {/* 등록 메타 */}
+        {/* STEP 8: 학생앱 등록 정보 */}
         <div style={S.card}>
-          <div style={S.secLabel}>📚 학생앱 등록 정보</div>
+          <div style={S.secLabel}>8. 학생앱 등록 정보</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
             <div>
               <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>과목</div>
@@ -863,41 +898,166 @@ function AiGeneratorTab({ sheetsUrl, T, S, teacherList }) {
             <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>선생님</div>
             <select style={S.inp} value={regTeacher} onChange={e => setRegTeacher(e.target.value)}>
               <option value="">-- 선택 --</option>
-              {teachers.map(t => <option key={t.name || t["이름"]}>{t.name || t["이름"]}</option>)}
+              {(teacherList || []).map(t => <option key={t.name || t["이름"]}>{t.name || t["이름"]}</option>)}
             </select>
           </div>
-          <div>
-            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 날짜</div>
-            <input style={S.inp} type="date" value={regDate} onChange={e => setRegDate(e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 날짜</div>
+              <input style={S.inp} type="date" value={examDate} onChange={e => setExamDate(e.target.value)} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 시각</div>
+              <input style={S.inp} type="time" value={examTime} onChange={e => setExamTime(e.target.value)} />
+            </div>
           </div>
         </div>
 
-        {/* 버튼 */}
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => setScreen("form")} disabled={registering}
-            style={{ ...S.btnO, flex: 1 }}>← 다시 만들기</button>
-          <button onClick={handleRegister} disabled={registering}
-            style={{ ...S.btnG, flex: 2, opacity: registering ? 0.7 : 1, cursor: registering ? "wait" : "pointer" }}>
-            {registering ? "📡 등록 중..." : "📚 학생앱에 등록 →"}
+        {/* STEP 9: 추가 메모 (선택) */}
+        <div style={S.card}>
+          <div style={S.secLabel}>9. 추가 메모 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(선택 — 클로드에게 특별 지시)</span></div>
+          <textarea value={memo} onChange={e => setMemo(e.target.value)}
+            placeholder="예: 어려운 문법 위주로 출제해주세요. 빈칸 추론을 많이 넣어주세요."
+            style={{ ...S.inp, minHeight: 60, fontFamily: "inherit", resize: "vertical" }} />
+        </div>
+
+        {/* STEP 10: 완료 후 처리 옵션 */}
+        <div style={S.card}>
+          <div style={S.secLabel}>10. 완료 후 처리</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button onClick={() => setAutoRegister(true)}
+              style={{ padding: "10px 14px", borderRadius: 10, border: `1.5px solid ${autoRegister ? T.goldDark : T.border}`, background: autoRegister ? T.goldLight : T.white, color: autoRegister ? T.goldDark : T.textSub, fontSize: 12, fontWeight: autoRegister ? 700 : 500, cursor: "pointer", fontFamily: "inherit", flex: 1, textAlign: "center" }}>
+              {autoRegister && "✓ "}🚀 자동 등록<br /><span style={{ fontSize: 10, fontWeight: 400 }}>완료 즉시 학생앱에</span>
+            </button>
+            <button onClick={() => setAutoRegister(false)}
+              style={{ padding: "10px 14px", borderRadius: 10, border: `1.5px solid ${!autoRegister ? T.goldDark : T.border}`, background: !autoRegister ? T.goldLight : T.white, color: !autoRegister ? T.goldDark : T.textSub, fontSize: 12, fontWeight: !autoRegister ? 700 : 500, cursor: "pointer", fontFamily: "inherit", flex: 1, textAlign: "center" }}>
+              {!autoRegister && "✓ "}👁 수동 검토<br /><span style={{ fontSize: 10, fontWeight: 400 }}>완료 후 확인하고 등록</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 신청 버튼 */}
+        <div style={S.card}>
+          <div style={{ padding: 12, background: T.goldPale, border: `1px solid ${T.gold}`, borderRadius: 10, marginBottom: 12, fontSize: 12, color: T.textSub, lineHeight: 1.7 }}>
+            📚 <strong>{bookName}</strong> · {rangeMode === "chapter" ? `${selectedChapters.length}개 챕터` : `p.${pageFrom}-${pageTo}`}<br />
+            📝 {questionCount}문제 (객관식 {mcCount} · 서술형 {ssCount}) · {regSubject} {regGrade} {regLevel}반<br />
+            📅 {examDate} {examTime} · 👤 {regTeacher || "(미선택)"}
+          </div>
+          <button onClick={handleSubmit} disabled={submitting}
+            style={{ ...S.btnG, width: "100%", opacity: submitting ? 0.7 : 1, cursor: submitting ? "wait" : "pointer", padding: 14, fontSize: 15 }}>
+            {submitting ? "📡 예약 등록 중..." : "📋 예약 신청하기"}
           </button>
         </div>
       </div>
     );
   }
 
-  // ────────────────────────────────────────────
-  // 화면 3: 완료
-  // ────────────────────────────────────────────
-  return (
-    <div style={S.wrap} className="fade-up">
-      <div style={{ textAlign: "center", padding: "60px 20px" }}>
-        <div style={{ fontSize: 56, marginBottom: 16 }}>✅</div>
-        <h2 style={{ fontSize: 24, fontWeight: 800, color: T.text, marginBottom: 8 }}>등록 완료!</h2>
-        <p style={{ fontSize: 14, color: T.textSub, marginBottom: 24 }}>학생들이 즉시 시험을 볼 수 있습니다.</p>
-        <button onClick={() => { setScreen("form"); setPreview(null); }} style={{ ...S.btnG, padding: "12px 32px" }}>새 문제 만들기</button>
+  // ════════════════════════════════════════════════════════════
+  // 화면 2: 큐 모니터링
+  // ════════════════════════════════════════════════════════════
+  if (screen === "queue") {
+    const statusMeta = {
+      "대기":   { color: "#FAAD14", bg: "#FFFBE6", icon: "⏳", label: "대기 중" },
+      "생성중": { color: "#1890FF", bg: "#E6F7FF", icon: "🤖", label: "생성 중" },
+      "완료":   { color: "#52C41A", bg: "#F6FFED", icon: "✅", label: "완료" },
+      "실패":   { color: "#FF4D4F", bg: "#FFF1F0", icon: "❌", label: "실패" }
+    };
+    const myQueue = currentTeacher
+      ? queue.filter(q => q.teacher === currentTeacher || q.requestedBy === currentTeacher)
+      : queue;
+
+    return (
+      <div style={S.wrap} className="fade-up">
+        <div style={{ textAlign: "center", padding: "16px 0" }}>
+          <h2 style={{ fontSize: 22, fontWeight: 800, color: T.text }}>📋 진행 상황</h2>
+          <p style={{ fontSize: 12, color: T.textMuted, marginTop: 4 }}>10초마다 자동 새로고침</p>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <button onClick={() => setScreen("form")} style={{ ...S.btnO, flex: 1 }}>← 새 예약 만들기</button>
+          <button onClick={loadQueue} disabled={loadingQueue} style={{ ...S.btnO, flex: 1, opacity: loadingQueue ? 0.5 : 1 }}>
+            {loadingQueue ? "🔄 새로고침 중..." : "🔄 지금 새로고침"}
+          </button>
+        </div>
+
+        {myQueue.length === 0 ? (
+          <div style={{ padding: 40, textAlign: "center", color: T.textMuted, background: T.bg, borderRadius: 10 }}>
+            <div style={{ fontSize: 48, marginBottom: 8 }}>📭</div>
+            <p style={{ fontSize: 14 }}>예약된 요청이 없습니다.</p>
+            <button onClick={() => setScreen("form")} style={{ ...S.btnG, padding: "8px 24px", marginTop: 12 }}>새 예약 만들기</button>
+          </div>
+        ) : (
+          myQueue.map((req, i) => {
+            const meta = statusMeta[req.status] || statusMeta["대기"];
+            const isDone = req.status === "완료";
+            const hasResult = isDone && req.answerData?.sets?.[0]?.questions?.length > 0;
+            const elapsed = req.requestedAt ? (() => {
+              const diff = Math.floor((Date.now() - new Date(req.requestedAt).getTime()) / 1000);
+              if (diff < 60) return `${diff}초 전`;
+              if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+              if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+              return `${Math.floor(diff / 86400)}일 전`;
+            })() : "";
+            return (
+              <div key={req.rowIndex || i} style={{ ...S.card, borderLeft: `4px solid ${meta.color}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ padding: "2px 10px", borderRadius: 12, background: meta.bg, color: meta.color, fontSize: 11, fontWeight: 700 }}>
+                    {meta.icon} {meta.label}
+                  </span>
+                  <span style={{ fontSize: 11, color: T.textMuted }}>{elapsed}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 10, color: T.textMuted }}>#{req.rowIndex}</span>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 4 }}>
+                  📚 {req.textbook || "?"} <span style={{ fontSize: 11, fontWeight: 400, color: T.textSub }}>· {req.rangeDesc || "(범위 미설정)"}</span>
+                </div>
+                <div style={{ fontSize: 12, color: T.textSub, marginBottom: 6, lineHeight: 1.6 }}>
+                  📝 {req.questionCount || "?"}문제 (객관식 {Math.round((req.questionCount || 0) * (req.mcRatio || 0) / 100)} · 서술형 {(req.questionCount || 0) - Math.round((req.questionCount || 0) * (req.mcRatio || 0) / 100)})<br />
+                  👥 {req.targetClass || "?"} · 👤 {req.teacher || "?"}<br />
+                  📅 시험: {req.examDate || "?"} {req.examTime || ""}
+                </div>
+                {req.answerData?.error && (
+                  <div style={{ padding: 8, background: "#FFF1F0", border: `1px solid ${T.danger}`, borderRadius: 6, fontSize: 11, color: T.danger, marginTop: 6 }}>
+                    ⚠️ 오류: {req.answerData.error}
+                  </div>
+                )}
+                {isDone && (
+                  <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
+                    {hasResult ? (
+                      <>
+                        <button onClick={() => handleManualRegister(req)} disabled={registeringRow === req.rowIndex}
+                          style={{ ...S.btnG, flex: 2, fontSize: 12, padding: "8px 14px", opacity: registeringRow === req.rowIndex ? 0.5 : 1 }}>
+                          {registeringRow === req.rowIndex ? "📡 등록 중..." : "📚 학생앱에 등록"}
+                        </button>
+                        {req.resultFileId && (
+                          <button onClick={() => window.open(`https://drive.google.com/file/d/${req.resultFileId}/view`, "_blank")}
+                            style={{ ...S.btnO, fontSize: 11, padding: "8px 12px" }}>
+                            📄 JSON 보기
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <div style={{ flex: 1, padding: 8, background: T.bg, borderRadius: 6, fontSize: 11, color: T.textMuted, textAlign: "center" }}>
+                        결과 데이터 없음
+                      </div>
+                    )}
+                  </div>
+                )}
+                {req.status === "대기" && (
+                  <div style={{ marginTop: 6 }}>
+                    <button onClick={() => handleCancel(req)} style={{ ...S.btnO, fontSize: 11, padding: "6px 12px", borderColor: T.danger, color: T.danger }}>
+                      🚫 예약 취소
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
       </div>
-    </div>
-  );
+    );
+  }
+
+  return null;
 }
 
 /* ═══ 반별 성적 탭 (v20.5) ═══
@@ -3849,8 +4009,8 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
       {/* ★ v23.1: 일괄 프린트 탭 제거 — 오늘의 현황의 "파일 일괄 다운로드" 버튼으로 대체 */}
       {/* ═══ 반별 성적 탭 (v20.4) ═══ */}
       {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
-      {/* ═══ 문제 생성기 탭 (v23.8: 즉시 호출 + 자가 검증 + 자동 등록) ═══ */}
-      {screen==="home"&&tab==="generator"&&(<AiGeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList}/>)}
+      {/* ═══ 문제 생성기 탭 (v23.10: 큐 예약 + 모니터링 + 자동 등록) ═══ */}
+      {screen==="home"&&tab==="generator"&&(<GeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} currentTeacher={teacher}/>)}
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
       {screen==="home"&&tab==="register"&&(<div style={S.wrap} className="fade-up">
         <div style={{textAlign:"center",padding:"20px 0 12px"}}><div style={{fontSize:36,marginBottom:4}}>📋</div><h1 style={{fontSize:24,fontWeight:800,color:T.text,marginBottom:4}}>시험 등록</h1><p style={{fontSize:13,color:T.textMuted}}>시험 대상 반과 정보를 설정하세요</p></div>
