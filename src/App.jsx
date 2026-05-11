@@ -3258,52 +3258,70 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
         if(d.result==="success") setReviewCount((d.items||[]).length);
       }).catch(()=>{});
   },[sheetsUrl]);
-  const loadDashboard = useCallback((dateOverride)=>{
-    const d=dateOverride||dashDate;
+  // ★ v23.7: loadDashboard 강화 — force 옵션으로 캐시 우회 가능
+  //   useEffect의 자동 호출은 cache 사용 (빠른 로딩), 🔄 버튼·시험 취소 후 갱신은 force (fresh data)
+  const loadDashboard = useCallback((dateOverride, force)=>{
+    const d=(typeof dateOverride==="string"?dateOverride:null)||dashDate;
+    const useForce = force===true || dateOverride===true;
     setDashLoading(true); setDashErr(""); setDashData(null);
-    fetch(`${sheetsUrl}?action=teacher_dashboard&date=${encodeURIComponent(d)}`)
+    const cacheBust = useForce ? "&nocache=1&force_scan=1" : "";
+    fetch(`${sheetsUrl}?action=teacher_dashboard&date=${encodeURIComponent(d)}${cacheBust}`)
       .then(r=>r.json()).then(d2=>{if(d2.result==="ok"){setDashData(d2);}else{setDashErr(d2.message||"조회 실패");}setDashLoading(false);})
       .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
-    // ★ v23.0: 스케줄 기능 제거 (DB 연결 후 재구현 예정)
     loadReviewCount();
   }, [dashDate, sheetsUrl, loadReviewCount]);
   useEffect(()=>{ loadDashboard(); }, [loadDashboard]);
-  // ★ v23.7: 시험 전체 취소 — 정답목록 행 삭제 + (선택) Drive 파일 정리 → 학생앱에서 즉시 사라짐
+  // ★ v23.7: 시험 전체 취소 — 강건 버전
+  //   - rowIndex 없거나 stale 캐시라도 합성키(className+examType+setType+examDate)로 fallback
+  //   - 정답목록 행 + 업로드기록 행 동시 삭제 → 학생앱·대시보드 모두 즉시 사라짐
+  //   - (선택) Drive 파일도 휴지통으로
   const cancelDashExam = useCallback(async (ex)=>{
     const examLabel = `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}${ex.setType?` (${ex.setType})`:""}`;
-    if (!ex.rowIndex) {
-      alert("⚠️ 이 시험은 행 정보가 없어 직접 취소할 수 없습니다.\n새로고침 후 다시 시도하거나, 시트에서 직접 확인하세요.");
+    // 최소 식별 정보 (rowIndex 또는 합성키 중 하나는 있어야 함)
+    const hasComposite = !!(ex.className && ex.examType);
+    if (!ex.rowIndex && !hasComposite) {
+      alert(`⚠️ 이 시험은 식별 정보가 부족해 취소할 수 없습니다.\n\nclassName: ${ex.className||"(없음)"}\nexamType: ${ex.examType||"(없음)"}\n\n새로고침 버튼을 누른 뒤 다시 시도하세요.`);
       return;
     }
     // 1차 확인
-    if (!window.confirm(`이 시험을 취소할까요?\n\n📚 ${examLabel}\n📝 ${ex.totalQuestions||0}문항\n\n취소하면 학생앱에서 즉시 사라집니다.\n(잘못 등록했거나 답지를 교체해야 할 때 사용)`)) return;
+    if (!window.confirm(`이 시험을 취소할까요?\n\n📚 ${examLabel}\n📝 ${ex.totalQuestions||0}문항\n\n취소하면 학생앱·대시보드에서 즉시 사라집니다.\n(잘못 등록했거나 답지를 교체해야 할 때 사용)`)) return;
     // Drive 파일 옵션 (folderId가 있을 때만 물어봄)
     let trashFiles = false;
     if (ex.folderId) {
       trashFiles = window.confirm(`Drive에 올린 시험지·답지 파일도 함께 휴지통으로 보낼까요?\n\n[확인] = 정답 + 파일 모두 정리 (휴지통, 30일 복구 가능)\n[취소] = 정답 데이터만 삭제 (파일은 Drive 그대로 유지)`);
     }
     // 2차 최종 확인
-    if (!window.confirm(`정말 취소하시겠습니까? (마지막 확인)\n\n📚 ${examLabel}\n\n진행 후엔:\n· 학생앱에서 이 시험이 즉시 사라집니다\n· 정답 데이터는 '정답목록_취소백업_…' 시트에 자동 보관\n${trashFiles?"· Drive 파일도 휴지통으로 (30일 내 복구 가능)":"· Drive 파일은 그대로 유지"}\n\n진행할까요?`)) return;
+    if (!window.confirm(`정말 취소하시겠습니까? (마지막 확인)\n\n📚 ${examLabel}\n\n진행 후엔:\n· 학생앱·대시보드에서 즉시 사라짐\n· 정답·업로드기록은 백업 시트에 자동 보관\n${trashFiles?"· Drive 파일도 휴지통으로 (30일 내 복구 가능)":"· Drive 파일은 그대로 유지"}\n\n진행할까요?`)) return;
+    // 호출 — rowIndex와 합성키 둘 다 보낸다 (서버가 알아서 우선순위 결정)
     try {
       const params = new URLSearchParams({
         action: "cancel_dash_exam",
-        rowIndex: String(ex.rowIndex),
         confirm: "YES",
         trashFiles: trashFiles ? "1" : "0",
         folderId: ex.folderId || ""
       });
+      if (ex.rowIndex) params.append("rowIndex", String(ex.rowIndex));
+      // 합성키도 항상 같이 보냄 (rowIndex가 stale일 때 자동 fallback)
+      if (ex.className) params.append("className", ex.className);
+      if (ex.examType) params.append("examType", ex.examType);
+      if (ex.setType || ex.round) params.append("setType", ex.setType || ex.round || "");
+      if (ex.examDate || dashDate) params.append("examDate", ex.examDate || dashDate || "");
       const r = await fetch(`${sheetsUrl}?${params.toString()}`);
       const d = await r.json();
       if (d.result === "ok") {
-        alert(`✅ 시험 취소 완료\n\n📚 ${examLabel}\n학생앱에서 즉시 사라집니다.\n${d.trashedFiles>0?`\n📁 Drive 파일 ${d.trashedFiles}개 휴지통 이동`:""}\n\n🛟 복구용 백업: ${d.backupSheet}`);
-        // 즉시 갱신 (캐시 무효화 + 강제 재조회)
-        try {
-          const todayParam = encodeURIComponent(dashDate);
-          await fetch(`${sheetsUrl}?action=teacher_dashboard&date=${todayParam}&nocache=1&force_scan=1`);
-        } catch(_e) {}
-        loadDashboard();
+        const resolveTag = d.resolvedBy==="composite" ? " (합성키 fallback 사용)" : "";
+        alert(
+          `✅ 시험 취소 완료${resolveTag}\n\n` +
+          `📚 ${examLabel}\n` +
+          `학생앱·대시보드에서 즉시 사라집니다.\n` +
+          (d.deletedUploads>0 ? `\n📤 업로드기록 ${d.deletedUploads}건 정리` : "") +
+          (d.trashedFiles>0 ? `\n📁 Drive 파일 ${d.trashedFiles}개 휴지통 이동` : "") +
+          `\n\n🛟 복구용 백업: ${d.backupSheet}`
+        );
+        // 즉시 갱신 — force=true 로 캐시 우회
+        loadDashboard(null, true);
       } else {
-        alert("❌ 취소 실패: " + (d.message||"알 수 없는 오류"));
+        alert("❌ 취소 실패: " + (d.message||"알 수 없는 오류") + "\n\n다시 시도하시거나, 시트의 정답목록을 직접 확인하세요.");
       }
     } catch(e) {
       alert("네트워크 오류: " + String(e));
@@ -3467,7 +3485,7 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
         <button onClick={()=>setDashDate(todayIsoStr())} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:8,border:`1.5px solid ${isDashToday?T.goldDark:T.border}`,background:isDashToday?T.goldLight:T.white,color:isDashToday?T.goldDeep:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>오늘</button>
         <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()-1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>← 이전</button>
         <button onClick={()=>{const d=new Date(dashDate);d.setDate(d.getDate()+1);setDashDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);}} style={{padding:"6px 10px",fontSize:11,fontWeight:600,borderRadius:8,border:`1.5px solid ${T.border}`,background:T.white,color:T.textSub,cursor:"pointer",fontFamily:"inherit"}}>다음 →</button>
-        <button onClick={()=>loadDashboard()} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}}>🔄 새로고침</button>
+        <button onClick={()=>loadDashboard(null, true)} style={{...S.btnO,padding:"6px 12px",fontSize:11,marginLeft:"auto"}} title="캐시 우회 + 강제 재조회 (방금 추가/취소한 시험 즉시 반영)">🔄 새로고침</button>
         {/* ★ v23.1: 파일 일괄 다운로드 (오늘의 모든 시험지/답지) */}
         <button onClick={()=>batchDownloadAllFiles(dashData?.exams||[])} disabled={batchDlRunning||!dashData||(dashData?.exams||[]).length===0} style={{padding:"6px 12px",fontSize:11,fontWeight:700,borderRadius:8,border:`1.5px solid ${T.blue}`,background:batchDlRunning?T.borderLight:T.blueLight,color:T.blue,cursor:batchDlRunning?"wait":"pointer",fontFamily:"inherit"}}>
           {batchDlRunning?`📦 ${batchDlProgress.done}/${batchDlProgress.total}`:"📦 파일 일괄 다운"}
