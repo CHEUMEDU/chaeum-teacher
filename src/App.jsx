@@ -9,15 +9,19 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
-// ★ v23.13: 문제 생성 — 챕터 입력 강화 (수동 토글 + 퍼지 매칭 + 결합 챕터 자동 분리)
+// ★ v23.14: 문제 생성 — UI 통합 개선 (시험등록 동일 양식 + 진행상황 대시보드 + 막대바 축소)
+//   v23.14 변경점 (2026-05-12):
+//   - 학생앱 등록 정보 = 시험 등록 양식과 동일 (인원/주관식 채점 모드/시간 그리드)
+//   - 교재 5권 + 더보기 버튼 (45권 부담 ↓)
+//   - 1회용 PDF 슬롯 접기/축소 (기본 접힘)
+//   - 객/서·난이도 막대바 2/3 너비
+//   - 진행상황 = 대시보드 스타일 (날짜 그룹 + 오늘/어제 + 과거 별도 접기 + 즉시 반영)
+//   - 새 예약 직후 큐 즉시 새로고침 (시트 지연 대비 200ms + 1500ms 2회)
+//   v23.13: 챕터 입력 강화 (수동 토글 + 퍼지 매칭 + 결합 챕터 자동 분리)
 //   v23.12: Drive 교재 자동 로드 (GAS list_textbooks/list_chapters)
-//   - 카테고리는 폴더/파일명 키워드 기반 자동 분류 + 사용자 수동 변경 가능
-//   - 1회용 PDF 첨부 슬롯 유지 (즉시 생성에만 사용)
+//   - 카테고리 자동 분류 + 사용자 수동 변경
+//   - 1회용 PDF 첨부 슬롯 (즉시 생성에만 사용)
 //   - 클로드가 별도 환경에서 GAS 큐 처리 → 완료 시 자동 학생앱 등록
-//   v23.13 변경점:
-//   - 챕터 ✏ 직접 입력 토글 (자동 로드돼도 항상 수동 입력 가능)
-//   - 챕터 폴백 퍼지 매칭 (공백·괄호 제거 후 비교)
-//   - "Ch01~05" 같은 결합 챕터 자동 분리
 const SUBJECTS=["영어","국어","수학"];
 const GRADES=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
 const LV_LEVELS=["SB","B","I","A","SA","전체"];
@@ -327,8 +331,10 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   const [setType, setSetType] = useState(""); // 이론편 | 실전편 | 혼합 | (기본)
   const [memo, setMemo] = useState("");
   const [pdfFiles, setPdfFiles] = useState([]);            // 1회용 PDF [{name, base64, sizeMB}]
+  const [pdfPanelOpen, setPdfPanelOpen] = useState(false);  // ★ v23.14: PDF 슬롯 기본 접힘
+  const [showAllBooks, setShowAllBooks] = useState(false);  // ★ v23.14: 교재 5권 초과 더보기
 
-  // ── 학생앱 등록 정보 ──
+  // ── 학생앱 등록 정보 (★ v23.14: 시험 등록 양식과 동일하게 확장) ──
   const todayIso = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
   const [regSubject, setRegSubject] = useState("영어");
   const [regGrade, setRegGrade] = useState("중2");
@@ -336,6 +342,8 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   const [regTeacher, setRegTeacher] = useState(currentTeacher || "");
   const [examDate, setExamDate] = useState(todayIso);
   const [examTime, setExamTime] = useState("19:00");
+  const [studentCount, setStudentCount] = useState("");        // ★ v23.14: 예상 응시 인원
+  const [subjectiveMode, setSubjectiveMode] = useState("auto"); // ★ v23.14: 주관식 채점 모드 (auto|strict|flexible)
 
   // ── 큐 상태 ──
   const [queue, setQueue] = useState([]);
@@ -709,11 +717,16 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
 
     const mainType = selectedTypes[0]?.type || "grammar";
 
-    // memo: [출제형태] + [유형분포] + [단일세트] + 사용자 memo
+    // memo: [출제형태] + [유형분포] + [단일세트] + [채점모드] + 사용자 memo
+    const modeLabel = subjectiveMode === "strict" ? "엄격 (단어·영작, 정확도 중심)"
+      : subjectiveMode === "flexible" ? "유연 (해석·번역, 의역 인정)"
+      : "자동 추천 (유형에 따라 자동)";
     const directive =
       `[출제형태] 객관식 ${mcCount}문제 + 서술형 ${ssCount}문제 (mcRatio=${mcRatio}%) — 절대 어기지 말 것.\n` +
       `[유형 분포]\n${typeBlock}\n` +
-      `[단일세트] A세트 1개만 생성 (B세트 생성 금지 — v17)`;
+      `[단일세트] A세트 1개만 생성 (B세트 생성 금지 — v17)\n` +
+      `[예상 인원] ${parseInt(studentCount) || 0}명\n` +
+      `[주관식 채점 모드] ${modeLabel}`;
     const fullMemo = memo.trim() ? `${directive}\n[추가 메모]\n${memo}` : directive;
 
     const body = {
@@ -735,6 +748,8 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
       level: regLevel,
       examDate,
       examTime,
+      studentCount: parseInt(studentCount) || 0,    // ★ v23.14
+      subjectiveMode: subjectiveMode,                // ★ v23.14
       memo: fullMemo,
       requestedBy: currentTeacher || regTeacher,
       requestedAt: new Date().toISOString(),
@@ -757,7 +772,11 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
 
       if (json.result === "success" || json.result === "ok") {
         alert(`✅ 예약 등록 완료!\n\n📚 ${body.targetClass} · ${selectedBook.name}\n📝 ${questionCount}문항 (객관식 ${mcCount} + 서술형 ${ssCount})\n📅 ${examDate} ${examTime}\n👤 ${regTeacher}\n\n클로드가 큐를 처리하면${autoRegister ? " 자동으로 학생앱에 등록" : " 미리보기 후 수동 등록"}됩니다.\n\n진행 상황은 "📋 진행 상황" 메뉴에서 확인하세요.`);
+        // ★ v23.14: 즉시 새로고침 + 화면 전환 → 새 예약이 바로 보임
+        // 시트 반영이 약간 지연될 수 있어 200ms + 1500ms 두 번 호출
         setScreen("queue");
+        setTimeout(() => loadQueue(), 200);
+        setTimeout(() => loadQueue(), 1500);
       } else {
         alert(`❌ 예약 실패: ${json.message || "알 수 없음"}`);
       }
@@ -896,14 +915,14 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           {/* 카테고리 필터 */}
           <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 6, fontWeight: 700 }}>📂 카테고리 필터</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-            <button onClick={() => setBookCategory("all")}
+            <button onClick={() => { setBookCategory("all"); setShowAllBooks(false); }}
               style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${bookCategory === "all" ? T.goldDark : T.border}`, background: bookCategory === "all" ? T.goldLight : T.white, color: bookCategory === "all" ? T.goldDark : T.textSub, fontWeight: bookCategory === "all" ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
               📚 전체 ({textbooks.length})
             </button>
             {Object.keys(AI_CAT_KR).map(cat => {
               const count = textbooks.filter(b => b.category === cat).length;
               return (
-                <button key={cat} onClick={() => setBookCategory(cat)}
+                <button key={cat} onClick={() => { setBookCategory(cat); setShowAllBooks(false); }}
                   style={{ padding: "8px 14px", borderRadius: 20, border: `1.5px solid ${bookCategory === cat ? T.goldDark : T.border}`, background: bookCategory === cat ? T.goldLight : T.white, color: bookCategory === cat ? T.goldDark : T.textSub, fontWeight: bookCategory === cat ? 700 : 500, fontSize: 13, cursor: "pointer", fontFamily: "inherit", opacity: count === 0 ? 0.5 : 1 }}>
                   {AI_CAT_KR[cat]} ({count})
                 </button>
@@ -925,44 +944,58 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
             <div style={{ padding: "16px", background: T.bg, borderRadius: 6, fontSize: 12, color: T.textSub, textAlign: "center" }}>
               {bookCategory === "all" ? "Drive에서 교재를 찾을 수 없습니다." : `「${AI_CAT_KR[bookCategory]}」 카테고리의 교재가 없습니다. 다른 카테고리를 확인하거나 카테고리를 변경해주세요.`}
             </div>
-          ) : (
-            <div style={{ display: "grid", gap: 4, maxHeight: 280, overflowY: "auto", border: `1px solid ${T.borderLight}`, borderRadius: 6, padding: 4 }}>
-              {filteredBooks.map(b => {
-                const isSel = selectedBook?.id === b.id;
-                const isShowingCat = showCatChangeFor === b.id;
-                return (
-                  <div key={b.id} style={{ position: "relative" }}>
-                    <div style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
-                      <button onClick={() => setSelectedBook(b)}
-                        style={{ flex: 1, padding: "10px 12px", borderRadius: 6, border: `1.5px solid ${isSel ? T.goldDark : T.border}`, background: isSel ? T.goldLight : T.white, color: isSel ? T.goldDark : T.text, fontSize: 13, fontWeight: isSel ? 700 : 500, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 8 }}>
-                        {isSel && <span style={{ color: T.goldDark, fontWeight: 900 }}>✓</span>}
-                        <span style={{ fontSize: 14 }}>{AI_CAT_KR[b.category]?.split(" ")[0] || "📄"}</span>
-                        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
-                      </button>
-                      <button onClick={() => setShowCatChangeFor(isShowingCat ? null : b.id)}
-                        title="카테고리 변경"
-                        style={{ padding: "0 10px", borderRadius: 6, border: `1.5px solid ${isShowingCat ? T.goldDark : T.border}`, background: isShowingCat ? T.goldLight : T.white, color: T.textSub, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
-                        📂
-                      </button>
-                    </div>
-                    {isShowingCat && (
-                      <div style={{ marginTop: 4, padding: "6px 8px", background: T.bg, borderRadius: 6, border: `1px solid ${T.border}` }}>
-                        <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>카테고리 변경:</div>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {Object.keys(AI_CAT_KR).map(cat => (
-                            <button key={cat} onClick={() => handleChangeCategory(b.id, cat)}
-                              style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${b.category === cat ? T.goldDark : T.border}`, background: b.category === cat ? T.goldLight : T.white, color: b.category === cat ? T.goldDark : T.textSub, fontSize: 11, fontWeight: b.category === cat ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
-                              {AI_CAT_KR[cat]}
-                            </button>
-                          ))}
+          ) : (() => {
+            /* ★ v23.14: 기본 5권 + 더보기 (45권도 안 부담스럽게) */
+            const BOOK_LIMIT = 5;
+            const visibleBooks = showAllBooks ? filteredBooks : filteredBooks.slice(0, BOOK_LIMIT);
+            const hiddenCount = filteredBooks.length - visibleBooks.length;
+            return (
+              <>
+                <div style={{ display: "grid", gap: 4, border: `1px solid ${T.borderLight}`, borderRadius: 6, padding: 4 }}>
+                  {visibleBooks.map(b => {
+                    const isSel = selectedBook?.id === b.id;
+                    const isShowingCat = showCatChangeFor === b.id;
+                    return (
+                      <div key={b.id} style={{ position: "relative" }}>
+                        <div style={{ display: "flex", alignItems: "stretch", gap: 2 }}>
+                          <button onClick={() => setSelectedBook(b)}
+                            style={{ flex: 1, padding: "10px 12px", borderRadius: 6, border: `1.5px solid ${isSel ? T.goldDark : T.border}`, background: isSel ? T.goldLight : T.white, color: isSel ? T.goldDark : T.text, fontSize: 13, fontWeight: isSel ? 700 : 500, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 8 }}>
+                            {isSel && <span style={{ color: T.goldDark, fontWeight: 900 }}>✓</span>}
+                            <span style={{ fontSize: 14 }}>{AI_CAT_KR[b.category]?.split(" ")[0] || "📄"}</span>
+                            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+                          </button>
+                          <button onClick={() => setShowCatChangeFor(isShowingCat ? null : b.id)}
+                            title="카테고리 변경"
+                            style={{ padding: "0 10px", borderRadius: 6, border: `1.5px solid ${isShowingCat ? T.goldDark : T.border}`, background: isShowingCat ? T.goldLight : T.white, color: T.textSub, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
+                            📂
+                          </button>
                         </div>
+                        {isShowingCat && (
+                          <div style={{ marginTop: 4, padding: "6px 8px", background: T.bg, borderRadius: 6, border: `1px solid ${T.border}` }}>
+                            <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4 }}>카테고리 변경:</div>
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                              {Object.keys(AI_CAT_KR).map(cat => (
+                                <button key={cat} onClick={() => handleChangeCategory(b.id, cat)}
+                                  style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${b.category === cat ? T.goldDark : T.border}`, background: b.category === cat ? T.goldLight : T.white, color: b.category === cat ? T.goldDark : T.textSub, fontSize: 11, fontWeight: b.category === cat ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                                  {AI_CAT_KR[cat]}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                    );
+                  })}
+                </div>
+                {filteredBooks.length > BOOK_LIMIT && (
+                  <button onClick={() => setShowAllBooks(o => !o)}
+                    style={{ marginTop: 6, width: "100%", padding: "6px", borderRadius: 6, border: `1px dashed ${T.border}`, background: T.bg, color: T.textSub, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
+                    {showAllBooks ? `▲ 접기 (5권만 보기)` : `▼ 더 보기 (+${hiddenCount}권)`}
+                  </button>
+                )}
+              </>
+            );
+          })()}
 
           {/* 선택된 교재 정보 */}
           {selectedBook && (
@@ -1068,33 +1101,44 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           )}
         </div>
 
-        {/* ★ v23.11: STEP 2.5 — 1회용 PDF 업로드 */}
-        <div style={S.card}>
-          <div style={S.secLabel}>🎫 1회용 PDF 첨부 <span style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>(선택 · 이번 생성만 사용)</span></div>
-          <div style={{ fontSize: 11, color: T.textSub, marginBottom: 8, lineHeight: 1.6 }}>
-            💡 이번 시험만 쓰고 버릴 PDF 첨부. <strong>이번 생성에만</strong> 사용됩니다 (Drive 영구 저장 X).<br />
-            💡 Drive `채움학원 시험자료/교재` 에 이미 영구 저장된 교재는 첨부 불필요 (자동 인식).
-          </div>
-          <input type="file" accept="application/pdf,.pdf" multiple
-            onChange={e => { handlePdfUpload(e.target.files); e.target.value = ''; }}
-            style={{ display: "block", marginBottom: 8, fontSize: 12 }} />
-          <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 8 }}>최대 3개 · 각 10MB · PDF만</div>
-          {pdfFiles.length > 0 && (
-            <div style={{ marginTop: 4 }}>
-              {pdfFiles.map((f, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: T.bg, borderRadius: 6, marginBottom: 4, fontSize: 12 }}>
-                  <span style={{ fontSize: 14 }}>🎫</span>
-                  <span style={{ flex: 1, color: T.text, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
-                  <span style={{ color: T.textMuted, fontSize: 11 }}>{f.sizeMB}MB</span>
-                  <button onClick={() => removePdf(i)}
-                    style={{ padding: "2px 8px", borderRadius: 4, border: `1px solid ${T.danger}`, background: T.white, color: T.danger, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
-                    ✕ 삭제
-                  </button>
-                </div>
-              ))}
-              <div style={{ marginTop: 6, padding: "6px 10px", background: T.accentLight, borderRadius: 4, fontSize: 11, color: T.accent, fontWeight: 600 }}>
-                ✓ {pdfFiles.length}개 첨부됨 — 이번 생성만 사용 (저장 안 함)
+        {/* ★ v23.14: STEP 2.5 — 1회용 PDF (축소형 + 접기) */}
+        <div style={{ ...S.card, padding: "8px 12px" }}>
+          <button onClick={() => setPdfPanelOpen(o => !o)}
+            style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0", border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: T.textSub }}>
+              🎫 1회용 PDF 첨부 {pdfFiles.length > 0 && <span style={{ color: T.goldDark }}>({pdfFiles.length}개)</span>}
+              <span style={{ fontSize: 10, color: T.textMuted, fontWeight: 400, marginLeft: 6 }}>(선택)</span>
+            </span>
+            <span style={{ fontSize: 12, color: T.textMuted }}>{pdfPanelOpen ? "▲" : "▼"}</span>
+          </button>
+          {pdfPanelOpen && (
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.borderLight}` }}>
+              <div style={{ fontSize: 10, color: T.textSub, marginBottom: 6, lineHeight: 1.5 }}>
+                💡 이번 생성에만 사용 (Drive 저장 X) · 최대 3개 · 각 10MB
               </div>
+              <input type="file" accept="application/pdf,.pdf" multiple
+                onChange={e => { handlePdfUpload(e.target.files); e.target.value = ''; }}
+                style={{ display: "block", marginBottom: 6, fontSize: 11 }} />
+              {pdfFiles.length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  {pdfFiles.map((f, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: T.bg, borderRadius: 4, marginBottom: 3, fontSize: 11 }}>
+                      <span>🎫</span>
+                      <span style={{ flex: 1, color: T.text, fontWeight: 600, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+                      <span style={{ color: T.textMuted, fontSize: 10 }}>{f.sizeMB}MB</span>
+                      <button onClick={() => removePdf(i)}
+                        style={{ padding: "1px 6px", borderRadius: 3, border: `1px solid ${T.danger}`, background: T.white, color: T.danger, fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {!pdfPanelOpen && pdfFiles.length > 0 && (
+            <div style={{ marginTop: 4, fontSize: 10, color: T.accent, fontWeight: 600 }}>
+              ✓ {pdfFiles.length}개 첨부됨
             </div>
           )}
         </div>
@@ -1210,16 +1254,16 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           )}
         </div>
 
-        {/* STEP 5: 객/서 비율 */}
+        {/* STEP 5: 객/서 비율 (★ v23.14 — 막대바 2/3 축소) */}
         <div style={S.card}>
           <div style={S.secLabel}>5. 객관식 / 서술형 비율</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ fontSize: 12, color: T.textSub }}>서술형</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, maxWidth: "66%" }}>
+            <span style={{ fontSize: 11, color: T.textSub, minWidth: 32 }}>서술형</span>
             <input type="range" min="0" max="100" step="10" value={mcRatio} onChange={e => setMcRatio(parseInt(e.target.value))} style={{ flex: 1, accentColor: T.goldDark }} />
-            <span style={{ fontSize: 12, color: T.textSub }}>객관식</span>
-            <span style={{ fontWeight: 700, color: T.goldDark, minWidth: 44, textAlign: "right" }}>{mcRatio}%</span>
+            <span style={{ fontSize: 11, color: T.textSub, minWidth: 32 }}>객관식</span>
+            <span style={{ fontWeight: 700, color: T.goldDark, minWidth: 36, textAlign: "right", fontSize: 13 }}>{mcRatio}%</span>
           </div>
-          <div style={{ marginTop: 8, fontSize: 12, color: T.textSub, textAlign: "right" }}>
+          <div style={{ marginTop: 8, fontSize: 12, color: T.textSub }}>
             👉 객관식 <strong style={{ color: T.goldDark }}>{mcCount}</strong>문제 · 서술형 <strong>{ssCount}</strong>문제
           </div>
         </div>
@@ -1241,10 +1285,11 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
             const colors = { easy: "#52C41A", mid: "#FAAD14", hard: "#FF4D4F" };
             const names = { easy: "쉬움", mid: "보통", hard: "어려움" };
             return (
-              <div key={level} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+              /* ★ v23.14 — 막대바 2/3 축소 */
+              <div key={level} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, maxWidth: "66%" }}>
                 <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 14, background: colors[level] + "22", color: colors[level], minWidth: 48, textAlign: "center" }}>{names[level]}</span>
                 <input type="range" min="0" max="100" step="5" value={difficulty[level]} onChange={e => diffChanged(level, e.target.value)} style={{ flex: 1, accentColor: colors[level] }} />
-                <span style={{ fontWeight: 700, fontSize: 13, color: colors[level], minWidth: 40, textAlign: "right" }}>{difficulty[level]}%</span>
+                <span style={{ fontWeight: 700, fontSize: 13, color: colors[level], minWidth: 36, textAlign: "right" }}>{difficulty[level]}%</span>
               </div>
             );
           })}
@@ -1269,43 +1314,112 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           </div>
         </div>
 
-        {/* STEP 8: 학생앱 등록 정보 */}
+        {/* STEP 8: 학생앱 등록 정보 (★ v23.14 — 시험 등록 양식과 동일) */}
         <div style={S.card}>
           <div style={S.secLabel}>8. 학생앱 등록 정보</div>
+
+          {/* 과목·학년·반 */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
             <div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>과목</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>과목 *</div>
               <select style={S.inp} value={regSubject} onChange={e => setRegSubject(e.target.value)}>
                 {SUBJECTS.map(s => <option key={s}>{s}</option>)}
               </select>
             </div>
             <div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>학년</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>학년 *</div>
               <select style={S.inp} value={regGrade} onChange={e => setRegGrade(e.target.value)}>
                 {GRADES.map(g => <option key={g}>{g}</option>)}
               </select>
             </div>
             <div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>반</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>반 *</div>
               <input style={S.inp} type="text" value={regLevel} onChange={e => setRegLevel(e.target.value)} placeholder="A" />
             </div>
           </div>
+
+          {/* 선생님 */}
           <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>선생님</div>
+            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>선생님 *</div>
             <select style={S.inp} value={regTeacher} onChange={e => setRegTeacher(e.target.value)}>
               <option value="">-- 선택 --</option>
               {(teacherList || []).map(t => <option key={t.name || t["이름"]}>{t.name || t["이름"]}</option>)}
             </select>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+
+          {/* ★ v23.14: 예상 응시 인원 */}
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>예상 응시 인원 * <span style={{ color: T.textMuted, fontWeight: 400 }}>(실장님 프린트 장수 산출)</span></div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input style={{ ...S.inp, width: 110 }} type="number" min="0" max="200" value={studentCount}
+                onChange={e => setStudentCount(e.target.value)} placeholder="예: 12" />
+              <span style={{ fontSize: 12, color: T.textSub }}>명</span>
+            </div>
+            <div style={{ marginTop: 4, fontSize: 10, color: T.danger, lineHeight: 1.4 }}>
+              ⚠️ 인원을 입력해야 실장님이 시험지를 몇 장 프린트할지 알 수 있습니다.
+            </div>
+          </div>
+
+          {/* ★ v23.14: 주관식 채점 모드 */}
+          {ssCount > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>📝 주관식 채점 모드 <span style={{ color: T.textMuted, fontWeight: 400 }}>(서술형 {ssCount}문제 자동 채점 기준)</span></div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {[
+                  { val: "auto", label: "자동 추천 ✨", desc: "유형에 따라 자동" },
+                  { val: "strict", label: "엄격 ⭐", desc: "단어/영작 (정확도 중심)" },
+                  { val: "flexible", label: "유연", desc: "해석/번역 (의역 인정)" }
+                ].map(opt => (
+                  <button key={opt.val} onClick={() => setSubjectiveMode(opt.val)}
+                    title={opt.desc}
+                    style={{ padding: "8px 12px", borderRadius: 8, border: `1.5px solid ${subjectiveMode === opt.val ? T.goldDark : T.border}`, background: subjectiveMode === opt.val ? T.goldLight : T.white, color: subjectiveMode === opt.val ? T.goldDark : T.textSub, fontSize: 11, fontWeight: subjectiveMode === opt.val ? 700 : 500, cursor: "pointer", fontFamily: "inherit", flex: 1, minWidth: 0, textAlign: "center", lineHeight: 1.3 }}>
+                    <div>{opt.label}</div>
+                    <div style={{ fontSize: 9, fontWeight: 400, marginTop: 2, color: subjectiveMode === opt.val ? T.goldDeep : T.textMuted }}>{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 시험 날짜 / 시각 */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
             <div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 날짜</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 날짜 *</div>
               <input style={S.inp} type="date" value={examDate} onChange={e => setExamDate(e.target.value)} />
             </div>
             <div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 시각</div>
+              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>시험 시각 *</div>
               <input style={S.inp} type="time" value={examTime} onChange={e => setExamTime(e.target.value)} />
             </div>
+          </div>
+
+          {/* ★ v23.14: 시간 그리드 (주중/주말) */}
+          <div style={{ background: T.bg, borderRadius: 6, padding: 8 }}>
+            <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4, fontWeight: 700 }}>주중 (월~금)</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+              {["17:00","18:00","19:00","20:00","21:00","22:00"].map(t => (
+                <button key={t} onClick={() => setExamTime(t)}
+                  style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${examTime === t ? T.goldDark : T.border}`, background: examTime === t ? T.goldLight : T.white, color: examTime === t ? T.goldDark : T.textSub, fontSize: 11, fontWeight: examTime === t ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div style={{ fontSize: 10, color: T.textMuted, marginBottom: 4, fontWeight: 700 }}>주말 (토)</div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginBottom: 6 }}>
+              {["11:00","12:00","13:00","14:00","15:00","16:00"].map(t => (
+                <button key={t} onClick={() => setExamTime(t)}
+                  style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${examTime === t ? T.goldDark : T.border}`, background: examTime === t ? T.goldLight : T.white, color: examTime === t ? T.goldDark : T.textSub, fontSize: 11, fontWeight: examTime === t ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => {
+              const d = new Date();
+              setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);
+            }}
+              style={{ padding: "4px 10px", borderRadius: 12, border: `1px solid ${T.border}`, background: T.white, color: T.textSub, fontSize: 11, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" }}>
+              🕐 지금
+            </button>
           </div>
         </div>
 
@@ -1358,15 +1472,124 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
       "완료":   { color: "#52C41A", bg: "#F6FFED", icon: "✅", label: "완료" },
       "실패":   { color: "#FF4D4F", bg: "#FFF1F0", icon: "❌", label: "실패" }
     };
-    const myQueue = currentTeacher
-      ? queue.filter(q => q.teacher === currentTeacher || q.requestedBy === currentTeacher)
-      : queue;
+
+    // ★ v23.14: 진행상황 그룹화 — 오늘/어제 vs 과거
+    const todayY = new Date(); todayY.setHours(0,0,0,0);
+    const yest = new Date(todayY); yest.setDate(yest.getDate() - 1);
+    const cutoffMs = yest.getTime();
+
+    const recentQueue = queue.filter(q => {
+      const d = q.examDate ? new Date(q.examDate).getTime() : (q.requestedAt ? new Date(q.requestedAt).getTime() : 0);
+      const isActive = q.status === "대기" || q.status === "생성중" || q.status === "실패";
+      return isActive || d >= cutoffMs;
+    });
+    const pastQueue = queue.filter(q => {
+      const d = q.examDate ? new Date(q.examDate).getTime() : 0;
+      const isActive = q.status === "대기" || q.status === "생성중" || q.status === "실패";
+      return !isActive && d < cutoffMs;
+    });
+
+    // 그룹: examDate별로 묶기
+    const groupByDate = (items) => {
+      const groups = {};
+      items.forEach(q => {
+        const k = (q.examDate || q.requestedAt || "").substring(0, 10) || "(날짜 없음)";
+        if (!groups[k]) groups[k] = [];
+        groups[k].push(q);
+      });
+      // 같은 날짜 안에서 시간순 정렬 (examTime 기준)
+      Object.keys(groups).forEach(k => {
+        groups[k].sort((a, b) => String(a.examTime || "").localeCompare(String(b.examTime || "")));
+      });
+      // 날짜 키를 최신순으로 정렬
+      return Object.keys(groups).sort((a, b) => b.localeCompare(a)).map(k => ({ date: k, items: groups[k] }));
+    };
+
+    const formatDate = (d) => {
+      if (!d || d === "(날짜 없음)") return "(날짜 없음)";
+      const m = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) return d;
+      const [_, yy, mm, dd] = m;
+      const cmp = new Date(`${yy}-${mm}-${dd}`); cmp.setHours(0,0,0,0);
+      const dayDiff = Math.round((cmp - todayY) / 86400000);
+      const labels = { 0: "오늘", 1: "내일", "-1": "어제", "-2": "그저께" };
+      const label = labels[dayDiff] || (dayDiff > 0 ? `${dayDiff}일 뒤` : `${-dayDiff}일 전`);
+      return `${yy}.${mm}.${dd} (${label})`;
+    };
+
+    // 카드 1개 렌더링
+    const renderCard = (req, i) => {
+      const meta = statusMeta[req.status] || statusMeta["대기"];
+      const isDone = req.status === "완료";
+      const hasResult = isDone && req.answerData?.sets?.[0]?.questions?.length > 0;
+      const elapsed = req.requestedAt ? (() => {
+        const diff = Math.floor((Date.now() - new Date(req.requestedAt).getTime()) / 1000);
+        if (diff < 60) return `${diff}초 전`;
+        if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+        if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+        return `${Math.floor(diff / 86400)}일 전`;
+      })() : "";
+      return (
+        <div key={req.rowIndex || i} style={{ padding: 12, background: T.white, border: `1px solid ${T.borderLight}`, borderLeft: `4px solid ${meta.color}`, borderRadius: 8, marginBottom: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <span style={{ padding: "2px 10px", borderRadius: 12, background: meta.bg, color: meta.color, fontSize: 11, fontWeight: 700 }}>
+              {meta.icon} {meta.label}
+            </span>
+            <span style={{ fontSize: 11, color: T.textMuted }}>{elapsed}</span>
+            {req.examTime && <span style={{ fontSize: 11, color: T.goldDark, fontWeight: 600 }}>🕐 {req.examTime}</span>}
+            <span style={{ marginLeft: "auto", fontSize: 10, color: T.textMuted }}>#{req.rowIndex}</span>
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 4 }}>
+            🇬🇧 {req.targetClass || "?"}<span style={{ marginLeft: 6, fontSize: 11, fontWeight: 400, color: T.textSub }}>· 문제생성기 · 세트A</span>
+          </div>
+          <div style={{ fontSize: 12, color: T.textSub, marginBottom: 4, lineHeight: 1.6 }}>
+            👤 {req.teacher || "?"} · 📚 {req.textbook || "?"}<br />
+            <span style={{ fontSize: 11, color: T.textMuted }}>{req.rangeDesc || "(범위 미설정)"}</span><br />
+            📝 {req.questionCount || "?"}문항 (객관식 {Math.round((req.questionCount || 0) * (req.mcRatio || 0) / 100)} · 서술형 {(req.questionCount || 0) - Math.round((req.questionCount || 0) * (req.mcRatio || 0) / 100)})
+          </div>
+          {req.answerData?.error && (
+            <div style={{ padding: 8, background: "#FFF1F0", border: `1px solid ${T.danger}`, borderRadius: 6, fontSize: 11, color: T.danger, marginTop: 6 }}>
+              ⚠️ 오류: {req.answerData.error}
+            </div>
+          )}
+          <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {isDone && hasResult && (
+              <>
+                <button onClick={() => handleManualRegister(req)} disabled={registeringRow === req.rowIndex}
+                  style={{ ...S.btnG, flex: 1, minWidth: 130, fontSize: 12, padding: "6px 12px", opacity: registeringRow === req.rowIndex ? 0.5 : 1 }}>
+                  {registeringRow === req.rowIndex ? "📡 등록 중..." : "📚 학생앱에 등록"}
+                </button>
+                {req.resultFileId && (
+                  <button onClick={() => window.open(`https://drive.google.com/file/d/${req.resultFileId}/view`, "_blank")}
+                    style={{ ...S.btnO, fontSize: 11, padding: "6px 10px" }}>
+                    📄 JSON
+                  </button>
+                )}
+              </>
+            )}
+            {req.status === "대기" && (
+              <button onClick={() => handleCancel(req)} style={{ ...S.btnO, fontSize: 11, padding: "6px 12px", borderColor: T.danger, color: T.danger }}>
+                🚫 예약 취소
+              </button>
+            )}
+            {isDone && !hasResult && (
+              <div style={{ flex: 1, padding: 6, background: T.bg, borderRadius: 6, fontSize: 11, color: T.textMuted, textAlign: "center" }}>
+                결과 데이터 없음
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    const recentGroups = groupByDate(recentQueue);
+    const pastGroups = groupByDate(pastQueue);
 
     return (
       <div style={S.wrap} className="fade-up">
         <div style={{ textAlign: "center", padding: "16px 0" }}>
           <h2 style={{ fontSize: 22, fontWeight: 800, color: T.text }}>📋 진행 상황</h2>
-          <p style={{ fontSize: 12, color: T.textMuted, marginTop: 4 }}>10초마다 자동 새로고침</p>
+          <p style={{ fontSize: 12, color: T.textMuted, marginTop: 4 }}>10초마다 자동 새로고침 · 오늘/어제만 표시</p>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -1376,78 +1599,42 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           </button>
         </div>
 
-        {myQueue.length === 0 ? (
+        {recentQueue.length === 0 ? (
           <div style={{ padding: 40, textAlign: "center", color: T.textMuted, background: T.bg, borderRadius: 10 }}>
             <div style={{ fontSize: 48, marginBottom: 8 }}>📭</div>
-            <p style={{ fontSize: 14 }}>예약된 요청이 없습니다.</p>
+            <p style={{ fontSize: 14 }}>최근 예약된 요청이 없습니다.</p>
             <button onClick={() => setScreen("form")} style={{ ...S.btnG, padding: "8px 24px", marginTop: 12 }}>새 예약 만들기</button>
           </div>
         ) : (
-          myQueue.map((req, i) => {
-            const meta = statusMeta[req.status] || statusMeta["대기"];
-            const isDone = req.status === "완료";
-            const hasResult = isDone && req.answerData?.sets?.[0]?.questions?.length > 0;
-            const elapsed = req.requestedAt ? (() => {
-              const diff = Math.floor((Date.now() - new Date(req.requestedAt).getTime()) / 1000);
-              if (diff < 60) return `${diff}초 전`;
-              if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
-              if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
-              return `${Math.floor(diff / 86400)}일 전`;
-            })() : "";
-            return (
-              <div key={req.rowIndex || i} style={{ ...S.card, borderLeft: `4px solid ${meta.color}` }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <span style={{ padding: "2px 10px", borderRadius: 12, background: meta.bg, color: meta.color, fontSize: 11, fontWeight: 700 }}>
-                    {meta.icon} {meta.label}
-                  </span>
-                  <span style={{ fontSize: 11, color: T.textMuted }}>{elapsed}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 10, color: T.textMuted }}>#{req.rowIndex}</span>
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 4 }}>
-                  📚 {req.textbook || "?"} <span style={{ fontSize: 11, fontWeight: 400, color: T.textSub }}>· {req.rangeDesc || "(범위 미설정)"}</span>
-                </div>
-                <div style={{ fontSize: 12, color: T.textSub, marginBottom: 6, lineHeight: 1.6 }}>
-                  📝 {req.questionCount || "?"}문제 (객관식 {Math.round((req.questionCount || 0) * (req.mcRatio || 0) / 100)} · 서술형 {(req.questionCount || 0) - Math.round((req.questionCount || 0) * (req.mcRatio || 0) / 100)})<br />
-                  👥 {req.targetClass || "?"} · 👤 {req.teacher || "?"}<br />
-                  📅 시험: {req.examDate || "?"} {req.examTime || ""}
-                </div>
-                {req.answerData?.error && (
-                  <div style={{ padding: 8, background: "#FFF1F0", border: `1px solid ${T.danger}`, borderRadius: 6, fontSize: 11, color: T.danger, marginTop: 6 }}>
-                    ⚠️ 오류: {req.answerData.error}
-                  </div>
-                )}
-                {isDone && (
-                  <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
-                    {hasResult ? (
-                      <>
-                        <button onClick={() => handleManualRegister(req)} disabled={registeringRow === req.rowIndex}
-                          style={{ ...S.btnG, flex: 2, fontSize: 12, padding: "8px 14px", opacity: registeringRow === req.rowIndex ? 0.5 : 1 }}>
-                          {registeringRow === req.rowIndex ? "📡 등록 중..." : "📚 학생앱에 등록"}
-                        </button>
-                        {req.resultFileId && (
-                          <button onClick={() => window.open(`https://drive.google.com/file/d/${req.resultFileId}/view`, "_blank")}
-                            style={{ ...S.btnO, fontSize: 11, padding: "8px 12px" }}>
-                            📄 JSON 보기
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <div style={{ flex: 1, padding: 8, background: T.bg, borderRadius: 6, fontSize: 11, color: T.textMuted, textAlign: "center" }}>
-                        결과 데이터 없음
-                      </div>
-                    )}
-                  </div>
-                )}
-                {req.status === "대기" && (
-                  <div style={{ marginTop: 6 }}>
-                    <button onClick={() => handleCancel(req)} style={{ ...S.btnO, fontSize: 11, padding: "6px 12px", borderColor: T.danger, color: T.danger }}>
-                      🚫 예약 취소
-                    </button>
-                  </div>
-                )}
+          /* 📅 날짜별 그룹 — 오늘의 현황과 같은 UI */
+          recentGroups.map(g => (
+            <div key={g.date} style={{ marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: T.goldPale, borderRadius: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 800, color: T.goldDark }}>🕐 {formatDate(g.date)}</span>
+                <span style={{ marginLeft: "auto", fontSize: 11, color: T.textSub, fontWeight: 600 }}>{g.items.length}건</span>
               </div>
-            );
-          })
+              {g.items.map((q, i) => renderCard(q, i))}
+            </div>
+          ))
+        )}
+
+        {/* ★ v23.14: 과거 데이터 — 접힌 채로 별도 분리 */}
+        {pastQueue.length > 0 && (
+          <details style={{ marginTop: 20, padding: 12, background: T.bg, borderRadius: 8, border: `1px solid ${T.borderLight}` }}>
+            <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 700, color: T.textSub, padding: "4px 0" }}>
+              📚 과거 완료 데이터 ({pastQueue.length}건) — 클릭해서 펼치기
+            </summary>
+            <div style={{ marginTop: 12 }}>
+              {pastGroups.map(g => (
+                <div key={g.date} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: T.textSub, padding: "4px 8px", background: T.white, borderRadius: 6, marginBottom: 6 }}>
+                    📅 {formatDate(g.date)} <span style={{ marginLeft: 6, color: T.textMuted, fontWeight: 400 }}>({g.items.length}건)</span>
+                  </div>
+                  {g.items.map((q, i) => renderCard(q, i))}
+                </div>
+              ))}
+            </div>
+          </details>
         )}
       </div>
     );
