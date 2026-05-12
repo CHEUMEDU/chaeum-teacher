@@ -9,11 +9,15 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
-// ★ v23.12: 문제 생성 — Drive 교재 자동 로드 (큐 예약 + test-generator v17)
-//   - GAS list_textbooks/list_chapters 액션으로 Drive 폴더 자동 스캔
+// ★ v23.13: 문제 생성 — 챕터 입력 강화 (수동 토글 + 퍼지 매칭 + 결합 챕터 자동 분리)
+//   v23.12: Drive 교재 자동 로드 (GAS list_textbooks/list_chapters)
 //   - 카테고리는 폴더/파일명 키워드 기반 자동 분류 + 사용자 수동 변경 가능
 //   - 1회용 PDF 첨부 슬롯 유지 (즉시 생성에만 사용)
 //   - 클로드가 별도 환경에서 GAS 큐 처리 → 완료 시 자동 학생앱 등록
+//   v23.13 변경점:
+//   - 챕터 ✏ 직접 입력 토글 (자동 로드돼도 항상 수동 입력 가능)
+//   - 챕터 폴백 퍼지 매칭 (공백·괄호 제거 후 비교)
+//   - "Ch01~05" 같은 결합 챕터 자동 분리
 const SUBJECTS=["영어","국어","수학"];
 const GRADES=["초1","초2","초3","초4","초5","초6","초등","중1","중2","중3","고1","고2","고3"];
 const LV_LEVELS=["SB","B","I","A","SA","전체"];
@@ -310,7 +314,8 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   const [chapters, setChapters] = useState([]);            // GAS에서 받아온 챕터 [{id, name}]
   const [chaptersLoading, setChaptersLoading] = useState(false);
   const [selectedChapters, setSelectedChapters] = useState([]); // 선택된 챕터 name 배열
-  const [chapterFallbackText, setChapterFallbackText] = useState(""); // 자동 로드 실패 시 수동 입력
+  const [chapterFallbackText, setChapterFallbackText] = useState(""); // 수동 입력 텍스트
+  const [chapterManualMode, setChapterManualMode] = useState(false);  // ★ v23.13: 자동 로드 무시하고 수동 입력 사용
   const [pageFrom, setPageFrom] = useState("");
   const [pageTo, setPageTo] = useState("");
 
@@ -376,19 +381,67 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
     load();
   }, [sheetsUrl]);
 
+  // ★ v23.13: AI_BOOK_CHAPTERS 퍼지 매칭 (정확한 이름 일치 안 해도 부분 매칭)
+  const findFallbackChapters = (bookName) => {
+    if (!bookName) return [];
+    const direct = AI_BOOK_CHAPTERS[bookName];
+    if (direct) return direct;
+    // 공백·괄호 제거 후 비교
+    const normalize = (s) => String(s || "").replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase();
+    const target = normalize(bookName);
+    if (!target) return [];
+    for (const key of Object.keys(AI_BOOK_CHAPTERS)) {
+      const keyNorm = normalize(key);
+      if (keyNorm === target || keyNorm.includes(target) || target.includes(keyNorm)) {
+        return AI_BOOK_CHAPTERS[key];
+      }
+    }
+    return [];
+  };
+
+  // ★ v23.13: GAS 챕터 응답 정규화 ("Ch01~05" 같은 결합 챕터 자동 분리)
+  const normalizeChapterList = (raw) => {
+    if (!Array.isArray(raw)) return [];
+    const out = [];
+    raw.forEach((ch, idx) => {
+      const rawName = String(ch?.name || ch || "").trim();
+      if (!rawName) return;
+      // 페이지 정보 제거 옵션은 두지 않음 (원본 정보 유지)
+      // 단, "Ch01-Ch05" 또는 "Ch01~Ch05" 같은 범위 패턴은 분리 시도
+      const rangeMatch = rawName.match(/^(Ch|Chapter|Unit|Day|Week|단원)\s*0?(\d+)\s*[-~∼–]\s*(?:Ch|Chapter|Unit|Day|Week|단원)?\s*0?(\d+)(.*)$/i);
+      if (rangeMatch) {
+        const prefix = rangeMatch[1];
+        const start = parseInt(rangeMatch[2], 10);
+        const end = parseInt(rangeMatch[3], 10);
+        const suffix = rangeMatch[4].trim();
+        if (!isNaN(start) && !isNaN(end) && end >= start && end - start <= 30) {
+          for (let n = start; n <= end; n++) {
+            const num = String(n).padStart(2, "0");
+            out.push({ id: `${ch?.id || idx}_${n}`, name: `${prefix}${num}${suffix ? " " + suffix : ""}` });
+          }
+          return;
+        }
+      }
+      out.push({ id: ch?.id || `ch_${idx}`, name: rawName });
+    });
+    return out;
+  };
+
   // ★ v23.12: 교재 선택 시 챕터 자동 로드
   useEffect(() => {
     if (!selectedBook) {
       setChapters([]);
       setSelectedChapters([]);
       setChapterFallbackText("");
+      setChapterManualMode(false);
       return;
     }
-    // 로컬 폴백 교재인 경우: AI_BOOK_CHAPTERS에서 즉시 사용
+    // 로컬 폴백 교재: AI_BOOK_CHAPTERS에서 즉시 사용
     if (selectedBook.fileType === "local" || String(selectedBook.id || "").startsWith("local_")) {
-      const localChs = AI_BOOK_CHAPTERS[selectedBook.name] || [];
+      const localChs = findFallbackChapters(selectedBook.name);
       setChapters(localChs.map((name, i) => ({ id: `local_ch_${i}`, name })));
       setSelectedChapters([]);
+      setChapterManualMode(false);
       return;
     }
     const load = async () => {
@@ -398,16 +451,16 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
         const text = await r.text();
         let json;
         try { json = JSON.parse(text); } catch { json = {}; }
-        if (Array.isArray(json.chapters) && json.chapters.length > 0) {
-          setChapters(json.chapters);
+        const fromServer = normalizeChapterList(json.chapters || []);
+        if (fromServer.length > 0) {
+          setChapters(fromServer);
         } else {
-          // 챕터 정보가 없으면 AI_BOOK_CHAPTERS 폴백
-          const fallback = AI_BOOK_CHAPTERS[selectedBook.name] || [];
+          const fallback = findFallbackChapters(selectedBook.name);
           setChapters(fallback.map((name, i) => ({ id: `local_ch_${i}`, name })));
         }
       } catch (e) {
         console.error("[list_chapters]", e);
-        const fallback = AI_BOOK_CHAPTERS[selectedBook.name] || [];
+        const fallback = findFallbackChapters(selectedBook.name);
         setChapters(fallback.map((name, i) => ({ id: `local_ch_${i}`, name })));
       } finally {
         setChaptersLoading(false);
@@ -416,6 +469,7 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
     load();
     setSelectedChapters([]);
     setChapterFallbackText("");
+    setChapterManualMode(false);
   }, [selectedBook, sheetsUrl]);
 
   // ★ v23.12: 카테고리 변경 (사용자가 직접 분류 변경)
@@ -621,21 +675,24 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   // ── 예약 신청 ──
   const handleSubmit = async () => {
     if (!selectedBook) return alert("교재를 선택하세요.");
-    if (rangeMode === "chapter") {
-      if (selectedChapters.length === 0 && !chapterFallbackText.trim()) {
-        return alert("챕터를 1개 이상 선택하거나, 수동 입력하세요.");
-      }
-    }
     if (rangeMode === "page" && (!pageFrom || !pageTo)) return alert("페이지 범위를 입력하세요.");
     if (!regTeacher) return alert("선생님을 선택하세요.");
     if (!regSubject || !regGrade || !regLevel) return alert("과목·학년·반을 모두 입력하세요.");
 
-    // 챕터 → 배열 분리 (선택된 챕터 우선, 없으면 수동 입력 사용)
+    // 챕터 → 배열 분리 (수동 모드 우선, 그 외엔 체크박스 선택, 마지막에 폴백)
     let ranges;
     if (rangeMode === "chapter") {
-      ranges = selectedChapters.length > 0
-        ? selectedChapters
-        : chapterFallbackText.split(/[,，;；]/).map(s => s.trim()).filter(Boolean);
+      if (chapterManualMode) {
+        // 수동 입력 모드: 텍스트 박스 값만 사용
+        ranges = chapterFallbackText.split(/[,，;；\n]/).map(s => s.trim()).filter(Boolean);
+        if (ranges.length === 0) return alert("챕터를 직접 입력하세요.");
+      } else if (selectedChapters.length > 0) {
+        ranges = selectedChapters;
+      } else if (chapterFallbackText.trim()) {
+        ranges = chapterFallbackText.split(/[,，;；\n]/).map(s => s.trim()).filter(Boolean);
+      } else {
+        return alert("챕터를 1개 이상 선택하거나, 직접 입력해주세요.");
+      }
     } else {
       ranges = [`p.${pageFrom}-${pageTo}`];
     }
@@ -932,52 +989,73 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
               <div style={{ padding: 16, background: T.bg, borderRadius: 6, fontSize: 12, color: T.goldDark, textAlign: "center" }}>
                 ⏳ 챕터 분석 중...
               </div>
-            ) : chapters.length > 0 ? (
-              <>
-                {/* 전체 선택/해제 */}
-                <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
-                  <button onClick={() => setSelectedChapters(chapters.map(c => c.name))}
-                    style={{ padding: "4px 10px", borderRadius: 4, border: `1px solid ${T.border}`, background: T.white, color: T.textSub, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
-                    ✓ 전체 선택
-                  </button>
-                  <button onClick={() => setSelectedChapters([])}
-                    style={{ padding: "4px 10px", borderRadius: 4, border: `1px solid ${T.border}`, background: T.white, color: T.textSub, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
-                    ✕ 전체 해제
-                  </button>
-                  <div style={{ marginLeft: "auto", fontSize: 11, color: T.textMuted }}>
-                    {selectedChapters.length} / {chapters.length} 선택됨
-                  </div>
-                </div>
-
-                {/* 챕터 체크박스 그리드 */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 4, maxHeight: 320, overflowY: "auto", border: `1px solid ${T.borderLight}`, borderRadius: 6, padding: 4 }}>
-                  {chapters.map(ch => {
-                    const checked = selectedChapters.includes(ch.name);
-                    return (
-                      <button key={ch.id} onClick={() => toggleChapter(ch.name)}
-                        style={{ padding: "8px 10px", borderRadius: 4, border: `1.5px solid ${checked ? T.goldDark : T.border}`, background: checked ? T.goldLight : T.white, color: checked ? T.goldDark : T.text, fontSize: 12, fontWeight: checked ? 700 : 500, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontWeight: 900 }}>{checked ? "☑" : "☐"}</span>
-                        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ch.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{ marginTop: 8, fontSize: 10, color: T.textMuted, lineHeight: 1.5 }}>
-                  💡 챕터 목록은 Drive 교재 폴더(또는 PDF 내부)에서 자동 분석된 결과입니다.
-                </div>
-              </>
             ) : (
               <>
-                {/* 챕터 자동 로드 실패 → 수동 입력 */}
-                <div style={{ padding: "8px 10px", background: T.dangerLight, borderRadius: 6, fontSize: 11, color: T.danger, marginBottom: 8, lineHeight: 1.5 }}>
-                  ⚠ 이 교재의 챕터를 자동 분석하지 못했습니다. 수동으로 입력해주세요.
+                {/* ★ v23.13: 모드 토글 — 자동 로드 vs 직접 입력 */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                  <button onClick={() => setChapterManualMode(false)}
+                    style={{ padding: "6px 12px", borderRadius: 16, border: `1.5px solid ${!chapterManualMode ? T.goldDark : T.border}`, background: !chapterManualMode ? T.goldLight : T.white, color: !chapterManualMode ? T.goldDark : T.textSub, fontSize: 12, fontWeight: !chapterManualMode ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                    ☑ 자동 로드 ({chapters.length})
+                  </button>
+                  <button onClick={() => setChapterManualMode(true)}
+                    style={{ padding: "6px 12px", borderRadius: 16, border: `1.5px solid ${chapterManualMode ? T.goldDark : T.border}`, background: chapterManualMode ? T.goldLight : T.white, color: chapterManualMode ? T.goldDark : T.textSub, fontSize: 12, fontWeight: chapterManualMode ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                    ✏ 직접 입력
+                  </button>
                 </div>
-                <input style={S.inp} type="text" value={chapterFallbackText}
-                  onChange={e => setChapterFallbackText(e.target.value)}
-                  placeholder="예: Ch01, Ch02, Ch05 또는 1단원~3단원" />
-                <div style={{ marginTop: 8, fontSize: 10, color: T.textMuted, lineHeight: 1.5 }}>
-                  💡 쉼표(,) 또는 세미콜론(;)으로 여러 챕터를 구분하세요.
-                </div>
+
+                {chapterManualMode || chapters.length === 0 ? (
+                  /* 직접 입력 모드 */
+                  <>
+                    {chapters.length === 0 && !chapterManualMode && (
+                      <div style={{ padding: "8px 10px", background: T.dangerLight, borderRadius: 6, fontSize: 11, color: T.danger, marginBottom: 8, lineHeight: 1.5 }}>
+                        ⚠ 이 교재의 챕터를 자동 분석하지 못했습니다. 수동으로 입력해주세요.
+                      </div>
+                    )}
+                    <input style={S.inp} type="text" value={chapterFallbackText}
+                      onChange={e => setChapterFallbackText(e.target.value)}
+                      placeholder="예: Ch01, Ch02, Ch05 또는 1단원~3단원" />
+                    <div style={{ marginTop: 8, fontSize: 10, color: T.textMuted, lineHeight: 1.5 }}>
+                      💡 쉼표(,) 또는 세미콜론(;)으로 여러 챕터를 구분하세요. 자유롭게 입력 가능합니다.
+                    </div>
+                    {chapters.length > 0 && (
+                      <div style={{ marginTop: 10, padding: "6px 10px", background: T.bg, borderRadius: 4, fontSize: 10, color: T.textMuted, lineHeight: 1.5 }}>
+                        💡 참고용 자동 로드 챕터: {chapters.slice(0, 5).map(c => c.name).join(", ")}{chapters.length > 5 ? ` 외 ${chapters.length - 5}개` : ""}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  /* 자동 로드 체크박스 모드 */
+                  <>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
+                      <button onClick={() => setSelectedChapters(chapters.map(c => c.name))}
+                        style={{ padding: "4px 10px", borderRadius: 4, border: `1px solid ${T.border}`, background: T.white, color: T.textSub, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
+                        ✓ 전체 선택
+                      </button>
+                      <button onClick={() => setSelectedChapters([])}
+                        style={{ padding: "4px 10px", borderRadius: 4, border: `1px solid ${T.border}`, background: T.white, color: T.textSub, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
+                        ✕ 전체 해제
+                      </button>
+                      <div style={{ marginLeft: "auto", fontSize: 11, color: T.textMuted }}>
+                        {selectedChapters.length} / {chapters.length} 선택됨
+                      </div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 4, maxHeight: 320, overflowY: "auto", border: `1px solid ${T.borderLight}`, borderRadius: 6, padding: 4 }}>
+                      {chapters.map(ch => {
+                        const checked = selectedChapters.includes(ch.name);
+                        return (
+                          <button key={ch.id} onClick={() => toggleChapter(ch.name)}
+                            style={{ padding: "8px 10px", borderRadius: 4, border: `1.5px solid ${checked ? T.goldDark : T.border}`, background: checked ? T.goldLight : T.white, color: checked ? T.goldDark : T.text, fontSize: 12, fontWeight: checked ? 700 : 500, cursor: "pointer", fontFamily: "inherit", textAlign: "left", display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontWeight: 900 }}>{checked ? "☑" : "☐"}</span>
+                            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ch.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ marginTop: 8, fontSize: 10, color: T.textMuted, lineHeight: 1.5 }}>
+                      💡 자동 분석된 챕터 목록입니다. 원하는 목록이 안 보이면 ✏ 직접 입력 으로 전환하세요.
+                    </div>
+                  </>
+                )}
               </>
             )
           ) : (
