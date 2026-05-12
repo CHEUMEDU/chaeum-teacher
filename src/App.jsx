@@ -1,4 +1,4 @@
-﻿import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 /* ============================================================
    채움학원 — 선생님용 시험 등록 v2
    신규: 선생님 이름, 반별 인원, 오늘의 현황 대시보드
@@ -9,14 +9,12 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
-// ★ v23.14: 문제 생성 — UI 통합 개선 (시험등록 동일 양식 + 진행상황 대시보드 + 막대바 축소)
-//   v23.14 변경점 (2026-05-12):
-//   - 학생앱 등록 정보 = 시험 등록 양식과 동일 (인원/주관식 채점 모드/시간 그리드)
-//   - 교재 5권 + 더보기 버튼 (45권 부담 ↓)
-//   - 1회용 PDF 슬롯 접기/축소 (기본 접힘)
-//   - 객/서·난이도 막대바 2/3 너비
-//   - 진행상황 = 대시보드 스타일 (날짜 그룹 + 오늘/어제 + 과거 별도 접기 + 즉시 반영)
-//   - 새 예약 직후 큐 즉시 새로고침 (시트 지연 대비 200ms + 1500ms 2회)
+// ★ v23.15: 문제 생성 — 시험 등록과 100% 동일 UI + 막대바 추가 축소
+//   v23.15 변경점 (2026-05-12):
+//   - 레벨/학교: LV_CATS 다중선택 (시험 등록과 동일) — 여러 학교 한 번에 등록 가능
+//   - 막대바 너비 360px 고정 (가로 화면에서도 작게)
+//   - 챕터 자동 로드 강화 (GAS v24.3 KNOWN_CHAPTERS_LIST 확장)
+//   v23.14: UI 통합 개선 (시험등록 동일 양식 + 진행상황 대시보드 + 막대바 축소)
 //   v23.13: 챕터 입력 강화 (수동 토글 + 퍼지 매칭 + 결합 챕터 자동 분리)
 //   v23.12: Drive 교재 자동 로드 (GAS list_textbooks/list_chapters)
 //   - 카테고리 자동 분류 + 사용자 수동 변경
@@ -338,7 +336,12 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
   const todayIso = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
   const [regSubject, setRegSubject] = useState("영어");
   const [regGrade, setRegGrade] = useState("중2");
-  const [regLevel, setRegLevel] = useState("A");
+  // ★ v23.15: 시험 등록과 동일한 학교 다중선택 (LV_CATS)
+  const [regLevelCat, setRegLevelCat] = useState("level"); // level | middle | high | etc
+  const [regLevelMulti, setRegLevelMulti] = useState(["A"]); // 체크박스 다중선택
+  const [regLevelCustom, setRegLevelCustom] = useState(""); // 기타 직접 입력
+  // 호환성: 단일 레벨 (handleSubmit에서 derive)
+  const regLevel = regLevelCat === "etc" ? regLevelCustom : (regLevelMulti.join("+") || "A");
   const [regTeacher, setRegTeacher] = useState(currentTeacher || "");
   const [examDate, setExamDate] = useState(todayIso);
   const [examTime, setExamTime] = useState("19:00");
@@ -1254,10 +1257,10 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           )}
         </div>
 
-        {/* STEP 5: 객/서 비율 (★ v23.14 — 막대바 2/3 축소) */}
+        {/* STEP 5: 객/서 비율 (★ v23.15 — 막대바 50% 축소) */}
         <div style={S.card}>
           <div style={S.secLabel}>5. 객관식 / 서술형 비율</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, maxWidth: "66%" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, maxWidth: 360 }}>
             <span style={{ fontSize: 11, color: T.textSub, minWidth: 32 }}>서술형</span>
             <input type="range" min="0" max="100" step="10" value={mcRatio} onChange={e => setMcRatio(parseInt(e.target.value))} style={{ flex: 1, accentColor: T.goldDark }} />
             <span style={{ fontSize: 11, color: T.textSub, minWidth: 32 }}>객관식</span>
@@ -1268,28 +1271,31 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           </div>
         </div>
 
-        {/* STEP 6: 난이도 */}
+        {/* STEP 6: 난이도 (★ v23.15 — 막대바·전체 색깔 바 모두 축소) */}
         <div style={S.card}>
           <div style={S.secLabel}>6. 난이도 분포</div>
-          <div style={{ height: 10, borderRadius: 5, overflow: "hidden", display: "flex", marginBottom: 8 }}>
-            <div style={{ flex: difficulty.easy || 0.01, background: "#52C41A" }} />
-            <div style={{ flex: difficulty.mid || 0.01, background: "#FAAD14" }} />
-            <div style={{ flex: difficulty.hard || 0.01, background: "#FF4D4F" }} />
+          {/* 전체 색깔 바 (★ v23.15 — 최대 너비 360px) */}
+          <div style={{ maxWidth: 360 }}>
+            <div style={{ height: 8, borderRadius: 4, overflow: "hidden", display: "flex", marginBottom: 6 }}>
+              <div style={{ flex: difficulty.easy || 0.01, background: "#52C41A" }} />
+              <div style={{ flex: difficulty.mid || 0.01, background: "#FAAD14" }} />
+              <div style={{ flex: difficulty.hard || 0.01, background: "#FF4D4F" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontWeight: 700, marginBottom: 12 }}>
+              <span style={{ color: "#52C41A" }}>쉬움 {difficulty.easy}%</span>
+              <span style={{ color: "#FAAD14" }}>보통 {difficulty.mid}%</span>
+              <span style={{ color: "#FF4D4F" }}>어려움 {difficulty.hard}%</span>
+            </div>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 700, marginBottom: 12 }}>
-            <span style={{ color: "#52C41A" }}>쉬움 {difficulty.easy}%</span>
-            <span style={{ color: "#FAAD14" }}>보통 {difficulty.mid}%</span>
-            <span style={{ color: "#FF4D4F" }}>어려움 {difficulty.hard}%</span>
-          </div>
+          {/* 슬라이더 3개 (★ v23.15 — maxWidth 360px) */}
           {["easy", "mid", "hard"].map(level => {
             const colors = { easy: "#52C41A", mid: "#FAAD14", hard: "#FF4D4F" };
             const names = { easy: "쉬움", mid: "보통", hard: "어려움" };
             return (
-              /* ★ v23.14 — 막대바 2/3 축소 */
-              <div key={level} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, maxWidth: "66%" }}>
+              <div key={level} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, maxWidth: 360 }}>
                 <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 14, background: colors[level] + "22", color: colors[level], minWidth: 48, textAlign: "center" }}>{names[level]}</span>
                 <input type="range" min="0" max="100" step="5" value={difficulty[level]} onChange={e => diffChanged(level, e.target.value)} style={{ flex: 1, accentColor: colors[level] }} />
-                <span style={{ fontWeight: 700, fontSize: 13, color: colors[level], minWidth: 36, textAlign: "right" }}>{difficulty[level]}%</span>
+                <span style={{ fontWeight: 700, fontSize: 12, color: colors[level], minWidth: 36, textAlign: "right" }}>{difficulty[level]}%</span>
               </div>
             );
           })}
@@ -1314,12 +1320,12 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
           </div>
         </div>
 
-        {/* STEP 8: 학생앱 등록 정보 (★ v23.14 — 시험 등록 양식과 동일) */}
+        {/* STEP 8: 학생앱 등록 정보 (★ v23.15 — 시험 등록 양식과 100% 동일) */}
         <div style={S.card}>
           <div style={S.secLabel}>8. 학생앱 등록 정보</div>
 
-          {/* 과목·학년·반 */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
+          {/* 과목·학년 */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
             <div>
               <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>과목 *</div>
               <select style={S.inp} value={regSubject} onChange={e => setRegSubject(e.target.value)}>
@@ -1332,10 +1338,50 @@ function GeneratorTab({ sheetsUrl, T, S, teacherList, currentTeacher }) {
                 {GRADES.map(g => <option key={g}>{g}</option>)}
               </select>
             </div>
-            <div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>반 *</div>
-              <input style={S.inp} type="text" value={regLevel} onChange={e => setRegLevel(e.target.value)} placeholder="A" />
+          </div>
+
+          {/* ★ v23.15: 레벨/학교 카테고리 + 다중선택 (시험 등록과 동일) */}
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: T.textMuted, marginBottom: 4 }}>레벨 / 학교 * <span style={{ color: T.textMuted, fontWeight: 400 }}>(같은 시험지 = 여러 학교 다중선택)</span></div>
+            <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+              {LV_CATS.map(c => {
+                const a = regLevelCat === c.key;
+                return (
+                  <button key={c.key} onClick={() => { setRegLevelCat(c.key); setRegLevelMulti([]); setRegLevelCustom(""); }}
+                    style={{ padding: "6px 10px", fontSize: 11, fontWeight: a ? 700 : 500, borderRadius: 8, border: `1.5px solid ${a ? T.goldDark : T.border}`, background: a ? T.goldDark : T.white, color: a ? T.white : T.textSub, cursor: "pointer", fontFamily: "inherit" }}>
+                    {c.label}
+                  </button>
+                );
+              })}
             </div>
+            {regLevelCat !== "etc" ? (
+              <>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {(LV_CATS.find(c => c.key === regLevelCat)?.opts || []).map(o => {
+                    const a = regLevelMulti.includes(o);
+                    return (
+                      <button key={o} onClick={() => setRegLevelMulti(p => p.includes(o) ? p.filter(x => x !== o) : [...p, o])}
+                        style={{ padding: "5px 10px", borderRadius: 14, border: `1.5px solid ${a ? T.goldDark : T.border}`, background: a ? T.goldDark : T.white, color: a ? T.white : T.textSub, fontSize: 11, fontWeight: a ? 700 : 500, cursor: "pointer", fontFamily: "inherit" }}>
+                        {a ? "☑ " : "☐ "}{o}
+                      </button>
+                    );
+                  })}
+                </div>
+                {regLevelMulti.length > 0 && (
+                  <div style={{ marginTop: 6, fontSize: 10, color: T.textSub }}>
+                    선택됨: <strong style={{ color: T.goldDark }}>{regLevelMulti.join(" + ")}</strong>
+                    <button onClick={() => setRegLevelMulti([])} style={{ marginLeft: 8, padding: "2px 8px", fontSize: 10, borderRadius: 4, border: `1px solid ${T.border}`, background: T.white, color: T.textSub, cursor: "pointer", fontFamily: "inherit" }}>초기화</button>
+                  </div>
+                )}
+                {regLevelMulti.length >= 2 && (
+                  <div style={{ marginTop: 6, padding: "6px 10px", background: "#FFF8E6", border: `1px solid ${T.goldMuted}`, borderRadius: 6, fontSize: 10, color: T.textSub, lineHeight: 1.5 }}>
+                    ⚠ <strong>{regLevelMulti.length}개</strong>를 하나의 반으로 등록. 반드시 <strong>같은 시험지</strong>를 공유할 때만 사용하세요.
+                  </div>
+                )}
+              </>
+            ) : (
+              <input style={S.inp} type="text" value={regLevelCustom} onChange={e => setRegLevelCustom(e.target.value)} placeholder="직접 입력 (예: 특별반)" />
+            )}
           </div>
 
           {/* 선생님 */}
