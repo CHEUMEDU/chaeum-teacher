@@ -9,6 +9,13 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.21 (2026-05-13): Top 7 PDF 전면 개편 — 선생님 피드백 자료
+//   - 영어: 문제 본문 + 선택지 + 정답 (하이라이트) + 풀이 + 선택지별 분석
+//     · explanations 없는 옛 시험은 → AI 풀이 자동 생성 (사용자 확인 후 호출)
+//   - 수학: 시험지 PDF 다운로드 링크 + 정답지 다운로드 + Top 7 문항번호 칩
+//     · "이 시험지의 N번 문항을 다시 풀어보세요" 안내
+//     · list_folder_files 로 폴더 내 파일 목록 받음
+//   - 인쇄 친화 (🖨️ 인쇄 / PDF 저장 버튼 + @media print)
 // ★ v23.20 (2026-05-13): 시험 날짜 수정 기능
 //   - 오늘의 현황 카드에 "📅 날짜 수정" 버튼 추가
 //   - 잘못 등록한 날짜 (예: 내일 시험을 오늘 날짜로) 즉시 변경 가능
@@ -2170,11 +2177,12 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   //   - 수학: Top 7 문항번호 안내 + 학원에서 원본 시험지 첨부
   //   GAS view_answer_key 호출하여 explanations(choiceExplanations + gradingGuide) 수집
   const downloadTop7Pdf = async (c)=>{
-    // ★ v23.18 (2026-05-13): 5명 미만 응시 시에도 학생 개인 오답 데이터로 PDF 생성
-    //   c.hardest 가 비어있으면 c.students[].wrongQs 를 집계해 pseudo-hardest 생성
+    // ★ v23.21 (2026-05-13): 선생님 피드백 자료 — 영어는 풀 문제+풀이, 수학은 시험지 PDF 안내
+    //   기존: 풀이만 작게 나옴 → 선생님이 학생 피드백 줄 자료로 부족
+    //   수정: 영어 = 문제+선택지+정답+풀이 (인쇄 → 학생 배부 가능)
+    //         수학 = 시험지 PDF 다운로드 링크 + Top 7 문항번호 안내 페이지
     let hardest = (c.hardest && c.hardest.length > 0) ? c.hardest.slice() : null;
     if (!hardest) {
-      // students 배열에서 wrongQs 집계
       const wrongCnt = {};
       let totalStudents = 0;
       (c.students || []).forEach(s => {
@@ -2197,86 +2205,195 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         return;
       }
       hardest = list;
-      // 사용자에게 안내
       if (totalStudents < 5) {
         if (!window.confirm(`응시 인원이 ${totalStudents}명입니다 (5명 미만).\n\n개인 오답 데이터 기반으로 Top ${list.length} PDF를 만들까요? (통계적 의미는 약하지만 풀이 정리에는 유용)`)) {
           return;
         }
       }
     }
-    // 원본 c 의 hardest 를 임시 교체 (HTML 생성용)
     const cWithHardest = {...c, hardest: hardest};
     c = cWithHardest;
-    // explanations 조회
-    let explanations={};
-    try{
-      const sp=new URLSearchParams({action:"view_answer_key"});
-      if(c.folderId)sp.set("folderId",c.folderId);
-      else{
-        sp.set("subject",c.subject||"");
-        sp.set("grade",c.grade||"");
-        sp.set("level",c.level||"");
-        sp.set("examType",c.examType||"");
-        if(c.teacher)sp.set("teacher",c.teacher);
-        if(c.date)sp.set("date",c.date);
+
+    const isMath = (c.subject||"").indexOf("수학") >= 0;
+    const esc = (s)=>String(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
+
+    // ★ v23.21: explanations 조회 (영어는 question+choices+explanation 필요)
+    let explanations = {};
+    let folderFiles = [];  // 수학용 — 시험지 PDF 파일 목록
+    try {
+      const sp = new URLSearchParams({action:"view_answer_key"});
+      if (c.folderId) sp.set("folderId", c.folderId);
+      else {
+        sp.set("subject", c.subject||"");
+        sp.set("grade", c.grade||"");
+        sp.set("level", c.level||"");
+        sp.set("examType", c.examType||"");
+        if (c.teacher) sp.set("teacher", c.teacher);
+        if (c.date) sp.set("date", c.date);
       }
-      const rr=await fetch(`${sheetsUrl}?${sp.toString()}`);
-      const dd=await rr.json();
-      if(dd.result==="ok"&&dd.explanations)explanations=dd.explanations;
-    }catch(_e){}
-    const isMath=(c.subject||"").indexOf("수학")>=0;
-    const esc=(s)=>String(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
-    const lines=[];
-    lines.push('<!DOCTYPE html><html><head><meta charset="utf-8"><title>오답노트 Top '+c.hardest.length+'</title>');
-    lines.push('<style>body{font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#333;padding:0;margin:0;font-size:11pt;line-height:1.6}.page{max-width:680px;margin:0 auto;padding:24pt}.cover{text-align:center;padding:40pt 20pt;border-bottom:3px solid #B8860B;margin-bottom:24pt}.cover h1{font-size:24pt;color:#5D4037;margin-bottom:8pt}.cover .sub{font-size:13pt;color:#8D6E63;margin-bottom:4pt}.cover .meta{font-size:11pt;color:#999;margin-top:14pt}.q{margin-bottom:24pt;page-break-inside:avoid;border:1.5pt solid #B8860B;border-radius:6pt;padding:14pt;background:#FFFEF7}.qHead{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1pt dashed #E0C97A;padding-bottom:6pt;margin-bottom:10pt}.qNum{font-size:14pt;font-weight:800;color:#B8860B}.qStat{font-size:10pt;color:#C62828;font-weight:600}.qBody{font-size:11pt;color:#333;margin-bottom:10pt;white-space:pre-wrap}.qExp{background:#E3F2FD;border-left:3pt solid #1976D2;padding:8pt 10pt;border-radius:4pt;font-size:10.5pt;color:#0D47A1;margin-bottom:8pt}.ce{margin-top:6pt}.ce-row{padding:5pt 8pt;margin-bottom:3pt;border-radius:4pt;font-size:10pt;border:0.5pt solid #ccc}.ce-correct{background:#E8F5E9;border-color:#4CAF50}.ce-wrong{background:#FFEBEE;border-color:#C62828}.foot{margin-top:24pt;padding:10pt;text-align:center;font-size:9pt;color:#999;border-top:1pt solid #ccc}.math-note{background:#FFF3E0;border:1.5pt solid #E65100;padding:14pt;border-radius:6pt;margin-bottom:14pt;font-size:11pt;color:#5D4037;line-height:1.7}@media print{.q{page-break-inside:avoid}}</style></head><body><div class="page">');
-    lines.push('<div class="cover"><h1>🔥 어려운 문항 Top '+c.hardest.length+'</h1>');
+      const rr = await fetch(`${sheetsUrl}?${sp.toString()}`);
+      const dd = await rr.json();
+      if (dd.result === "ok" && dd.explanations) explanations = dd.explanations;
+    } catch(_e) {}
+
+    // ★ v23.21: 수학이면 시험지 파일 목록 조회 (folderId 기반)
+    if (isMath && c.folderId) {
+      try {
+        const sp2 = new URLSearchParams({action:"list_folder_files", folderId: c.folderId});
+        const rr2 = await fetch(`${sheetsUrl}?${sp2.toString()}`);
+        const dd2 = await rr2.json();
+        if (dd2.result === "ok" && Array.isArray(dd2.files)) folderFiles = dd2.files;
+      } catch(_e) {}
+    }
+
+    // ★ v23.21: 영어 - 풀이 빠진 문항이 있으면 generate-explanations 호출하여 일괄 생성
+    const needGen = [];
+    if (!isMath) {
+      hardest.forEach(h => {
+        const qe = explanations[String(h.q)] || {};
+        if (!qe.question || !qe.explanation || !qe.choiceExplanations) {
+          needGen.push(h.q);
+        }
+      });
+      if (needGen.length > 0) {
+        if (window.confirm(`Top ${hardest.length} 중 ${needGen.length}문항의 풀이가 없어요.\n\nAI 가 자동으로 풀이를 만들까요? (10~30초 소요, 다음번부터는 즉시)\n\n[확인] = AI 풀이 자동 생성\n[취소] = 풀이 없이 진행 (선생님이 직접 적어주셔야 함)`)) {
+          try {
+            const genBody = {
+              action: "generate_explanations",
+              questionNumbers: needGen.slice(0, 20),
+              folderId: c.folderId||"",
+              subject: c.subject||"",
+              grade: c.grade||"",
+              level: c.level||"",
+              examType: c.examType||""
+            };
+            const genR = await fetch(sheetsUrl, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(genBody)});
+            const genD = await genR.json();
+            if (genD.result === "ok" && genD.explanations) {
+              Object.keys(genD.explanations).forEach(k => {
+                explanations[k] = {...(explanations[k]||{}), ...genD.explanations[k]};
+              });
+            }
+          } catch(_e) {}
+        }
+      }
+    }
+
+    const lines = [];
+    lines.push('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Top '+c.hardest.length+' 피드백 자료</title>');
+    lines.push('<style>body{font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#333;padding:0;margin:0;font-size:11pt;line-height:1.6}.page{max-width:720px;margin:0 auto;padding:24pt}.cover{text-align:center;padding:30pt 20pt;border-bottom:3px solid #B8860B;margin-bottom:24pt;background:#FFFEF7;border-radius:8pt}.cover h1{font-size:26pt;color:#5D4037;margin-bottom:10pt}.cover .sub{font-size:14pt;color:#8D6E63;margin-bottom:4pt;font-weight:600}.cover .meta{font-size:11pt;color:#999;margin-top:14pt}.q{margin-bottom:20pt;page-break-inside:avoid;border:1.5pt solid #B8860B;border-radius:8pt;padding:16pt;background:#FFFEF7}.qHead{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1.5pt dashed #E0C97A;padding-bottom:8pt;margin-bottom:12pt}.qNum{font-size:15pt;font-weight:800;color:#B8860B}.qStat{font-size:10pt;color:#C62828;font-weight:700;background:#FFEBEE;padding:3pt 10pt;border-radius:12pt}.qBody{font-size:12pt;color:#222;margin-bottom:12pt;white-space:pre-wrap;padding:8pt 0;border-bottom:1pt dotted #ddd}.choices{margin:10pt 0;font-size:11pt;line-height:2.0}.choices .ch{padding:4pt 10pt;margin-bottom:3pt;border-radius:4pt;border:0.5pt solid #ddd;background:#fff}.choices .ch.correct{background:#E8F5E9;border-color:#388E3C;font-weight:700;color:#1B5E20}.ans-tag{display:inline-block;background:#388E3C;color:#fff;padding:2pt 10pt;border-radius:12pt;font-size:10pt;font-weight:700;margin-bottom:10pt}.qExp{background:#E3F2FD;border-left:4pt solid #1976D2;padding:10pt 14pt;border-radius:4pt;font-size:11pt;color:#0D47A1;margin-bottom:8pt;line-height:1.7}.ce{margin-top:8pt;background:#FAFAFA;padding:8pt;border-radius:4pt}.ce-title{font-size:10pt;font-weight:700;color:#666;margin-bottom:6pt}.ce-row{padding:6pt 10pt;margin-bottom:4pt;border-radius:4pt;font-size:10.5pt;border:0.5pt solid #ccc;background:#fff}.ce-row.ce-correct{background:#E8F5E9;border-color:#4CAF50}.ce-row.ce-wrong-pop{background:#FFEBEE;border-color:#C62828}.foot{margin-top:30pt;padding:10pt;text-align:center;font-size:9pt;color:#999;border-top:1pt solid #ccc}.math-cover{background:#FFF3E0;border:2pt solid #E65100;padding:20pt;border-radius:8pt;margin-bottom:20pt}.math-cover h2{font-size:16pt;color:#E65100;margin-bottom:10pt}.math-cover p{font-size:11pt;color:#5D4037;margin-bottom:8pt;line-height:1.8}.qNumList{display:flex;flex-wrap:wrap;gap:10pt;margin:14pt 0;padding:12pt;background:#fff;border-radius:6pt;border:1pt dashed #E65100}.qNumChip{padding:8pt 14pt;background:#E65100;color:#fff;border-radius:20pt;font-size:13pt;font-weight:700}.fileLink{display:inline-block;margin:6pt 6pt 6pt 0;padding:8pt 14pt;background:#1976D2;color:#fff!important;text-decoration:none;border-radius:6pt;font-size:11pt;font-weight:600}@media print{.q{page-break-inside:avoid;break-inside:avoid}body{padding:0}.fileLink{background:#1976D2;color:#fff!important}}.toolbar{position:fixed;top:0;right:0;background:#fff;padding:8pt;border:1pt solid #ccc;border-radius:0 0 0 6pt;z-index:100}.toolbar button{padding:8pt 14pt;font-size:11pt;font-weight:700;background:#B8860B;color:#fff;border:none;border-radius:4pt;cursor:pointer;margin-left:4pt}@media print{.toolbar{display:none!important}}</style></head><body><div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div><div class="page">');
+
+    // === 표지 ===
+    lines.push('<div class="cover"><h1>🔥 Top '+c.hardest.length+' 피드백 자료</h1>');
     lines.push('<div class="sub">'+esc(c.subject||"")+' '+esc(c.grade||"")+' '+esc(c.level||"")+'반 · '+esc(c.examType||"")+'</div>');
     lines.push('<div class="sub">'+esc(safeTeacher(c.teacher))+' 선생님</div>');
     lines.push('<div class="meta">시험일: '+esc(c.date||"")+' · 응시 '+(c.total||0)+'명</div>');
-    lines.push('<div class="meta" style="margin-top:8pt;font-weight:600;color:#666">학생들이 자주 틀린 문항만 모은 오답노트입니다.<br/>다시 풀어보고 풀이를 확인하세요!</div></div>');
-    if(isMath){
-      lines.push('<div class="math-note">📌 <b>수학 시험 안내</b><br/>수학 문제는 그래프·도형이 포함될 수 있어 원본 시험지를 함께 확인하세요.<br/>아래 문항번호와 풀이를 보고 원본 시험지에서 해당 문제를 다시 풀어보세요.</div>');
-    }
-    c.hardest.forEach((h,hi)=>{
-      const qe=explanations[String(h.q)]||{};
-      lines.push('<div class="q"><div class="qHead"><span class="qNum">'+(hi+1)+'위. '+h.q+'번</span><span class="qStat">'+h.wrong+'명 틀림 ('+h.pct+'%)</span></div>');
-      // 영어: 문제 본문 + 풀이 + 선택지별 분석
-      if(qe.question){
-        lines.push('<div class="qBody"><b>📝 문제:</b> '+esc(qe.question)+'</div>');
+    lines.push('<div class="meta" style="margin-top:10pt;font-weight:700;color:#E65100">📌 선생님이 학생들에게 피드백할 수 있는 자료입니다. 인쇄 후 수업에서 활용하세요.</div></div>');
+
+    if (isMath) {
+      // ============== 수학: 시험지 PDF 다운로드 + Top 7 문항번호 ==============
+      lines.push('<div class="math-cover">');
+      lines.push('<h2>📌 수학 시험 — 원본 시험지로 학생 피드백</h2>');
+      lines.push('<p><b>1️⃣ 원본 시험지 PDF 를 출력</b>해서 학생들에게 나누어 주세요.</p>');
+      lines.push('<p><b>2️⃣ 학생들이 가장 많이 틀린 다음 문항</b>을 함께 다시 풀어보세요:</p>');
+      lines.push('<div class="qNumList">');
+      c.hardest.forEach((h, hi) => {
+        lines.push('<div class="qNumChip">'+(hi+1)+'위 · '+h.q+'번 ('+h.wrong+'명·'+h.pct+'%)</div>');
+      });
+      lines.push('</div>');
+      // 시험지 PDF 다운로드 링크
+      const examFiles = folderFiles.filter(f => f.kind === "exam" || (!/(정답|답지|답안|해설|풀이|answer|solution)/i.test(f.name||"")));
+      const answerFiles = folderFiles.filter(f => f.kind === "answer" || /(정답|답지|답안|해설|풀이|answer|solution)/i.test(f.name||""));
+      if (examFiles.length > 0) {
+        lines.push('<p style="margin-top:14pt;font-weight:700">📄 시험지 다운로드:</p>');
+        examFiles.forEach(f => {
+          if (f.id) {
+            lines.push('<a class="fileLink" href="https://drive.google.com/file/d/'+esc(f.id)+'/view" target="_blank">📄 '+esc(f.name||"시험지")+'</a>');
+          }
+        });
       }
-      if(qe.answer){
-        lines.push('<div style="font-size:10.5pt;color:#388E3C;margin-bottom:8pt"><b>✅ 정답:</b> '+esc(qe.answer)+'</div>');
+      if (answerFiles.length > 0) {
+        lines.push('<p style="margin-top:8pt;font-weight:700">🔑 정답지 다운로드:</p>');
+        answerFiles.forEach(f => {
+          if (f.id) {
+            lines.push('<a class="fileLink" style="background:#388E3C" href="https://drive.google.com/file/d/'+esc(f.id)+'/view" target="_blank">🔑 '+esc(f.name||"정답지")+'</a>');
+          }
+        });
       }
-      if(qe.explanation){
-        lines.push('<div class="qExp"><b>💡 풀이:</b> '+esc(qe.explanation)+'</div>');
-      }
-      if(qe.choiceExplanations&&Object.keys(qe.choiceExplanations).length>0){
-        lines.push('<div class="ce"><b style="font-size:10pt;color:#666">📋 선택지별 분석:</b>');
-        for(let n=1;n<=5;n++){
-          const ce=qe.choiceExplanations[String(n)]||qe.choiceExplanations[n];
-          if(!ce)continue;
-          const isCorrect=String(qe.answer)===String(n);
-          const tag=isCorrect?"✅ 정답":"";
-          lines.push('<div class="ce-row '+(isCorrect?'ce-correct':'')+'"><b>'+["①","②","③","④","⑤"][n-1]+' '+tag+'</b> '+esc(ce)+'</div>');
-        }
-        lines.push('</div>');
-      }
-      if(qe.gradingGuide){
-        const gg=qe.gradingGuide;
-        if(gg.commonMistakes&&gg.commonMistakes.length>0){
-          lines.push('<div style="background:#FFF8E1;border-left:3pt solid #F57C00;padding:6pt 10pt;border-radius:4pt;font-size:10pt;color:#5D4037;margin-top:6pt"><b>⚠️ 자주 하는 실수:</b> '+gg.commonMistakes.map(esc).join(", ")+'</div>');
-        }
-      }
-      if(!qe.question&&!qe.explanation){
-        lines.push('<div class="qBody" style="color:#999;font-style:italic">풀이 데이터가 등록되지 않은 문항입니다. (선생님께 풀이를 받아 적어주세요)</div>');
+      if (folderFiles.length === 0) {
+        lines.push('<p style="margin-top:14pt;color:#C62828">⚠️ 시험지 파일을 찾지 못했어요. 선생님앱 → 오늘의 현황 → 📎 첨부 에서 직접 다운로드해 주세요.</p>');
       }
       lines.push('</div>');
-    });
+      // 각 문항에 대해 풀이가 있으면 추가 (수학도 explanations 있을 수 있음)
+      const hasMathExpl = c.hardest.some(h => {
+        const qe = explanations[String(h.q)] || {};
+        return qe.explanation;
+      });
+      if (hasMathExpl) {
+        lines.push('<h2 style="font-size:14pt;color:#5D4037;margin-top:24pt;border-bottom:2pt solid #B8860B;padding-bottom:6pt">📚 등록된 풀이 (참고용)</h2>');
+        c.hardest.forEach((h, hi) => {
+          const qe = explanations[String(h.q)] || {};
+          if (!qe.explanation) return;
+          lines.push('<div class="q">');
+          lines.push('<div class="qHead"><span class="qNum">'+(hi+1)+'위. '+h.q+'번</span><span class="qStat">'+h.wrong+'명 틀림 ('+h.pct+'%)</span></div>');
+          lines.push('<div class="qExp"><b>💡 풀이:</b> '+esc(qe.explanation)+'</div>');
+          lines.push('</div>');
+        });
+      }
+    } else {
+      // ============== 영어 (또는 기타) : 문제 + 선택지 + 정답 + 풀이 + 선택지 분석 ==============
+      c.hardest.forEach((h, hi) => {
+        const qe = explanations[String(h.q)] || {};
+        lines.push('<div class="q">');
+        lines.push('<div class="qHead"><span class="qNum">'+(hi+1)+'위. '+h.q+'번</span><span class="qStat">'+h.wrong+'명 틀림 ('+h.pct+'%)</span></div>');
+        // 문제 본문
+        if (qe.question) {
+          lines.push('<div class="qBody"><b>📝 문제:</b><br/>'+esc(qe.question)+'</div>');
+        }
+        // 선택지 (객관식)
+        if (Array.isArray(qe.choices) && qe.choices.length > 0) {
+          lines.push('<div class="choices">');
+          qe.choices.forEach((c, ci) => {
+            const isCorr = String(qe.answer) === String(ci+1);
+            lines.push('<div class="ch '+(isCorr?'correct':'')+'">'+["①","②","③","④","⑤"][ci]+' '+esc(c)+'</div>');
+          });
+          lines.push('</div>');
+        }
+        // 정답
+        if (qe.answer !== undefined && qe.answer !== "") {
+          lines.push('<div><span class="ans-tag">✅ 정답: '+esc(qe.answer)+'</span></div>');
+        }
+        // 풀이
+        if (qe.explanation) {
+          lines.push('<div class="qExp"><b>💡 풀이:</b> '+esc(qe.explanation)+'</div>');
+        }
+        // 선택지별 분석
+        if (qe.choiceExplanations && Object.keys(qe.choiceExplanations).length > 0) {
+          lines.push('<div class="ce"><div class="ce-title">📋 선택지별 분석:</div>');
+          for (let n = 1; n <= 5; n++) {
+            const ce = qe.choiceExplanations[String(n)] || qe.choiceExplanations[n];
+            if (!ce) continue;
+            const isCorrect = String(qe.answer) === String(n);
+            const tag = isCorrect ? "✅ 정답" : "";
+            lines.push('<div class="ce-row '+(isCorrect?'ce-correct':'')+'"><b>'+["①","②","③","④","⑤"][n-1]+' '+tag+'</b> '+esc(ce)+'</div>');
+          }
+          lines.push('</div>');
+        }
+        // 자주 하는 실수 (주관식)
+        if (qe.gradingGuide && qe.gradingGuide.commonMistakes && qe.gradingGuide.commonMistakes.length > 0) {
+          lines.push('<div style="background:#FFF8E1;border-left:3pt solid #F57C00;padding:6pt 10pt;border-radius:4pt;font-size:10pt;color:#5D4037;margin-top:6pt"><b>⚠️ 자주 하는 실수:</b> '+qe.gradingGuide.commonMistakes.map(esc).join(", ")+'</div>');
+        }
+        if (!qe.question && !qe.explanation) {
+          lines.push('<div class="qBody" style="color:#999;font-style:italic">⚠️ 이 문항의 본문·풀이가 등록되지 않았어요. (위에 "AI 풀이 자동 생성" 선택 시 다음번부터 표시됩니다)</div>');
+        }
+        lines.push('</div>');
+      });
+    }
     lines.push('<div class="foot">채움학원 자동 채점 시스템 · '+new Date().toLocaleString("ko-KR")+'</div>');
     lines.push('</div></body></html>');
-    const html=lines.join("\n");
-    const w=window.open("","_blank");
-    if(w){w.document.open();w.document.write(html);w.document.close();}
+    const html = lines.join("\n");
+    const w = window.open("", "_blank");
+    if (w) { w.document.open(); w.document.write(html); w.document.close(); }
     else alert("팝업이 차단되었어요. 주소창의 팝업 차단을 해제해 주세요.");
   };
   // ★ v22.8: 시험지/답지 파일 모달
@@ -4022,7 +4139,16 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     setDashLoading(true); setDashErr(""); setDashData(null);
     const cacheBust = useForce ? "&nocache=1&force_scan=1" : "";
     fetch(`${sheetsUrl}?action=teacher_dashboard&date=${encodeURIComponent(d)}${cacheBust}`)
-      .then(r=>r.json()).then(d2=>{if(d2.result==="ok"){setDashData(d2);}else{setDashErr(d2.message||"조회 실패");}setDashLoading(false);})
+      .then(r=>r.json()).then(d2=>{
+        if(d2.result==="ok"){
+          // ★ v23.22 (2026-05-13): 추천보강 시험 클라이언트 필터링 (GAS 미배포 시 안전장치)
+          if (Array.isArray(d2.exams)) {
+            d2.exams = d2.exams.filter(ex => String(ex.examType||"").trim() !== "추천보강");
+          }
+          setDashData(d2);
+        }else{setDashErr(d2.message||"조회 실패");}
+        setDashLoading(false);
+      })
       .catch(()=>{setDashErr("네트워크 오류");setDashLoading(false);});
     loadReviewCount();
   }, [dashDate, sheetsUrl, loadReviewCount]);
@@ -4031,39 +4157,54 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   //   - rowIndex 없거나 stale 캐시라도 합성키(className+examType+setType+examDate)로 fallback
   //   - 정답목록 행 + 업로드기록 행 동시 삭제 → 학생앱·대시보드 모두 즉시 사라짐
   //   - (선택) Drive 파일도 휴지통으로
-  // ★ v23.20 (2026-05-13): 시험 날짜 수정 — 잘못 올린 날짜 변경
-  const editExamDate = useCallback(async (ex)=>{
-    const examLabel = `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`;
-    const curDate = ex.examDate || dashDate || "";
-    const newDate = window.prompt(
-      `📅 시험 날짜 변경\n\n${examLabel}\n현재 날짜: ${curDate}\n\n새 날짜를 입력하세요 (예: 2026-05-14):`,
-      curDate.replace(/\./g, "-")
-    );
-    if (!newDate) return;
-    const trimmed = newDate.trim();
-    if (!/^\d{4}[-.]\d{1,2}[-.]\d{1,2}$/.test(trimmed)) {
-      alert("⚠️ 날짜 형식이 잘못됐어요. YYYY-MM-DD 형식 (예: 2026-05-14)");
+  // ★ v23.22 (2026-05-13): 시험 날짜·시간 수정 모달 — 달력 + 시간 선택 (직관적 UI)
+  const [dateEditOpen, setDateEditOpen] = useState(false);
+  const [dateEditEx, setDateEditEx] = useState(null);
+  const [dateEditNewDate, setDateEditNewDate] = useState("");
+  const [dateEditNewTime, setDateEditNewTime] = useState("");
+  const [dateEditSaving, setDateEditSaving] = useState(false);
+  const editExamDate = useCallback((ex)=>{
+    setDateEditEx(ex);
+    const curDate = (ex.examDate || dashDate || "").replace(/\./g, "-");
+    // "2026-05-13" 형식으로 맞춤
+    const m = curDate.match(/(\d{4})[-.](\d{1,2})[-.](\d{1,2})/);
+    setDateEditNewDate(m ? `${m[1]}-${("0"+m[2]).slice(-2)}-${("0"+m[3]).slice(-2)}` : "");
+    setDateEditNewTime(ex.examTime || "");
+    setDateEditOpen(true);
+  }, [dashDate]);
+  const submitDateEdit = useCallback(async ()=>{
+    if (!dateEditEx) return;
+    if (!dateEditNewDate || !/^\d{4}-\d{2}-\d{2}$/.test(dateEditNewDate)) {
+      alert("⚠️ 날짜를 정확히 선택해주세요.");
       return;
     }
+    setDateEditSaving(true);
     try {
       const body = {
         action: "update_exam_date",
-        newDate: trimmed,
-        folderId: ex.folderId || "",
-        rowIndex: ex.rowIndex || 0
+        newDate: dateEditNewDate,
+        newTime: dateEditNewTime || "",
+        folderId: dateEditEx.folderId || "",
+        rowIndex: dateEditEx.rowIndex || 0
       };
-      await fetch(sheetsUrl, {
+      const r = await fetch(sheetsUrl, {
         method: "POST",
         headers: {"Content-Type":"application/json"},
         body: JSON.stringify(body)
       });
-      alert(`✅ 시험 날짜를 ${trimmed} 로 변경했어요.\n\n잠시 후 새로고침하면 반영됩니다.`);
-      // 페이지 새로고침
-      window.location.reload();
+      const d = await r.json();
+      if (d.result === "ok") {
+        alert(`✅ 시험 날짜 변경 완료\n\n📅 ${dateEditNewDate}${dateEditNewTime?` 🕐 ${dateEditNewTime}`:""}\n\n새로고침합니다.`);
+        setDateEditOpen(false);
+        window.location.reload();
+      } else {
+        alert("⚠️ 변경 실패: " + (d.message || "다시 시도해주세요"));
+      }
     } catch(e) {
       alert("네트워크 오류: " + String(e));
     }
-  }, [sheetsUrl, dashDate]);
+    setDateEditSaving(false);
+  }, [dateEditEx, dateEditNewDate, dateEditNewTime, sheetsUrl]);
   const cancelDashExam = useCallback(async (ex)=>{
     const examLabel = `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}${ex.setType?` (${ex.setType})`:""}`;
     // 최소 식별 정보 (rowIndex 또는 합성키 중 하나는 있어야 함)
@@ -4166,6 +4307,39 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     )}
     {reviewModalOpen && <ReviewListModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>{setReviewModalOpen(false);loadReviewCount();}}/>}
     {confirmedModalOpen && <ConfirmedAnswersModal sheetsUrl={sheetsUrl} T={T} S={S} currentTeacher={currentTeacher} onClose={()=>setConfirmedModalOpen(false)}/>}
+    {/* ★ v23.22 (2026-05-13): 날짜+시간 수정 모달 — 달력 + 시간 선택 (직관적 UI) */}
+    {dateEditOpen && dateEditEx && (
+      <div onClick={()=>!dateEditSaving&&setDateEditOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div onClick={e=>e.stopPropagation()} style={{background:T.white,borderRadius:14,width:"100%",maxWidth:420,padding:24}}>
+          <div style={{fontSize:18,fontWeight:800,color:T.text,marginBottom:8}}>📅 시험 날짜·시간 변경</div>
+          <div style={{fontSize:12,color:T.textSub,marginBottom:18,padding:"8px 12px",background:T.goldPale,borderRadius:8}}>
+            <div style={{fontWeight:700,color:T.goldDeep}}>{dateEditEx.subject||""} {dateEditEx.grade||""} {dateEditEx.level||""}반</div>
+            <div style={{marginTop:2}}>{dateEditEx.examType||""} · 👤 {dateEditEx.teacher||""}</div>
+          </div>
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.textSub,marginBottom:6}}>📅 시험 날짜</div>
+            <input type="date" value={dateEditNewDate} onChange={e=>setDateEditNewDate(e.target.value)}
+              style={{width:"100%",padding:"12px 14px",fontSize:15,borderRadius:8,border:`2px solid ${T.border}`,fontFamily:"inherit",boxSizing:"border-box"}}/>
+          </div>
+          <div style={{marginBottom:18}}>
+            <div style={{fontSize:13,fontWeight:700,color:T.textSub,marginBottom:6}}>🕐 시험 시간 (선택 — 비워두면 시간 안 바꿈)</div>
+            <input type="time" value={dateEditNewTime} onChange={e=>setDateEditNewTime(e.target.value)}
+              style={{width:"100%",padding:"12px 14px",fontSize:15,borderRadius:8,border:`2px solid ${T.border}`,fontFamily:"inherit",boxSizing:"border-box"}}/>
+            <div style={{fontSize:10,color:T.textMuted,marginTop:4}}>예: 19:00 · 폴더명에 시간이 포함된 경우 같이 변경돼요</div>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={()=>setDateEditOpen(false)} disabled={dateEditSaving}
+              style={{flex:1,padding:"12px",fontSize:14,fontWeight:700,color:T.textSub,background:T.borderLight,border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit"}}>
+              취소
+            </button>
+            <button onClick={submitDateEdit} disabled={dateEditSaving}
+              style={{flex:2,padding:"12px",fontSize:14,fontWeight:800,color:T.white,background:T.gold,border:"none",borderRadius:8,cursor:"pointer",fontFamily:"inherit",opacity:dateEditSaving?0.6:1}}>
+              {dateEditSaving?"변경 중...":"✅ 변경하기"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
     {/* ★ v23.2: 정답 보기·편집 모달 — 번호 순 통합, 편집/삭제 지원 */}
     {ansModalOpen && (
       <div onClick={()=>setAnsModalOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
