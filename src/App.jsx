@@ -2155,7 +2155,43 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   //   - 수학: Top 7 문항번호 안내 + 학원에서 원본 시험지 첨부
   //   GAS view_answer_key 호출하여 explanations(choiceExplanations + gradingGuide) 수집
   const downloadTop7Pdf = async (c)=>{
-    if(!c.hardest||c.hardest.length===0){alert("어려운 문항 데이터가 없어요. (응시 인원 5명 이상부터 집계됩니다)");return;}
+    // ★ v23.18 (2026-05-13): 5명 미만 응시 시에도 학생 개인 오답 데이터로 PDF 생성
+    //   c.hardest 가 비어있으면 c.students[].wrongQs 를 집계해 pseudo-hardest 생성
+    let hardest = (c.hardest && c.hardest.length > 0) ? c.hardest.slice() : null;
+    if (!hardest) {
+      // students 배열에서 wrongQs 집계
+      const wrongCnt = {};
+      let totalStudents = 0;
+      (c.students || []).forEach(s => {
+        totalStudents++;
+        (s.wrongQs || []).forEach(q => {
+          wrongCnt[q] = (wrongCnt[q] || 0) + 1;
+        });
+      });
+      if (totalStudents === 0) {
+        alert("응시한 학생이 없어요. 학생이 답안 제출 후 다시 시도해주세요.");
+        return;
+      }
+      const list = Object.keys(wrongCnt).map(q => ({
+        q: Number(q),
+        wrong: wrongCnt[q],
+        pct: Math.round((wrongCnt[q] / totalStudents) * 100)
+      })).sort((a,b) => b.wrong - a.wrong || b.pct - a.pct).slice(0, 7);
+      if (list.length === 0) {
+        alert("🎉 틀린 문항이 없어요! 모든 학생이 만점이에요.");
+        return;
+      }
+      hardest = list;
+      // 사용자에게 안내
+      if (totalStudents < 5) {
+        if (!window.confirm(`응시 인원이 ${totalStudents}명입니다 (5명 미만).\n\n개인 오답 데이터 기반으로 Top ${list.length} PDF를 만들까요? (통계적 의미는 약하지만 풀이 정리에는 유용)`)) {
+          return;
+        }
+      }
+    }
+    // 원본 c 의 hardest 를 임시 교체 (HTML 생성용)
+    const cWithHardest = {...c, hardest: hardest};
+    c = cWithHardest;
     // explanations 조회
     let explanations={};
     try{
@@ -2545,7 +2581,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
           <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:T.goldDark}} title="새 탭에서 인쇄용 페이지 열기 (PDF 저장 / Word 복사 가능)">📄 인쇄·PDF</button>
           <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:80,background:T.accent}} title="CSV 다운로드 (Excel에서 바로 열기)">📊 CSV(엑셀)</button>
-          <button onClick={()=>downloadTop7Pdf(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:"#E65100",color:T.white}} disabled={!c.hardest||c.hardest.length===0} title="학생들이 자주 틀린 Top 7 문항 풀이 PDF (오답노트 인쇄용)">🔥 Top 7 오답</button>
+          <button onClick={()=>downloadTop7Pdf(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:"#E65100",color:T.white}} title="학생들이 자주 틀린 Top 7 문항 풀이 PDF (오답노트 인쇄용 · 1명이라도 응시했으면 OK)">🔥 Top 7 오답</button>
           <button onClick={()=>openFileModal(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:T.blue,color:T.white,cursor:"pointer"}} title="시험지/답지 파일 보기">📁 시험지·답지</button>
         </div>
       </div>
@@ -2663,16 +2699,26 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         </div>}
         <div style={{display:"flex",gap:6}}>
           <button onClick={csvDownload} style={{...S.btn,flex:1,fontSize:12}}>📥 누적 엑셀 다운로드</button>
-          {/* ★ v23.17: 기간 누적 — Top 7 오답노트 (가장 최신 시험 explanations 기준) */}
+          {/* ★ v23.18: 기간 누적 — Top 7 오답노트 (학생 개인 데이터 fallback) */}
           <button onClick={()=>{
-            // 가장 최신 시험의 hardest + meta 합쳐 카드 객체로 변환
+            // 학생별 wrongs 누적해서 pseudo-students 생성
+            const pseudoStudents = (g.studentRows || []).map(s => {
+              const allWrongs = [];
+              if (s.wrongs) {
+                Object.values(s.wrongs).forEach(arr => {
+                  if (Array.isArray(arr)) allWrongs.push(...arr);
+                });
+              }
+              return {name: s.name, wrongQs: allWrongs};
+            });
             const synth={
               subject:m.subject,grade:m.grade,level:m.level,examType:m.examType,
               teacher:m.teacher,date:(g.dates&&g.dates.length>0?g.dates[g.dates.length-1]:""),
-              hardest:g.hardest,total:g.classCount*5,folderId:""
+              hardest:g.hardest,total:g.classCount*5,folderId:"",
+              students: pseudoStudents
             };
             downloadTop7Pdf(synth);
-          }} style={{...S.btn,flex:1,fontSize:12,background:"#E65100",color:T.white}} disabled={!g.hardest||g.hardest.length===0} title="기간 누적 Top 7 오답노트 (가장 최신 시험의 풀이 데이터 기준)">🔥 Top 7 오답</button>
+          }} style={{...S.btn,flex:1,fontSize:12,background:"#E65100",color:T.white}} title="기간 누적 Top 7 오답노트">🔥 Top 7 오답</button>
         </div>
       </div>
     );
