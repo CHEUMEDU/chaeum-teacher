@@ -9,6 +9,12 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.20 (2026-05-13): 시험 날짜 수정 기능
+//   - 오늘의 현황 카드에 "📅 날짜 수정" 버튼 추가
+//   - 잘못 등록한 날짜 (예: 내일 시험을 오늘 날짜로) 즉시 변경 가능
+//   - editExamDate 핸들러 + GAS update_exam_date 호출
+// ★ v23.19 (2026-05-13): "초록=추가/빨강=빼야 함" 반복 안내 삭제 + safeTeacher 헬퍼
+// ★ v23.18: Top 7 PDF — 5명 미만 응시 시에도 학생 개인 wrongQs 로 pseudo-hardest 생성
 // ★ v23.17: Top 7 PDF 오답노트 다운로드 (Phase 7-B)
 //   v23.17 변경점 (2026-05-13):
 //   - StatsTab 카드에 "🔥 Top 7 오답" 버튼 추가 (반별·기간 누적 모두)
@@ -4025,6 +4031,39 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
   //   - rowIndex 없거나 stale 캐시라도 합성키(className+examType+setType+examDate)로 fallback
   //   - 정답목록 행 + 업로드기록 행 동시 삭제 → 학생앱·대시보드 모두 즉시 사라짐
   //   - (선택) Drive 파일도 휴지통으로
+  // ★ v23.20 (2026-05-13): 시험 날짜 수정 — 잘못 올린 날짜 변경
+  const editExamDate = useCallback(async (ex)=>{
+    const examLabel = `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`;
+    const curDate = ex.examDate || dashDate || "";
+    const newDate = window.prompt(
+      `📅 시험 날짜 변경\n\n${examLabel}\n현재 날짜: ${curDate}\n\n새 날짜를 입력하세요 (예: 2026-05-14):`,
+      curDate.replace(/\./g, "-")
+    );
+    if (!newDate) return;
+    const trimmed = newDate.trim();
+    if (!/^\d{4}[-.]\d{1,2}[-.]\d{1,2}$/.test(trimmed)) {
+      alert("⚠️ 날짜 형식이 잘못됐어요. YYYY-MM-DD 형식 (예: 2026-05-14)");
+      return;
+    }
+    try {
+      const body = {
+        action: "update_exam_date",
+        newDate: trimmed,
+        folderId: ex.folderId || "",
+        rowIndex: ex.rowIndex || 0
+      };
+      await fetch(sheetsUrl, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(body)
+      });
+      alert(`✅ 시험 날짜를 ${trimmed} 로 변경했어요.\n\n잠시 후 새로고침하면 반영됩니다.`);
+      // 페이지 새로고침
+      window.location.reload();
+    } catch(e) {
+      alert("네트워크 오류: " + String(e));
+    }
+  }, [sheetsUrl, dashDate]);
   const cancelDashExam = useCallback(async (ex)=>{
     const examLabel = `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}${ex.setType?` (${ex.setType})`:""}`;
     // 최소 식별 정보 (rowIndex 또는 합성키 중 하나는 있어야 함)
@@ -4378,6 +4417,8 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
                             <span style={{padding:"2px 6px",borderRadius:8,background:fileBadge.bg,color:fileBadge.c,fontWeight:700}}>{fileBadge.txt}</span>
                             {/* ★ v23.1: 정답 보기 버튼 */}
                             <button onClick={()=>openAnswerModal({...ex, date:dashDate})} style={{marginLeft:"auto",padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}} title="등록된 정답 확인 (관리자/선생님 검토용)">🔑 정답 보기</button>
+                            {/* ★ v23.20 (2026-05-13): 시험 날짜 수정 — 잘못 올린 날짜 변경 */}
+                            <button onClick={()=>editExamDate({...ex, examDate: ex.examDate || dashDate})} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}} title="시험 날짜 수정 — 잘못 등록한 날짜를 변경 (내일 시험을 오늘로 등록했을 때)">📅 날짜 수정</button>
                             {/* ★ v23.7: 시험 전체 취소 — 정답목록 행 삭제 → 학생앱에서 즉시 사라짐 */}
                             <button onClick={()=>cancelDashExam(ex)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}} title="시험 취소 — 학생앱에서 이 시험을 즉시 숨김 (잘못 등록한 경우)">🚫 시험 취소</button>
                           </div>
