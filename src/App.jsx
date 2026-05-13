@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 /* ============================================================
    채움학원 — 선생님용 시험 등록 v2
    신규: 선생님 이름, 반별 인원, 오늘의 현황 대시보드
@@ -9,6 +9,18 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.24 (2026-05-13): 오늘의 현황 표 형식 + Top 7 OCR + Top 7 폴더ID fallback
+//   - 오늘의 현황: 카드 → 컴팩트 표 (시안 B) — 컬럼: 과목/선생님/시험명/문항/파일/제출률/액션
+//   - 시간 그룹 헤더 + 한 줄 = 한 시험 + 첨부 펼침은 인라인
+//   - 모든 기능 유지 (정답 보기 · 날짜 수정 · 시험 취소 · 첨부 다운로드/미리보기/삭제)
+//   - Top 7 PDF: 본문 없는 영어 시험은 extract_questions_from_exam_pdf 자동 호출
+//     · 시험지 PDF OCR 로 문제 본문 + 선택지 추출 (Gemini)
+//     · 본문 + 풀이 둘 다 자동 생성 → 인쇄용 PDF 완성
+// ★ v23.23 (2026-05-13): 날짜 변경 POST → GET 전환 (Failed to fetch 픽스)
+// ★ v23.22 (2026-05-13): 3가지 픽스
+//   - 추천보강 시험 클라이언트 필터링 (오늘의 현황에서 제외)
+//   - 날짜+시간 수정 모달 (달력 + 시간 선택, 직관적 UI)
+//   - editExamDate 가 window.prompt → 모달로 교체
 // ★ v23.21 (2026-05-13): Top 7 PDF 전면 개편 — 선생님 피드백 자료
 //   - 영어: 문제 본문 + 선택지 + 정답 (하이라이트) + 풀이 + 선택지별 분석
 //     · explanations 없는 옛 시험은 → AI 풀이 자동 생성 (사용자 확인 후 호출)
@@ -2218,8 +2230,10 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     const esc = (s)=>String(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
 
     // ★ v23.21: explanations 조회 (영어는 question+choices+explanation 필요)
+    // ★ v23.23 (2026-05-13): view_answer_key 응답의 meta.folderId 도 사용 (c.folderId 비어있을 때 fallback)
     let explanations = {};
     let folderFiles = [];  // 수학용 — 시험지 PDF 파일 목록
+    let resolvedFolderId = c.folderId || "";  // ★ 폴더ID 자동 매칭 결과
     try {
       const sp = new URLSearchParams({action:"view_answer_key"});
       if (c.folderId) sp.set("folderId", c.folderId);
@@ -2233,13 +2247,18 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       }
       const rr = await fetch(`${sheetsUrl}?${sp.toString()}`);
       const dd = await rr.json();
-      if (dd.result === "ok" && dd.explanations) explanations = dd.explanations;
+      if (dd.result === "ok") {
+        if (dd.explanations) explanations = dd.explanations;
+        // ★ v23.23: meta.folderId 받아서 fallback
+        if (dd.meta && dd.meta.folderId && !resolvedFolderId) resolvedFolderId = dd.meta.folderId;
+      }
     } catch(_e) {}
 
     // ★ v23.21: 수학이면 시험지 파일 목록 조회 (folderId 기반)
-    if (isMath && c.folderId) {
+    // ★ v23.23: c.folderId 없어도 view_answer_key meta.folderId 로 fallback
+    if (isMath && resolvedFolderId) {
       try {
-        const sp2 = new URLSearchParams({action:"list_folder_files", folderId: c.folderId});
+        const sp2 = new URLSearchParams({action:"list_folder_files", folderId: resolvedFolderId});
         const rr2 = await fetch(`${sheetsUrl}?${sp2.toString()}`);
         const dd2 = await rr2.json();
         if (dd2.result === "ok" && Array.isArray(dd2.files)) folderFiles = dd2.files;
@@ -2247,34 +2266,62 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     }
 
     // ★ v23.21: 영어 - 풀이 빠진 문항이 있으면 generate-explanations 호출하여 일괄 생성
-    const needGen = [];
+    // ★ v23.24 (2026-05-13): 본문도 없으면 시험지 PDF에서 OCR 로 추출 (extract_questions_from_exam_pdf)
+    const needBodyGen = [];   // 본문 추출 필요 (OCR API)
+    const needExplGen = [];   // 풀이 생성 필요 (Gemini API)
     if (!isMath) {
       hardest.forEach(h => {
         const qe = explanations[String(h.q)] || {};
-        if (!qe.question || !qe.explanation || !qe.choiceExplanations) {
-          needGen.push(h.q);
-        }
+        if (!qe.question) needBodyGen.push(h.q);
+        if (!qe.explanation || !qe.choiceExplanations) needExplGen.push(h.q);
       });
-      if (needGen.length > 0) {
-        if (window.confirm(`Top ${hardest.length} 중 ${needGen.length}문항의 풀이가 없어요.\n\nAI 가 자동으로 풀이를 만들까요? (10~30초 소요, 다음번부터는 즉시)\n\n[확인] = AI 풀이 자동 생성\n[취소] = 풀이 없이 진행 (선생님이 직접 적어주셔야 함)`)) {
-          try {
-            const genBody = {
-              action: "generate_explanations",
-              questionNumbers: needGen.slice(0, 20),
-              folderId: c.folderId||"",
-              subject: c.subject||"",
-              grade: c.grade||"",
-              level: c.level||"",
-              examType: c.examType||""
-            };
-            const genR = await fetch(sheetsUrl, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(genBody)});
-            const genD = await genR.json();
-            if (genD.result === "ok" && genD.explanations) {
-              Object.keys(genD.explanations).forEach(k => {
-                explanations[k] = {...(explanations[k]||{}), ...genD.explanations[k]};
+      const totalNeeded = needBodyGen.length + needExplGen.length;
+      if (totalNeeded > 0 && (resolvedFolderId || c.folderId)) {
+        const msgParts = [];
+        if (needBodyGen.length > 0) msgParts.push(`📝 문제 본문 ${needBodyGen.length}개`);
+        if (needExplGen.length > 0) msgParts.push(`💡 풀이 ${needExplGen.length}개`);
+        if (window.confirm(`Top ${hardest.length} 자료에 ${msgParts.join(", ")}이(가) 없어요.\n\nAI 가 자동으로 만들까요?\n· 본문: 시험지 PDF에서 OCR (15~30초)\n· 풀이: Gemini 풀이 생성 (10~20초)\n다음번부터는 즉시 표시\n\n[확인] = AI 자동 생성\n[취소] = 비어있는 채로 진행`)) {
+          const useFid = resolvedFolderId || c.folderId;
+          // 1) 본문 추출 (시험지 PDF OCR)
+          if (needBodyGen.length > 0 && useFid) {
+            try {
+              const bodyR = await fetch(sheetsUrl, {
+                method:"POST", headers:{"Content-Type":"application/json"},
+                body: JSON.stringify({
+                  action: "extract_questions_from_exam_pdf",
+                  folderId: useFid,
+                  questionNumbers: needBodyGen.slice(0, 20)
+                })
               });
-            }
-          } catch(_e) {}
+              const bodyD = await bodyR.json();
+              if (bodyD.result === "ok" && bodyD.explanations) {
+                Object.keys(bodyD.explanations).forEach(k => {
+                  explanations[k] = {...(explanations[k]||{}), ...bodyD.explanations[k]};
+                });
+              }
+            } catch(_e) {}
+          }
+          // 2) 풀이 생성 (본문이 채워진 후 호출 → 더 정확한 풀이)
+          if (needExplGen.length > 0) {
+            try {
+              const genBody = {
+                action: "generate_explanations",
+                questionNumbers: needExplGen.slice(0, 20),
+                folderId: useFid||"",
+                subject: c.subject||"",
+                grade: c.grade||"",
+                level: c.level||"",
+                examType: c.examType||""
+              };
+              const genR = await fetch(sheetsUrl, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(genBody)});
+              const genD = await genR.json();
+              if (genD.result === "ok" && genD.explanations) {
+                Object.keys(genD.explanations).forEach(k => {
+                  explanations[k] = {...(explanations[k]||{}), ...genD.explanations[k]};
+                });
+              }
+            } catch(_e) {}
+          }
         }
       }
     }
@@ -4180,18 +4227,17 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
     }
     setDateEditSaving(true);
     try {
-      const body = {
+      // ★ v23.23 (2026-05-13): POST → GET 전환 (CORS 우회)
+      //   원인: GAS POST 의 Content-Type:application/json 은 preflight 요청 발생 → CORS 차단 → Failed to fetch
+      //   해결: GET URL 파라미터로 전달 (CORS 자동 통과, 응답 정상 읽기 가능)
+      const params = new URLSearchParams({
         action: "update_exam_date",
         newDate: dateEditNewDate,
         newTime: dateEditNewTime || "",
         folderId: dateEditEx.folderId || "",
-        rowIndex: dateEditEx.rowIndex || 0
-      };
-      const r = await fetch(sheetsUrl, {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify(body)
+        rowIndex: String(dateEditEx.rowIndex || 0)
       });
+      const r = await fetch(`${sheetsUrl}?${params.toString()}`);
       const d = await r.json();
       if (d.result === "ok") {
         alert(`✅ 시험 날짜 변경 완료\n\n📅 ${dateEditNewDate}${dateEditNewTime?` 🕐 ${dateEditNewTime}`:""}\n\n새로고침합니다.`);
@@ -4513,18 +4559,23 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
             )}
           </div>
         )}
-        {/* ── 시간별 표 ── */}
+        {/* ★ v23.24 (2026-05-13): 표 형식 (시안 B) — 시간 그룹 + 한 줄=한 시험 + 컴팩트 컬럼 */}
         {allExams.length===0?(
           <div style={{padding:24,background:T.borderLight,borderRadius:10,color:T.textMuted,fontSize:13,textAlign:"center"}}>오늘 등록된 시험이 없습니다.</div>
         ):(
           <div style={{background:T.white,borderRadius:12,overflow:"hidden",border:`1.5px solid ${T.goldMuted}`}}>
-            {/* 표 헤더 */}
-            <div style={{display:"flex",alignItems:"center",padding:"10px 14px",background:T.goldDark,color:T.white,fontSize:12,fontWeight:700,gap:10}}>
-              <div style={{width:70,flexShrink:0}}>🕐 시간</div>
-              <div style={{flex:1}}>📋 시험 (같은 시간 = 같은 줄)</div>
-              <div style={{width:70,textAlign:"right",fontSize:11,opacity:.9}}>{timeKeys.length}개 시간대</div>
+            {/* ── 테이블 헤더 ── */}
+            <div style={{display:"grid",gridTemplateColumns:"32px minmax(140px,1.5fr) 80px minmax(120px,2fr) 60px 90px 100px 180px",alignItems:"center",padding:"10px 14px",background:T.goldDark,color:T.white,fontSize:11,fontWeight:800,gap:8}}>
+              <div></div>
+              <div>📚 과목·학년·반</div>
+              <div>👤 선생님</div>
+              <div>📋 시험명</div>
+              <div style={{textAlign:"center"}}>📝 문항</div>
+              <div style={{textAlign:"center"}}>📎 파일</div>
+              <div style={{textAlign:"center"}}>📊 제출률</div>
+              <div style={{textAlign:"right"}}>🛠️ 액션</div>
             </div>
-            {/* 시간 행들 */}
+            {/* ── 시간 그룹별 행 ── */}
             {timeKeys.map((time, ti)=>{
               const exams = timeGroups[time].slice().sort((a,b)=>{
                 const sa = (a.subject||"")+(a.grade||"")+(a.teacher||"");
@@ -4534,98 +4585,103 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
               const rowExp = exams.reduce((s,e)=>s+(e.studentCount||0),0);
               const rowSub = exams.reduce((s,e)=>s+(e.submitted||0),0);
               return (
-                <div key={time} style={{display:"flex",alignItems:"stretch",borderTop:ti===0?"none":`1px solid ${T.borderLight}`,background:ti%2?T.goldPale:T.white}}>
-                  {/* 시간 라벨 */}
-                  <div style={{width:70,flexShrink:0,padding:"12px 10px",background:T.goldLight,borderRight:`1px solid ${T.goldMuted}`,display:"flex",flexDirection:"column",justifyContent:"center",alignItems:"center",fontSize:14,fontWeight:800,color:T.goldDeep}}>
-                    <div style={{fontSize:time==="미정"?12:15}}>{time==="미정"?"⏰ 미정":time}</div>
-                    <div style={{fontSize:9,color:T.textMuted,marginTop:4,fontWeight:500,textAlign:"center"}}>{exams.length}개{rowExp>0?` · ${rowSub}/${rowExp}`:""}</div>
+                <React.Fragment key={time}>
+                  {/* 시간 헤더 행 (그룹 구분) */}
+                  <div style={{display:"flex",alignItems:"center",padding:"6px 14px",background:T.goldLight,borderTop:`1px solid ${T.goldMuted}`,borderBottom:`1px solid ${T.goldMuted}`,fontSize:12,fontWeight:800,color:T.goldDeep,gap:10}}>
+                    <span style={{fontSize:13}}>🕐 {time==="미정"?"⏰ 시간 미정":time}</span>
+                    <span style={{fontSize:10,color:T.textMuted,fontWeight:600}}>{exams.length}개 시험{rowExp>0?` · 제출 ${rowSub}/${rowExp}`:""}</span>
                   </div>
-                  {/* 시험 카드들 (같은 시간 = 가로 펼침) */}
-                  <div style={{flex:1,padding:"10px",display:"flex",flexWrap:"wrap",gap:8}}>
-                    {exams.map((ex,i)=>{
-                      const subjEmoji = ex.subject==="영어"?"🇬🇧":ex.subject==="수학"?"🔢":ex.subject==="국어"?"📖":ex.subject==="과학"?"🔬":ex.subject==="사회"?"🌏":"📚";
-                      const lvLabel = ex.level?(ex.level==="전체"?"전체":ex.level+"반"):"";
-                      const expected = ex.studentCount||0;
-                      const submitted = ex.submitted||0;
-                      const pct = expected>0?Math.min(100,(submitted/expected)*100):0;
-                      const isDone = expected>0 && submitted>=expected;
-                      const fkey = `${time}_${i}`;
-                      const isOpen = !!openFiles[fkey];
-                      const hasExam = !!ex.hasExamFile;
-                      const hasAns = !!ex.hasAnswerFile;
-                      const filesArr = ex.files||[];
-                      // 파일 상태 색상
-                      const fileBadge = hasExam&&hasAns?{txt:"📎 완료",bg:T.accentLight,c:T.accent}
-                        :hasExam||hasAns?{txt:hasAns?"🔑 답지만":"📄 시험지만",bg:T.goldLight,c:T.goldDark}
-                        :{txt:"⚠️ 파일 없음",bg:T.dangerLight,c:T.danger};
-                      return(
-                        <div key={i} style={{flex:"1 1 280px",minWidth:260,maxWidth:380,background:T.white,border:`1.5px solid ${isDone?T.accent+"60":T.border}`,borderRadius:8,padding:"10px 12px",position:"relative"}}>
-                          {/* 헤더: 과목·학년·반 + 선생님 */}
-                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,marginBottom:6}}>
-                            <div style={{flex:1,minWidth:0}}>
-                              <div style={{fontSize:13,fontWeight:800,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                                {subjEmoji} {ex.subject||""} {ex.grade||""} {lvLabel}
-                              </div>
-                              <div style={{fontSize:11,color:T.textSub,marginTop:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                                {ex.examType||""}{ex.round?` · ${ex.round}`:""}
-                              </div>
-                            </div>
-                            <span style={{padding:"2px 7px",fontSize:10,fontWeight:700,background:T.blueLight,color:T.blue,borderRadius:10,whiteSpace:"nowrap"}}>👤 {ex.teacher||"-"}</span>
+                  {/* 시험 행들 */}
+                  {exams.map((ex,i)=>{
+                    const subjEmoji = ex.subject==="영어"?"🇬🇧":ex.subject==="수학"?"🔢":ex.subject==="국어"?"📖":ex.subject==="과학"?"🔬":ex.subject==="사회"?"🌏":"📚";
+                    const lvLabel = ex.level?(ex.level==="전체"?"전체":ex.level+"반"):"";
+                    const expected = ex.studentCount||0;
+                    const submitted = ex.submitted||0;
+                    const pct = expected>0?Math.min(100,(submitted/expected)*100):0;
+                    const isDone = expected>0 && submitted>=expected;
+                    const fkey = `${time}_${i}`;
+                    const isOpen = !!openFiles[fkey];
+                    const hasExam = !!ex.hasExamFile;
+                    const hasAns = !!ex.hasAnswerFile;
+                    const filesArr = ex.files||[];
+                    const fileBadge = hasExam&&hasAns?{txt:"📎 완료",bg:T.accentLight,c:T.accent}
+                      :hasExam||hasAns?{txt:hasAns?"🔑 답지":"📄 시험지",bg:T.goldLight,c:T.goldDark}
+                      :{txt:"⚠️ 없음",bg:T.dangerLight,c:T.danger};
+                    return (
+                      <React.Fragment key={i}>
+                        <div style={{display:"grid",gridTemplateColumns:"32px minmax(140px,1.5fr) 80px minmax(120px,2fr) 60px 90px 100px 180px",alignItems:"center",padding:"8px 14px",borderTop:`1px solid ${T.borderLight}`,gap:8,background:i%2?T.bg:T.white,minHeight:40}}>
+                          {/* 첨부 펼침 토글 */}
+                          <div>
+                            {filesArr.length>0 && (
+                              <button onClick={()=>toggleFiles(fkey)} style={{width:24,height:24,padding:0,fontSize:10,fontWeight:700,background:isOpen?T.goldDark:T.goldLight,color:isOpen?T.white:T.goldDeep,border:"none",borderRadius:4,cursor:"pointer",fontFamily:"inherit"}} title={`첨부 ${filesArr.length}개`}>
+                                {isOpen?"▲":"▼"}
+                              </button>
+                            )}
                           </div>
-                          {/* 메모 */}
-                          {ex.memo&&(
-                            <div style={{fontSize:10,color:T.goldDeep,background:T.goldPale,borderLeft:`2px solid ${T.goldDark}`,padding:"4px 7px",borderRadius:3,marginBottom:6,lineHeight:1.4}}>💬 {ex.memo}</div>
-                          )}
-                          {/* 진행도 바 + 제출 수 */}
-                          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
-                            <div style={{flex:1,height:6,background:T.borderLight,borderRadius:3,overflow:"hidden"}}>
-                              <div style={{height:"100%",width:`${pct}%`,background:isDone?T.accent:expected>0?T.gold:T.borderLight,transition:"width .3s"}}/>
+                          {/* 과목·학년·반 */}
+                          <div style={{minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:800,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                              {subjEmoji} {ex.subject||""} {ex.grade||""} {lvLabel}
                             </div>
-                            <div style={{fontSize:11,fontWeight:700,color:isDone?T.accent:expected>0?T.goldDark:T.textMuted,whiteSpace:"nowrap",minWidth:48,textAlign:"right"}}>
+                          </div>
+                          {/* 선생님 */}
+                          <div style={{fontSize:11,color:T.blue,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                            {ex.teacher||"-"}
+                          </div>
+                          {/* 시험명·차수·메모 */}
+                          <div style={{minWidth:0}}>
+                            <div style={{fontSize:11,color:T.text,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                              {ex.examType||""}{ex.round?` · ${ex.round}`:""}
+                            </div>
+                            {ex.memo && <div style={{fontSize:9,color:T.goldDeep,fontStyle:"italic",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}} title={ex.memo}>💬 {ex.memo}</div>}
+                          </div>
+                          {/* 문항 */}
+                          <div style={{textAlign:"center",fontSize:11,fontWeight:700,color:T.textSub}}>
+                            {ex.totalQuestions||0}
+                          </div>
+                          {/* 파일 상태 */}
+                          <div style={{textAlign:"center"}}>
+                            <span style={{padding:"3px 7px",borderRadius:8,background:fileBadge.bg,color:fileBadge.c,fontWeight:700,fontSize:10,whiteSpace:"nowrap"}}>
+                              {fileBadge.txt}
+                            </span>
+                          </div>
+                          {/* 제출률 */}
+                          <div>
+                            <div style={{height:5,background:T.borderLight,borderRadius:3,overflow:"hidden",marginBottom:2}}>
+                              <div style={{height:"100%",width:`${pct}%`,background:isDone?T.accent:expected>0?T.gold:T.borderLight}}/>
+                            </div>
+                            <div style={{fontSize:9,fontWeight:700,color:isDone?T.accent:expected>0?T.goldDark:T.textMuted,textAlign:"center"}}>
                               {expected>0?`${submitted}/${expected}`:"-"}
                             </div>
                           </div>
-                          {/* 메타 칩 */}
-                          <div style={{display:"flex",gap:4,flexWrap:"wrap",fontSize:10,marginBottom:5,alignItems:"center"}}>
-                            <span style={{padding:"2px 6px",borderRadius:8,background:T.bg,color:T.textSub,fontWeight:600}}>📝 {ex.totalQuestions||0}문항</span>
-                            <span style={{padding:"2px 6px",borderRadius:8,background:fileBadge.bg,color:fileBadge.c,fontWeight:700}}>{fileBadge.txt}</span>
-                            {/* ★ v23.1: 정답 보기 버튼 */}
-                            <button onClick={()=>openAnswerModal({...ex, date:dashDate})} style={{marginLeft:"auto",padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}} title="등록된 정답 확인 (관리자/선생님 검토용)">🔑 정답 보기</button>
-                            {/* ★ v23.20 (2026-05-13): 시험 날짜 수정 — 잘못 올린 날짜 변경 */}
-                            <button onClick={()=>editExamDate({...ex, examDate: ex.examDate || dashDate})} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}} title="시험 날짜 수정 — 잘못 등록한 날짜를 변경 (내일 시험을 오늘로 등록했을 때)">📅 날짜 수정</button>
-                            {/* ★ v23.7: 시험 전체 취소 — 정답목록 행 삭제 → 학생앱에서 즉시 사라짐 */}
-                            <button onClick={()=>cancelDashExam(ex)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:8,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}} title="시험 취소 — 학생앱에서 이 시험을 즉시 숨김 (잘못 등록한 경우)">🚫 시험 취소</button>
+                          {/* 액션 버튼들 (아이콘만) */}
+                          <div style={{display:"flex",gap:3,justifyContent:"flex-end"}}>
+                            <button onClick={()=>openAnswerModal({...ex, date:dashDate})} style={{padding:"5px 7px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit"}} title="정답 보기">🔑</button>
+                            <button onClick={()=>editExamDate({...ex, examDate: ex.examDate || dashDate})} style={{padding:"5px 7px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.blue}`,background:T.white,color:T.blue,cursor:"pointer",fontFamily:"inherit"}} title="날짜·시간 수정">📅</button>
+                            <button onClick={()=>cancelDashExam(ex)} style={{padding:"5px 7px",fontSize:11,fontWeight:700,borderRadius:5,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer",fontFamily:"inherit"}} title="시험 취소">🚫</button>
                           </div>
-                          {/* 첨부 파일 (펼침) */}
-                          {filesArr.length>0&&(
-                            <div style={{borderTop:`1px dashed ${T.border}`,paddingTop:5,marginTop:5}}>
-                              <button onClick={()=>toggleFiles(fkey)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",fontSize:10,fontWeight:700,color:T.textSub,background:"none",border:"none",cursor:"pointer",padding:"2px 0",fontFamily:"inherit",width:"100%"}}>
-                                <span>📎 첨부 {filesArr.length}개</span>
-                                <span style={{color:T.goldDark}}>{isOpen?"▲":"▼"}</span>
-                              </button>
-                              {isOpen&&(
-                                <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:4}}>
-                                  {filesArr.map((fl,fi)=>(
-                                    <div key={fi} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 6px",background:T.bg,borderRadius:5,fontSize:10}}>
-                                      <span>{fl.kind==="answer"?"🔑":"📄"}</span>
-                                      <div style={{flex:1,minWidth:0,overflow:"hidden"}}>
-                                        <div style={{fontWeight:600,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{fl.name}</div>
-                                      </div>
-                                      <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:4,border:"none",cursor:"pointer",fontFamily:"inherit"}} title="다운로드">⬇</button>
-                                      <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}} title="미리보기">👁</button>
-                                      {/* ★ v23.7: 잘못 올린 파일 삭제 — 2차 확인 후 휴지통 이동 */}
-                                      <button onClick={()=>deleteDashFile(fl, `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`)} style={{padding:"2px 6px",fontSize:9,fontWeight:700,background:T.white,color:T.danger,border:`1px solid ${T.danger}`,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}} title="이 파일 삭제 (휴지통 이동)">🗑</button>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                        {/* 펼침: 첨부 파일 목록 */}
+                        {isOpen && filesArr.length>0 && (
+                          <div style={{padding:"8px 16px 8px 60px",background:T.goldPale,borderTop:`1px dashed ${T.goldMuted}`,borderBottom:`1px dashed ${T.goldMuted}`}}>
+                            <div style={{fontSize:10,color:T.goldDeep,fontWeight:700,marginBottom:5}}>📎 첨부 파일 {filesArr.length}개</div>
+                            <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                              {filesArr.map((fl,fi)=>(
+                                <div key={fi} style={{display:"flex",alignItems:"center",gap:6,padding:"5px 8px",background:T.white,borderRadius:5,fontSize:11,border:`1px solid ${T.border}`}}>
+                                  <span style={{fontSize:13}}>{fl.kind==="answer"?"🔑":"📄"}</span>
+                                  <div style={{flex:1,minWidth:0,overflow:"hidden",fontWeight:600,color:T.text,whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{fl.name}</div>
+                                  <button onClick={()=>proxyDownload(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.goldDark,color:T.white,borderRadius:4,border:"none",cursor:"pointer",fontFamily:"inherit"}} title="다운로드">⬇</button>
+                                  <button onClick={()=>proxyPreview(fl.id,fl.name)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.blue,border:`1px solid ${T.blue}`,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}} title="미리보기">👁</button>
+                                  <button onClick={()=>deleteDashFile(fl, `${ex.subject||""} ${ex.grade||""} ${ex.level||""}반 · ${ex.examType||""}`)} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:T.white,color:T.danger,border:`1px solid ${T.danger}`,borderRadius:4,cursor:"pointer",fontFamily:"inherit"}} title="삭제">🗑</button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </div>
