@@ -9,6 +9,12 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.27 (2026-05-13): Phase 2 — 개인 성적표 + 반별 PDF에 AI 풀이·영역별 분석 + AI 검수 인라인
+//   - downloadStudentPdf: 영역별 강점·약점 표 + 객관식 오답마다 AI 풀이·선택지 분석
+//   - ReviewListModal: singleRowIndex prop 추가 (자동 선택)
+//   - 시험 등록 후 결과 화면에 "🔍 바로 검수하기" 버튼 (불일치 시 즉시 검수)
+// ★ v23.26 (2026-05-13): 인라인 AI 검수 모달 + 결과 화면 바로 검수 버튼
+// ★ v23.25 (2026-05-13): Top 7 폐기 + 보강 현황 탭 제거 + 결과 화면 보강 바로 풀기 버튼
 // ★ v23.24 (2026-05-13): 오늘의 현황 표 형식 + Top 7 OCR + Top 7 폴더ID fallback
 //   - 오늘의 현황: 카드 → 컴팩트 표 (시안 B) — 컬럼: 과목/선생님/시험명/문항/파일/제출률/액션
 //   - 시간 그룹 헤더 + 한 줄 = 한 시험 + 첨부 펼침은 인라인
@@ -2511,8 +2517,41 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   );
 
   // ★ v23.3: 학생 1명용 PDF — 인쇄용 새 탭 (반 PDF와 동일 양식, 단일 학생)
-  const downloadStudentPdf = (c, s)=>{
+  const downloadStudentPdf = async (c, s)=>{
+    // ★ v23.27 (2026-05-13): AI 풀이 + 영역별 약점 분석 추가
     const esc = (str)=>String(str||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    // explanations + categories 자동 조회 (없으면 빈 객체)
+    let explanations = {}, categories = {};
+    try {
+      const sp = new URLSearchParams({action:"view_answer_key"});
+      if (c.folderId) sp.set("folderId", c.folderId);
+      else {
+        sp.set("subject", c.subject||""); sp.set("grade", c.grade||"");
+        sp.set("level", c.level||""); sp.set("examType", c.examType||"");
+        if (c.teacher) sp.set("teacher", c.teacher);
+        if (c.date) sp.set("date", c.date);
+      }
+      const r = await fetch(`${sheetsUrl}?${sp.toString()}`);
+      const d = await r.json();
+      if (d.result==="ok") {
+        if (d.explanations) explanations = d.explanations;
+        if (d.categories) categories = d.categories;
+      }
+    } catch(_e) {}
+    // 영역별 정답률 (약점·강점 자동 산출)
+    const catStats = {};
+    (s.perQuestion||[]).forEach(p => {
+      const cat = categories[String(p.q)] || categories[p.q];
+      if (!cat) return;
+      if (!catStats[cat]) catStats[cat] = {correct:0,total:0};
+      catStats[cat].total++;
+      if (p.verdict==="정답") catStats[cat].correct++;
+      else if (p.verdict==="부분정답") catStats[cat].correct += 0.5;
+    });
+    const catList = Object.keys(catStats).map(c2 => ({
+      name: c2, correct: catStats[c2].correct, total: catStats[c2].total,
+      pct: catStats[c2].total>0 ? Math.round(catStats[c2].correct/catStats[c2].total*100) : 0
+    })).sort((a,b)=>a.pct-b.pct);
     const lines = [];
     lines.push('<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">');
     lines.push(`<title>${esc(s.name||"학생")} 성적표 - ${esc(c.subject)} ${esc(c.grade)} ${esc(c.examType)}</title>`);
@@ -2552,14 +2591,56 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     lines.push(`<h1>채움학원 — 개인 성적표</h1>`);
     lines.push(`<div class="meta"><b>${esc(s.name||"?")}</b> (#${s.rank}) · ${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}<br/>📅 ${esc(c.date)} &nbsp; 👨‍🏫 ${esc(safeTeacher(c.teacher)||"-")}</div>`);
     lines.push('<div class="score-box"><div class="score-num">'+(s.score||0)+'점</div><div class="score-label">반 평균 '+(c.avg||0)+'점 / 등수 #'+(s.rank||"-")+' / 응시 '+(c.total||0)+'명</div></div>');
-    // 객관식 오답
+    // ★ v23.27: 영역별 강점·약점 분석 (카테고리 데이터 있을 때만)
+    if (catList.length > 0) {
+      lines.push('<h2>📊 영역별 분석</h2>');
+      lines.push('<table style="width:100%;border-collapse:collapse;margin:4pt 0"><thead><tr style="background:#FFF3D0"><th style="padding:6pt;border:1pt solid #ddd;font-size:11pt">영역</th><th style="padding:6pt;border:1pt solid #ddd;font-size:11pt">정답/전체</th><th style="padding:6pt;border:1pt solid #ddd;font-size:11pt">정답률</th><th style="padding:6pt;border:1pt solid #ddd;font-size:11pt">평가</th></tr></thead><tbody>');
+      catList.forEach(c2 => {
+        const lvl = c2.pct>=80?"💪 강점":c2.pct>=60?"😊 보통":"⚠️ 약점";
+        const color = c2.pct>=80?"#2E7D32":c2.pct>=60?"#B8860B":"#C62828";
+        lines.push(`<tr><td style="padding:5pt;border:1pt solid #ddd;font-weight:700;color:${color}">${esc(c2.name)}</td><td style="padding:5pt;border:1pt solid #ddd;text-align:center">${c2.correct}/${c2.total}</td><td style="padding:5pt;border:1pt solid #ddd;text-align:center;font-weight:700;color:${color}">${c2.pct}%</td><td style="padding:5pt;border:1pt solid #ddd;text-align:center;font-size:10pt;color:${color}">${lvl}</td></tr>`);
+      });
+      lines.push('</tbody></table>');
+      // 종합 코멘트
+      const weak = catList.filter(c2=>c2.pct<60).map(c2=>c2.name);
+      const strong = catList.filter(c2=>c2.pct>=80).map(c2=>c2.name);
+      if (weak.length>0 || strong.length>0) {
+        lines.push('<div style="margin-top:6pt;padding:8pt 12pt;background:#FFF8E6;border-left:3pt solid #D4A017;border-radius:3pt;font-size:11pt">');
+        if (strong.length>0) lines.push(`<div><b style="color:#2E7D32">💪 강점:</b> ${strong.map(esc).join(", ")}</div>`);
+        if (weak.length>0) lines.push(`<div style="margin-top:3pt"><b style="color:#C62828">⚠️ 약점 (집중 보강 필요):</b> ${weak.map(esc).join(", ")}</div>`);
+        lines.push('</div>');
+      }
+    }
+    // 객관식 오답 (AI 풀이 포함)
     const objW = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답");
     if (objW.length>0) {
-      lines.push('<h2>❌ 객관식 오답 ('+objW.length+'개)</h2><div class="obj-chips">');
+      lines.push('<h2>❌ 객관식 오답 ('+objW.length+'개) — AI 풀이 포함</h2>');
       objW.forEach(p=>{
-        lines.push(`<span class="obj-chip">${p.q}) ${esc(p.studentAns||"빈")} › <b>${esc(p.correctAns||"-")}</b></span>`);
+        const qe = explanations[String(p.q)] || {};
+        const hasExpl = qe.explanation || qe.choiceExplanations;
+        const cat = categories[String(p.q)] || categories[p.q] || "";
+        lines.push(`<div style="margin:8pt 0;padding:10pt 12pt;background:#FFFEF7;border:1pt solid #E0C97A;border-radius:6pt;page-break-inside:avoid">`);
+        lines.push(`<div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:1pt dashed #E0C97A;padding-bottom:4pt;margin-bottom:6pt">`);
+        lines.push(`<span style="font-size:12pt;font-weight:800;color:#B8860B">${p.q}번${cat?" · "+esc(cat):""}</span>`);
+        lines.push(`<span style="font-size:10pt"><span style="color:#C62828;font-weight:700">내답 ${esc(p.studentAns||"빈")}</span> → <span style="color:#2E7D32;font-weight:700">정답 ${esc(p.correctAns||"-")}</span></span>`);
+        lines.push(`</div>`);
+        if (qe.question) {
+          lines.push(`<div style="font-size:11pt;color:#333;margin-bottom:5pt;line-height:1.6"><b>📝 문제:</b> ${esc(String(qe.question).slice(0,300))}</div>`);
+        }
+        if (qe.explanation) {
+          lines.push(`<div style="background:#E3F2FD;border-left:3pt solid #1976D2;padding:6pt 10pt;border-radius:3pt;font-size:11pt;color:#0D47A1;margin-top:5pt"><b>💡 AI 풀이:</b> ${esc(qe.explanation)}</div>`);
+        }
+        if (qe.choiceExplanations) {
+          const myCe = qe.choiceExplanations[String(p.studentAns)] || qe.choiceExplanations[p.studentAns];
+          const corrCe = qe.choiceExplanations[String(p.correctAns)] || qe.choiceExplanations[p.correctAns];
+          if (myCe) lines.push(`<div style="margin-top:3pt;font-size:10pt;color:#C62828"><b>❌ 내가 고른 ${esc(p.studentAns)} 가 틀린 이유:</b> ${esc(myCe)}</div>`);
+          if (corrCe) lines.push(`<div style="margin-top:3pt;font-size:10pt;color:#2E7D32"><b>✅ ${esc(p.correctAns)} 가 정답인 이유:</b> ${esc(corrCe)}</div>`);
+        }
+        if (!hasExpl) {
+          lines.push(`<div style="margin-top:3pt;font-size:10pt;color:#999;font-style:italic">⚠️ 이 문항의 AI 풀이가 아직 등록되지 않았어요. 학생앱에서 클릭하면 즉시 생성됩니다.</div>`);
+        }
+        lines.push(`</div>`);
       });
-      lines.push('</div>');
     }
     // 주관식 — 정답 먼저, 학생답 diff + 수정 가이드 (v23.6: 가이드 박스 분리)
     const subW = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
@@ -3762,21 +3843,29 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
     </div>
   );
 }
-function ReviewListModal({sheetsUrl, T, S, onClose, currentTeacher}){
+function ReviewListModal({sheetsUrl, T, S, onClose, currentTeacher, singleRowIndex}){
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [selected, setSelected] = useState(null);
-  // 본인 것만 보기 (현재 로그인 선생님이 있으면 기본 ON)
+  // ★ v23.26 (2026-05-13): singleRowIndex 가 있으면 본인 것만 + 자동 선택
   const [onlyMine, setOnlyMine] = useState(!!currentTeacher);
   const load = useCallback(()=>{
     setLoading(true); setErr("");
     fetch(`${sheetsUrl}?action=list_review_pending`)
       .then(r=>r.json()).then(d=>{
-        if(d.result==="success") setItems(d.items||[]);
+        if(d.result==="success") {
+          const list = d.items || [];
+          setItems(list);
+          // ★ v23.26: singleRowIndex 가 지정되면 해당 row 자동 선택
+          if (singleRowIndex) {
+            const target = list.find(it => Number(it.rowIndex) === Number(singleRowIndex));
+            if (target) setSelected(target);
+          }
+        }
         else setErr(d.message||"조회 실패");
       }).catch(()=>setErr("네트워크 오류")).finally(()=>setLoading(false));
-  },[sheetsUrl]);
+  },[sheetsUrl, singleRowIndex]);
   useEffect(()=>{ load(); },[load]);
   // 항목별 삭제
   const deleteItem = async (rowIndex, ev)=>{
@@ -4750,6 +4839,9 @@ export default function App(){
   // [v21.0] AI 답지 자동 검수 상태
   const[aiRunning,setAiRunning]=useState(false);
   const[aiResults,setAiResults]=useState([]); // [{label, unanimous, mismatchCount, rowIndex, error}]
+  // ★ v23.26 (2026-05-13): 인라인 검수 모달 상태 — 시험 등록 직후 그 자리에서 검수
+  const[inlineReviewOpen,setInlineReviewOpen]=useState(false);
+  const[inlineReviewRowIndex,setInlineReviewRowIndex]=useState(null);
   const[aiTasks,setAiTasks]=useState([]); // ★ v21.6: 원본 task 보관 (재검수 버튼용)
   // v21.3: AI 검수 호출 — Vercel Edge Function 우선, 실패 시 GAS 폴백
   // 1) Vercel /api/ai-extract 로 PDF 보내서 3개 AI 응답 받기 (GAS 데이터 한도 우회)
@@ -5632,6 +5724,8 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
                 {aiResults.map((r,i)=>{
                   const canRetry = (r.status==="error"||r.status==="mismatch") && !aiRunning && aiTasks[i] && aiTasks[i].file;
+                  // ★ v23.26 (2026-05-13): 불일치 시 그 자리에서 바로 검수하기 버튼
+                  const canInlineReview = r.status==="mismatch" && r.rowIndex;
                   return(
                   <div key={i} style={{padding:"8px 10px",borderRadius:8,background:r.status==="ok"?T.accentLight:r.status==="mismatch"?"#fff5f0":r.status==="error"?T.dangerLight:T.borderLight,fontSize:12,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                     <div style={{flex:1,minWidth:140,fontWeight:600,color:T.text}}>{r.label}</div>
@@ -5639,6 +5733,13 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
                     {r.status==="ok"&&<span style={{color:T.accent,fontWeight:700}}>✅ 만장일치 자동 등록</span>}
                     {r.status==="mismatch"&&<span style={{color:"#d97706",fontWeight:700}}>⚠️ 불일치 {r.mismatchCount}개 (검수 필요)</span>}
                     {r.status==="error"&&<span style={{color:T.danger,fontWeight:700,wordBreak:"break-all",fontSize:11}}>❌ {r.error||"오류"}</span>}
+                    {canInlineReview && (
+                      <button onClick={()=>{setInlineReviewRowIndex(r.rowIndex);setInlineReviewOpen(true);}}
+                        title="이 시험의 불일치 답안을 바로 검수 (답지 PDF 옆에 두고 수정)"
+                        style={{padding:"5px 12px",fontSize:11,fontWeight:800,borderRadius:6,border:"none",background:T.goldDark,color:T.white,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                        🔍 바로 검수하기
+                      </button>
+                    )}
                     {canRetry&&(
                       <button onClick={()=>retryAiTask(i)} title="같은 PDF로 AI 재검수 (Gemini + Claude 다시 호출)"
                         style={{padding:"5px 12px",fontSize:11,fontWeight:700,borderRadius:6,border:"none",background:r.status==="error"?T.danger:"#d97706",color:T.white,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
@@ -5651,11 +5752,22 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
               </div>
               {!aiRunning&&aiResults.some(r=>r.status==="mismatch"||r.status==="error")&&(
                 <div style={{marginTop:10,padding:"10px 12px",borderRadius:8,background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,lineHeight:1.6}}>
-                  💡 <b>실패/불일치 항목</b>은 위 <b>🔄 재검수</b> 버튼으로 즉시 다시 시도할 수 있어요.<br/>
-                  여전히 안 풀리면 <b>"오늘의 현황" 탭 → AI 검수 대기</b> 카드에서 직접 답안을 입력해 확정하세요.
+                  💡 <b>실패/불일치 항목</b>은 위 <b>🔍 바로 검수하기</b> 버튼으로 그 자리에서 답안을 수정할 수 있어요.<br/>
+                  또는 <b>🔄 재검수</b> 버튼으로 AI 분석을 다시 시도하세요.
                 </div>
               )}
             </div>
+          )}
+          {/* ★ v23.26 (2026-05-13): 인라인 검수 모달 — 시험 등록 직후 바로 검수 */}
+          {inlineReviewOpen && inlineReviewRowIndex && (
+            <ReviewListModal
+              sheetsUrl={SHEETS_URL}
+              T={T}
+              S={S}
+              currentTeacher={teacher}
+              singleRowIndex={inlineReviewRowIndex}
+              onClose={()=>{setInlineReviewOpen(false);setInlineReviewRowIndex(null);}}
+            />
           )}
           <button style={{...S.btnG,maxWidth:320,margin:"0 auto"}} onClick={reset}>다른 시험 등록하기</button>
         </div>
