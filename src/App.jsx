@@ -1819,6 +1819,15 @@ function DiffView({correct, student, T}) {
 function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const LOW_THRESHOLD = 70; // ★ 미달 기준 고정 (70점 미만)
   const todayStr = (()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;})();
+  // ★ v23.19 (2026-05-13): 선생님 이름 안전장치 — JSON 데이터 표시 차단
+  //   (옛 GAS 버그로 P열에 JSON 들어간 데이터 대응. GAS v25.2 + repairStudentTeacherColumn() 실행으로 근본 해결)
+  const safeTeacher = (t) => {
+    if (!t) return "";
+    const s = String(t).trim();
+    if (s.charAt(0) === "[" || s.charAt(0) === "{") return "";
+    if (s.length > 80) return "";  // 정상 선생님 이름은 80자 이하
+    return s;
+  };
   const [classes, setClasses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [dateMode, setDateMode] = useState("single"); // "single" | "range"
@@ -1900,7 +1909,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
 
     // ─── 헤더 ───
     out.push(row("[채움학원 반별 성적표]"));
-    out.push(row("시험 정보", `${c.subject||""} ${c.grade||""} ${c.level||""}반`, c.examType||"", `${c.date||""}`, `담당: ${c.teacher||"-"}`, `응시: ${c.total||0}명`));
+    out.push(row("시험 정보", `${c.subject||""} ${c.grade||""} ${c.level||""}반`, c.examType||"", `${c.date||""}`, `담당: ${safeTeacher(c.teacher)||"-"}`, `응시: ${c.total||0}명`));
     sep();
 
     // ─── 요약 ───
@@ -1991,7 +2000,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     // eslint-disable-next-line no-unreachable
     lines.push('<html><body><table>');
     lines.push(`<tr><td colspan="6" class="title">채움학원 — 반별 성적표</td></tr>`);
-    lines.push(`<tr><td colspan="6" class="meta"><b>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}</b> | 📅 ${esc(c.date)} | 👨‍🏫 ${esc(c.teacher||"-")} | 응시 ${c.total}명</td></tr>`);
+    lines.push(`<tr><td colspan="6" class="meta"><b>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}</b> | 📅 ${esc(c.date)} | 👨‍🏫 ${esc(safeTeacher(c.teacher)||"-")} | 응시 ${c.total}명</td></tr>`);
     lines.push(`<tr><td colspan="6" class="section">📊 시험 결과 요약</td></tr>`);
     lines.push(`<tr><th>평균</th><th>최고</th><th>최저</th><th>만점자</th><th>70점 미만</th><th>응시</th></tr>`);
     lines.push(`<tr><td>${c.avg}점</td><td>${c.max}점</td><td>${c.min}점</td><td>${c.perfectCount||0}명</td><td>${c.lowCount||0}명</td><td>${c.total}명</td></tr>`);
@@ -2086,7 +2095,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     lines.push('<div id="sheet" class="sheet">');
     lines.push(`<h1>채움학원 — 반별 성적표</h1>`);
     lines.push(`<div class="meta"><b>${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}</b><br/>`);
-    lines.push(`📅 ${esc(c.date)} &nbsp;&nbsp; 👨‍🏫 ${esc(c.teacher||"-")} &nbsp;&nbsp; 응시: ${c.total}명</div>`);
+    lines.push(`📅 ${esc(c.date)} &nbsp;&nbsp; 👨‍🏫 ${esc(safeTeacher(c.teacher)||"-")} &nbsp;&nbsp; 응시: ${c.total}명</div>`);
     lines.push('<h2>📊 시험 결과 요약</h2>');
     lines.push('<table><thead><tr><th>평균</th><th>최고</th><th>최저</th><th>만점자</th><th>70점 미만</th></tr></thead>');
     lines.push(`<tbody class="summary-row"><tr><td>${c.avg}점</td><td>${c.max}점</td><td>${c.min}점</td><td>${c.perfectCount||0}명</td><td>${c.lowCount||0}명</td></tr></tbody></table>`);
@@ -2216,7 +2225,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     lines.push('<style>body{font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#333;padding:0;margin:0;font-size:11pt;line-height:1.6}.page{max-width:680px;margin:0 auto;padding:24pt}.cover{text-align:center;padding:40pt 20pt;border-bottom:3px solid #B8860B;margin-bottom:24pt}.cover h1{font-size:24pt;color:#5D4037;margin-bottom:8pt}.cover .sub{font-size:13pt;color:#8D6E63;margin-bottom:4pt}.cover .meta{font-size:11pt;color:#999;margin-top:14pt}.q{margin-bottom:24pt;page-break-inside:avoid;border:1.5pt solid #B8860B;border-radius:6pt;padding:14pt;background:#FFFEF7}.qHead{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1pt dashed #E0C97A;padding-bottom:6pt;margin-bottom:10pt}.qNum{font-size:14pt;font-weight:800;color:#B8860B}.qStat{font-size:10pt;color:#C62828;font-weight:600}.qBody{font-size:11pt;color:#333;margin-bottom:10pt;white-space:pre-wrap}.qExp{background:#E3F2FD;border-left:3pt solid #1976D2;padding:8pt 10pt;border-radius:4pt;font-size:10.5pt;color:#0D47A1;margin-bottom:8pt}.ce{margin-top:6pt}.ce-row{padding:5pt 8pt;margin-bottom:3pt;border-radius:4pt;font-size:10pt;border:0.5pt solid #ccc}.ce-correct{background:#E8F5E9;border-color:#4CAF50}.ce-wrong{background:#FFEBEE;border-color:#C62828}.foot{margin-top:24pt;padding:10pt;text-align:center;font-size:9pt;color:#999;border-top:1pt solid #ccc}.math-note{background:#FFF3E0;border:1.5pt solid #E65100;padding:14pt;border-radius:6pt;margin-bottom:14pt;font-size:11pt;color:#5D4037;line-height:1.7}@media print{.q{page-break-inside:avoid}}</style></head><body><div class="page">');
     lines.push('<div class="cover"><h1>🔥 어려운 문항 Top '+c.hardest.length+'</h1>');
     lines.push('<div class="sub">'+esc(c.subject||"")+' '+esc(c.grade||"")+' '+esc(c.level||"")+'반 · '+esc(c.examType||"")+'</div>');
-    lines.push('<div class="sub">'+esc(c.teacher||"")+' 선생님</div>');
+    lines.push('<div class="sub">'+esc(safeTeacher(c.teacher))+' 선생님</div>');
     lines.push('<div class="meta">시험일: '+esc(c.date||"")+' · 응시 '+(c.total||0)+'명</div>');
     lines.push('<div class="meta" style="margin-top:8pt;font-weight:600;color:#666">학생들이 자주 틀린 문항만 모은 오답노트입니다.<br/>다시 풀어보고 풀이를 확인하세요!</div></div>');
     if(isMath){
@@ -2323,7 +2332,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     <div style={{borderBottom:`1px solid ${T.border}`,paddingBottom:8,marginBottom:10}}>
       <div style={{fontSize:15,fontWeight:700,color:T.text,lineHeight:1.4}}>
         📘 {[c.subject, c.grade, (c.level?c.level+"반":"반")].filter(Boolean).join(" ")} · {c.examType}
-        {c.teacher && <span style={{fontSize:12,fontWeight:600,color:T.goldDark,marginLeft:6}}>(👤 {c.teacher})</span>}
+        {safeTeacher(c.teacher) && <span style={{fontSize:12,fontWeight:600,color:T.goldDark,marginLeft:6}}>(👤 {safeTeacher(c.teacher)})</span>}
       </div>
       <div style={{fontSize:11,color:T.textMuted,marginTop:3}}>
         📅 {c.date} · 응시 {c.total}명
@@ -2371,7 +2380,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     lines.push('<div class="toolbar"><button onclick="window.print()">🖨️ 인쇄 / PDF 저장</button></div>');
     lines.push('<div class="sheet">');
     lines.push(`<h1>채움학원 — 개인 성적표</h1>`);
-    lines.push(`<div class="meta"><b>${esc(s.name||"?")}</b> (#${s.rank}) · ${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}<br/>📅 ${esc(c.date)} &nbsp; 👨‍🏫 ${esc(c.teacher||"-")}</div>`);
+    lines.push(`<div class="meta"><b>${esc(s.name||"?")}</b> (#${s.rank}) · ${esc(c.subject)} ${esc(c.grade)} ${esc(c.level||"")}반 · ${esc(c.examType)}<br/>📅 ${esc(c.date)} &nbsp; 👨‍🏫 ${esc(safeTeacher(c.teacher)||"-")}</div>`);
     lines.push('<div class="score-box"><div class="score-num">'+(s.score||0)+'점</div><div class="score-label">반 평균 '+(c.avg||0)+'점 / 등수 #'+(s.rank||"-")+' / 응시 '+(c.total||0)+'명</div></div>');
     // 객관식 오답
     const objW = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답");
@@ -2546,10 +2555,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                                     <span style={{color:isWrong?T.danger:T.goldDark,fontWeight:700,marginRight:4}}>📝 학생답:</span>
                                     {p.studentAns ? <DiffView correct={p.correctAns||""} student={p.studentAns||""} T={T}/> : <span style={{color:T.danger,fontStyle:"italic"}}>(빈칸)</span>}
                                   </div>
-                                  <div style={{fontSize:9,color:T.textMuted,marginBottom:3}}>
-                                    <span style={{background:"#e8f5e9",color:"#2E7D32",padding:"0 4px",borderRadius:2,marginRight:4}}>초록</span>= 추가 필요 ·
-                                    <span style={{background:"#ffebee",color:"#C62828",padding:"0 4px",borderRadius:2,margin:"0 4px",textDecoration:"line-through"}}>빨강</span>= 빼야 함
-                                  </div>
+                                  {/* ★ v23.19 (2026-05-13): "초록=추가/빨강=빼야 함" 안내 삭제 (반복 노이즈) */}
                                   {p.reasoning && <div style={{marginTop:3,fontSize:10,color:T.textMuted,fontStyle:"italic"}}>💬 {p.reasoning}</div>}
                                 </div>
                               </div>
@@ -2651,7 +2657,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         <div style={{borderBottom:`1px solid ${T.border}`,paddingBottom:8,marginBottom:10}}>
           <div style={{fontSize:15,fontWeight:700,color:T.text,lineHeight:1.4}}>
             📘 {[m.subject, m.grade, (m.level?m.level+"반":"반")].filter(Boolean).join(" ")} · {m.examType}
-            {m.teacher && <span style={{fontSize:12,fontWeight:600,color:T.goldDark,marginLeft:6}}>(👤 {m.teacher})</span>}
+            {safeTeacher(m.teacher) && <span style={{fontSize:12,fontWeight:600,color:T.goldDark,marginLeft:6}}>(👤 {safeTeacher(m.teacher)})</span>}
           </div>
           <div style={{fontSize:11,color:T.textMuted,marginTop:3}}>
             🗓 {g.dates.length}회 응시 · 학생 {g.studentRows.length}명 · 기간 {g.dates[0]} ~ {g.dates[g.dates.length-1]}
