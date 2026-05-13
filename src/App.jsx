@@ -9,6 +9,18 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.17: Top 7 PDF 오답노트 다운로드 (Phase 7-B)
+//   v23.17 변경점 (2026-05-13):
+//   - StatsTab 카드에 "🔥 Top 7 오답" 버튼 추가 (반별·기간 누적 모두)
+//   - downloadTop7Pdf() 헬퍼: view_answer_key로 explanations 조회 → 인쇄용 HTML 생성
+//   - 영어: 문제 본문 + 풀이 + 선택지별 분석 + 자주 하는 실수
+//   - 수학: 문항번호·풀이만 (원본 시험지 별도 안내)
+// ★ v23.16: 보강 시험 현황 탭 추가 + Top 7 통계 (Phase 5+7)
+//   v23.16 변경점 (2026-05-13):
+//   - 새 탭 "📚 보강 현황" — 학생 약점 미니 시험 진행 추적
+//   - MiniExamProgressTab 컴포넌트: 반별 표 + 자동 새로고침 + 필터 + 비활성 일괄푸시
+//   - GAS list_mini_exam_progress 호출 (v24.11)
+//   - StatsTab의 Top 5 → Top 7 (GAS 사이드 통계 버그도 함께 수정)
 // ★ v23.15: 문제 생성 — 시험 등록과 100% 동일 UI + 막대바 추가 축소
 //   v23.15 변경점 (2026-05-12):
 //   - 레벨/학교: LV_CATS 다중선택 (시험 등록과 동일) — 여러 학교 한 번에 등록 가능
@@ -2138,6 +2150,84 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       alert("팝업이 차단되었어요. 주소창의 팝업 차단을 해제해 주세요.");
     }
   };
+  // ★ v23.17: Top 7 어려운 문항 PDF (오답노트 인쇄용)
+  //   - 영어: 텍스트 기반 오답노트 (학생들이 자주 틀린 7문항 + 풀이 + 선택지 분석)
+  //   - 수학: Top 7 문항번호 안내 + 학원에서 원본 시험지 첨부
+  //   GAS view_answer_key 호출하여 explanations(choiceExplanations + gradingGuide) 수집
+  const downloadTop7Pdf = async (c)=>{
+    if(!c.hardest||c.hardest.length===0){alert("어려운 문항 데이터가 없어요. (응시 인원 5명 이상부터 집계됩니다)");return;}
+    // explanations 조회
+    let explanations={};
+    try{
+      const sp=new URLSearchParams({action:"view_answer_key"});
+      if(c.folderId)sp.set("folderId",c.folderId);
+      else{
+        sp.set("subject",c.subject||"");
+        sp.set("grade",c.grade||"");
+        sp.set("level",c.level||"");
+        sp.set("examType",c.examType||"");
+        if(c.teacher)sp.set("teacher",c.teacher);
+        if(c.date)sp.set("date",c.date);
+      }
+      const rr=await fetch(`${sheetsUrl}?${sp.toString()}`);
+      const dd=await rr.json();
+      if(dd.result==="ok"&&dd.explanations)explanations=dd.explanations;
+    }catch(_e){}
+    const isMath=(c.subject||"").indexOf("수학")>=0;
+    const esc=(s)=>String(s||"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[m]));
+    const lines=[];
+    lines.push('<!DOCTYPE html><html><head><meta charset="utf-8"><title>오답노트 Top '+c.hardest.length+'</title>');
+    lines.push('<style>body{font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif;color:#333;padding:0;margin:0;font-size:11pt;line-height:1.6}.page{max-width:680px;margin:0 auto;padding:24pt}.cover{text-align:center;padding:40pt 20pt;border-bottom:3px solid #B8860B;margin-bottom:24pt}.cover h1{font-size:24pt;color:#5D4037;margin-bottom:8pt}.cover .sub{font-size:13pt;color:#8D6E63;margin-bottom:4pt}.cover .meta{font-size:11pt;color:#999;margin-top:14pt}.q{margin-bottom:24pt;page-break-inside:avoid;border:1.5pt solid #B8860B;border-radius:6pt;padding:14pt;background:#FFFEF7}.qHead{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1pt dashed #E0C97A;padding-bottom:6pt;margin-bottom:10pt}.qNum{font-size:14pt;font-weight:800;color:#B8860B}.qStat{font-size:10pt;color:#C62828;font-weight:600}.qBody{font-size:11pt;color:#333;margin-bottom:10pt;white-space:pre-wrap}.qExp{background:#E3F2FD;border-left:3pt solid #1976D2;padding:8pt 10pt;border-radius:4pt;font-size:10.5pt;color:#0D47A1;margin-bottom:8pt}.ce{margin-top:6pt}.ce-row{padding:5pt 8pt;margin-bottom:3pt;border-radius:4pt;font-size:10pt;border:0.5pt solid #ccc}.ce-correct{background:#E8F5E9;border-color:#4CAF50}.ce-wrong{background:#FFEBEE;border-color:#C62828}.foot{margin-top:24pt;padding:10pt;text-align:center;font-size:9pt;color:#999;border-top:1pt solid #ccc}.math-note{background:#FFF3E0;border:1.5pt solid #E65100;padding:14pt;border-radius:6pt;margin-bottom:14pt;font-size:11pt;color:#5D4037;line-height:1.7}@media print{.q{page-break-inside:avoid}}</style></head><body><div class="page">');
+    lines.push('<div class="cover"><h1>🔥 어려운 문항 Top '+c.hardest.length+'</h1>');
+    lines.push('<div class="sub">'+esc(c.subject||"")+' '+esc(c.grade||"")+' '+esc(c.level||"")+'반 · '+esc(c.examType||"")+'</div>');
+    lines.push('<div class="sub">'+esc(c.teacher||"")+' 선생님</div>');
+    lines.push('<div class="meta">시험일: '+esc(c.date||"")+' · 응시 '+(c.total||0)+'명</div>');
+    lines.push('<div class="meta" style="margin-top:8pt;font-weight:600;color:#666">학생들이 자주 틀린 문항만 모은 오답노트입니다.<br/>다시 풀어보고 풀이를 확인하세요!</div></div>');
+    if(isMath){
+      lines.push('<div class="math-note">📌 <b>수학 시험 안내</b><br/>수학 문제는 그래프·도형이 포함될 수 있어 원본 시험지를 함께 확인하세요.<br/>아래 문항번호와 풀이를 보고 원본 시험지에서 해당 문제를 다시 풀어보세요.</div>');
+    }
+    c.hardest.forEach((h,hi)=>{
+      const qe=explanations[String(h.q)]||{};
+      lines.push('<div class="q"><div class="qHead"><span class="qNum">'+(hi+1)+'위. '+h.q+'번</span><span class="qStat">'+h.wrong+'명 틀림 ('+h.pct+'%)</span></div>');
+      // 영어: 문제 본문 + 풀이 + 선택지별 분석
+      if(qe.question){
+        lines.push('<div class="qBody"><b>📝 문제:</b> '+esc(qe.question)+'</div>');
+      }
+      if(qe.answer){
+        lines.push('<div style="font-size:10.5pt;color:#388E3C;margin-bottom:8pt"><b>✅ 정답:</b> '+esc(qe.answer)+'</div>');
+      }
+      if(qe.explanation){
+        lines.push('<div class="qExp"><b>💡 풀이:</b> '+esc(qe.explanation)+'</div>');
+      }
+      if(qe.choiceExplanations&&Object.keys(qe.choiceExplanations).length>0){
+        lines.push('<div class="ce"><b style="font-size:10pt;color:#666">📋 선택지별 분석:</b>');
+        for(let n=1;n<=5;n++){
+          const ce=qe.choiceExplanations[String(n)]||qe.choiceExplanations[n];
+          if(!ce)continue;
+          const isCorrect=String(qe.answer)===String(n);
+          const tag=isCorrect?"✅ 정답":"";
+          lines.push('<div class="ce-row '+(isCorrect?'ce-correct':'')+'"><b>'+["①","②","③","④","⑤"][n-1]+' '+tag+'</b> '+esc(ce)+'</div>');
+        }
+        lines.push('</div>');
+      }
+      if(qe.gradingGuide){
+        const gg=qe.gradingGuide;
+        if(gg.commonMistakes&&gg.commonMistakes.length>0){
+          lines.push('<div style="background:#FFF8E1;border-left:3pt solid #F57C00;padding:6pt 10pt;border-radius:4pt;font-size:10pt;color:#5D4037;margin-top:6pt"><b>⚠️ 자주 하는 실수:</b> '+gg.commonMistakes.map(esc).join(", ")+'</div>');
+        }
+      }
+      if(!qe.question&&!qe.explanation){
+        lines.push('<div class="qBody" style="color:#999;font-style:italic">풀이 데이터가 등록되지 않은 문항입니다. (선생님께 풀이를 받아 적어주세요)</div>');
+      }
+      lines.push('</div>');
+    });
+    lines.push('<div class="foot">채움학원 자동 채점 시스템 · '+new Date().toLocaleString("ko-KR")+'</div>');
+    lines.push('</div></body></html>');
+    const html=lines.join("\n");
+    const w=window.open("","_blank");
+    if(w){w.document.open();w.document.write(html);w.document.close();}
+    else alert("팝업이 차단되었어요. 주소창의 팝업 차단을 해제해 주세요.");
+  };
   // ★ v22.8: 시험지/답지 파일 모달
   const [fileModalOpen, setFileModalOpen] = useState(false);
   const [fileModalLoading, setFileModalLoading] = useState(false);
@@ -2451,11 +2541,12 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
             ))}
           </div>
         </div>}
-        {/* 액션 — ★ v22.8: Word/CSV 다운로드 + 시험지/답지 파일 모달 */}
+        {/* 액션 — ★ v22.8: Word/CSV 다운로드 + 시험지/답지 파일 모달 / v23.17: Top 7 오답노트 */}
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-          <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.goldDark}} title="새 탭에서 인쇄용 페이지 열기 (PDF 저장 / Word 복사 가능)">📄 인쇄·PDF</button>
-          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:80,background:T.accent}} title="CSV 다운로드 (Excel에서 바로 열기)">📊 CSV(엑셀)</button>
-          <button onClick={()=>openFileModal(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.blue,color:T.white,cursor:"pointer"}} title="시험지/답지 파일 보기">📁 시험지·답지</button>
+          <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:T.goldDark}} title="새 탭에서 인쇄용 페이지 열기 (PDF 저장 / Word 복사 가능)">📄 인쇄·PDF</button>
+          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:80,background:T.accent}} title="CSV 다운로드 (Excel에서 바로 열기)">📊 CSV(엑셀)</button>
+          <button onClick={()=>downloadTop7Pdf(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:"#E65100",color:T.white}} disabled={!c.hardest||c.hardest.length===0} title="학생들이 자주 틀린 Top 7 문항 풀이 PDF (오답노트 인쇄용)">🔥 Top 7 오답</button>
+          <button onClick={()=>openFileModal(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:T.blue,color:T.white,cursor:"pointer"}} title="시험지/답지 파일 보기">📁 시험지·답지</button>
         </div>
       </div>
     );
@@ -2572,6 +2663,16 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         </div>}
         <div style={{display:"flex",gap:6}}>
           <button onClick={csvDownload} style={{...S.btn,flex:1,fontSize:12}}>📥 누적 엑셀 다운로드</button>
+          {/* ★ v23.17: 기간 누적 — Top 7 오답노트 (가장 최신 시험 explanations 기준) */}
+          <button onClick={()=>{
+            // 가장 최신 시험의 hardest + meta 합쳐 카드 객체로 변환
+            const synth={
+              subject:m.subject,grade:m.grade,level:m.level,examType:m.examType,
+              teacher:m.teacher,date:(g.dates&&g.dates.length>0?g.dates[g.dates.length-1]:""),
+              hardest:g.hardest,total:g.classCount*5,folderId:""
+            };
+            downloadTop7Pdf(synth);
+          }} style={{...S.btn,flex:1,fontSize:12,background:"#E65100",color:T.white}} disabled={!g.hardest||g.hardest.length===0} title="기간 누적 Top 7 오답노트 (가장 최신 시험의 풀이 데이터 기준)">🔥 Top 7 오답</button>
         </div>
       </div>
     );
@@ -2762,6 +2863,215 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
    DB 연결 후 재구현 예정.
    이전 코드는 git history 에서 확인 가능.
 */
+/* ═══════════════════════════════════════════════════════════
+   📚 보강 시험 현황 탭 (v23.16) — 학생 약점 보강 미니 시험 진행 추적
+   ═══════════════════════════════════════════════════════════
+   - GAS `list_mini_exam_progress` 액션 호출 (v24.11)
+   - 반별 학생 진행 표 (학생 / 본시험 / 약점영역 / 상태 / 점수 / 마감일)
+   - 일괄 푸시 / 부모 알림 버튼 — 비활성 (C-ONE 통합 후 활성화 예정)
+   ═══════════════════════════════════════════════════════════ */
+function MiniExamProgressTab({sheetsUrl, T, S, teacherList, currentTeacher}) {
+  const [items, setItems] = useState([]);
+  const [summary, setSummary] = useState({total:0, waiting:0, completed:0, missed:0, avgScore:0});
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [filterClass, setFilterClass] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const [filterStatus, setFilterStatus] = useState("all"); // all | waiting | completed | missed
+
+  const load = useCallback(async () => {
+    setLoading(true); setErr("");
+    try {
+      const params = new URLSearchParams({action: "list_mini_exam_progress"});
+      if (filterClass) params.set("className", filterClass);
+      if (filterDate) params.set("date", filterDate);
+      const r = await fetch(`${sheetsUrl}?${params.toString()}`);
+      const j = await r.json();
+      if (j.result === "ok") {
+        setItems(j.items || []);
+        setSummary(j.summary || {total:0, waiting:0, completed:0, missed:0, avgScore:0});
+      } else {
+        setErr(j.message || "조회 실패");
+      }
+    } catch(e) {
+      setErr("네트워크 오류: " + String(e));
+    }
+    setLoading(false);
+  }, [filterClass, filterDate, sheetsUrl]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // 30초마다 자동 새로고침
+  useEffect(() => {
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  // 반 목록 추출 (필터 옵션)
+  const classOptions = useMemo(() => {
+    const set = new Set();
+    items.forEach(it => { if (it.className) set.add(it.className); });
+    return Array.from(set).sort();
+  }, [items]);
+
+  // 상태별 필터링
+  const filtered = useMemo(() => {
+    if (filterStatus === "all") return items;
+    if (filterStatus === "waiting") return items.filter(it => it.status === "대기");
+    if (filterStatus === "completed") return items.filter(it => it.status === "완료");
+    if (filterStatus === "missed") return items.filter(it => it.status === "미완료");
+    return items;
+  }, [items, filterStatus]);
+
+  // 반별 그룹화
+  const grouped = useMemo(() => {
+    const m = {};
+    filtered.forEach(it => {
+      const k = it.className || "(반 미지정)";
+      if (!m[k]) m[k] = [];
+      m[k].push(it);
+    });
+    return Object.keys(m).sort().map(k => ({className: k, students: m[k]}));
+  }, [filtered]);
+
+  const statusColor = (it) => {
+    if (it.status === "완료") return T.accent;
+    if (it.status === "미완료") return T.danger;
+    if (it.daysLeft != null && it.daysLeft <= 1) return T.danger;
+    if (it.daysLeft != null && it.daysLeft <= 3) return T.goldDark;
+    return T.textSub;
+  };
+  const statusIcon = (it) => {
+    if (it.status === "완료") return "✅";
+    if (it.status === "미완료") return "❌";
+    if (it.daysLeft != null && it.daysLeft <= 1) return "🔥";
+    if (it.daysLeft != null && it.daysLeft <= 3) return "⏰";
+    return "⏳";
+  };
+
+  return (
+    <div style={S.wrap} className="fade-up">
+      <div style={{textAlign:"center", padding:"20px 0 12px"}}>
+        <div style={{fontSize:36, marginBottom:4}}>📚</div>
+        <h1 style={{fontSize:24, fontWeight:800, color:T.text}}>보강 시험 현황</h1>
+        <p style={{fontSize:13, color:T.textMuted}}>학생 약점 영역 자동 보강 — 진행 상태 추적 (30초마다 자동 갱신)</p>
+      </div>
+
+      {/* 요약 KPI */}
+      <div style={{display:"grid", gridTemplateColumns:"repeat(4, 1fr)", gap:8, marginBottom:14}}>
+        {[
+          {label:"📚 전체", value:summary.total, color:T.goldDark},
+          {label:"⏳ 대기", value:summary.waiting, color:T.goldDark},
+          {label:"✅ 완료", value:summary.completed, color:T.accent},
+          {label:"📊 평균", value:summary.avgScore + "점", color:T.blue}
+        ].map((kpi, i) => (
+          <div key={i} style={{padding:"12px 14px", background:T.goldPale, borderRadius:8, textAlign:"center", borderBottom:`3px solid ${kpi.color}`}}>
+            <div style={{fontSize:22, fontWeight:800, color:kpi.color, lineHeight:1}}>{kpi.value}</div>
+            <div style={{fontSize:11, color:T.textSub, marginTop:4, fontWeight:600}}>{kpi.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* 필터 + 새로고침 */}
+      <div style={{...S.card, padding:"12px 14px", marginBottom:12}}>
+        <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
+          <select value={filterClass} onChange={e => setFilterClass(e.target.value)} style={{...S.inp, flex:"1 1 140px", maxWidth:200, padding:"6px 8px", fontSize:12}}>
+            <option value="">전체 반</option>
+            {classOptions.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} style={{...S.inp, flex:"0 0 auto", padding:"6px 8px", fontSize:12}} />
+          <div style={{display:"flex", gap:4}}>
+            {[
+              {k:"all", label:"전체"},
+              {k:"waiting", label:"⏳ 대기"},
+              {k:"completed", label:"✅ 완료"},
+              {k:"missed", label:"❌ 미완료"}
+            ].map(o => (
+              <button key={o.k} onClick={() => setFilterStatus(o.k)}
+                style={{padding:"6px 10px", fontSize:11, fontWeight:filterStatus===o.k?700:500, borderRadius:6, border:`1px solid ${filterStatus===o.k?T.goldDark:T.border}`, background:filterStatus===o.k?T.goldLight:T.white, color:filterStatus===o.k?T.goldDark:T.textSub, cursor:"pointer", fontFamily:"inherit"}}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+          <button onClick={load} disabled={loading} style={{...S.btnO, padding:"6px 12px", fontSize:11, marginLeft:"auto"}}>
+            {loading ? "🔄 로딩 중..." : "🔄 새로고침"}
+          </button>
+        </div>
+      </div>
+
+      {/* 비활성 — C-ONE 통합 후 활성화 */}
+      <div style={{...S.card, padding:"12px 14px", background:"#FAFAFA", border:`1px dashed ${T.border}`, marginBottom:12}}>
+        <div style={{fontSize:12, fontWeight:700, color:T.textMuted, marginBottom:6}}>🚧 C-ONE 통합 후 활성화 예정</div>
+        <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+          <button disabled style={{padding:"6px 12px", fontSize:11, fontWeight:600, borderRadius:6, border:`1px solid ${T.border}`, background:T.borderLight, color:T.textMuted, cursor:"not-allowed", fontFamily:"inherit"}}>
+            📲 미완료 학생에게 일괄 푸시
+          </button>
+          <button disabled style={{padding:"6px 12px", fontSize:11, fontWeight:600, borderRadius:6, border:`1px solid ${T.border}`, background:T.borderLight, color:T.textMuted, cursor:"not-allowed", fontFamily:"inherit"}}>
+            👨‍👩‍👧 부모 알림 발송
+          </button>
+          <button disabled style={{padding:"6px 12px", fontSize:11, fontWeight:600, borderRadius:6, border:`1px solid ${T.border}`, background:T.borderLight, color:T.textMuted, cursor:"not-allowed", fontFamily:"inherit"}}>
+            📊 학생별 누적 분석
+          </button>
+        </div>
+        <div style={{marginTop:6, fontSize:10, color:T.textMuted}}>
+          현재는 데스크 쌤이 직접 학생에게 안내. C-ONE 통합 시 학부모 DB 연결 + 카카오 알림톡·푸시 자동화 예정.
+        </div>
+      </div>
+
+      {loading && <div style={{textAlign:"center", padding:40, color:T.textMuted}}>로딩 중...</div>}
+      {err && <div style={{padding:14, background:T.dangerLight, color:T.danger, borderRadius:10, fontSize:13, fontWeight:600, textAlign:"center", marginBottom:12}}>⚠️ {err}</div>}
+
+      {!loading && filtered.length === 0 && (
+        <div style={{padding:40, textAlign:"center", color:T.textMuted, background:T.bg, borderRadius:10}}>
+          <div style={{fontSize:48, marginBottom:8}}>📭</div>
+          <p style={{fontSize:14}}>{filterStatus === "all" ? "보강 시험 추천 이력이 없습니다." : "해당 상태의 보강 시험이 없습니다."}</p>
+          <p style={{fontSize:11, marginTop:6, color:T.textMuted}}>학생이 시험을 보고 약점이 발견되면 자동 추천돼요.</p>
+        </div>
+      )}
+
+      {!loading && grouped.map(g => (
+        <div key={g.className} style={{marginBottom:14}}>
+          <div style={{display:"flex", alignItems:"center", gap:8, padding:"8px 12px", background:T.goldPale, borderRadius:8, marginBottom:8}}>
+            <span style={{fontSize:14, fontWeight:800, color:T.goldDark}}>🇬🇧 {g.className}</span>
+            <span style={{marginLeft:"auto", fontSize:11, color:T.textSub, fontWeight:600}}>
+              {g.students.length}건 · 대기 {g.students.filter(s=>s.status==="대기").length} · 완료 {g.students.filter(s=>s.status==="완료").length}
+            </span>
+          </div>
+          {/* 학생 표 */}
+          <div style={{background:T.white, border:`1px solid ${T.borderLight}`, borderRadius:8, overflow:"hidden"}}>
+            <div style={{display:"flex", padding:"8px 12px", background:T.bg, fontSize:11, fontWeight:700, color:T.textSub, gap:8}}>
+              <span style={{flex:"0 0 70px"}}>학생</span>
+              <span style={{flex:"1 1 auto"}}>약점 / 본 시험</span>
+              <span style={{flex:"0 0 60px", textAlign:"center"}}>마감</span>
+              <span style={{flex:"0 0 60px", textAlign:"center"}}>점수</span>
+              <span style={{flex:"0 0 70px", textAlign:"center"}}>상태</span>
+            </div>
+            {g.students.map((it, i) => (
+              <div key={i} style={{display:"flex", padding:"8px 12px", borderTop:`1px solid ${T.borderLight}`, fontSize:12, gap:8, alignItems:"center"}}>
+                <span style={{flex:"0 0 70px", fontWeight:700, color:T.text}}>{it.studentName}</span>
+                <span style={{flex:"1 1 auto", color:T.textSub, fontSize:11}}>
+                  <strong style={{color:statusColor(it)}}>{it.weakArea}</strong>
+                  <br/>
+                  <span style={{color:T.textMuted, fontSize:10}}>{it.examType} · {it.examDate}</span>
+                </span>
+                <span style={{flex:"0 0 60px", textAlign:"center", fontSize:11, color:it.daysLeft<=1?T.danger:it.daysLeft<=3?T.goldDark:T.textSub, fontWeight:600}}>
+                  {it.daysLeft != null ? (it.daysLeft >= 0 ? `D-${it.daysLeft}` : `D+${-it.daysLeft}`) : "-"}
+                </span>
+                <span style={{flex:"0 0 60px", textAlign:"center", fontWeight:700, color:it.score!=null?(it.score>=80?T.accent:it.score>=60?T.goldDark:T.danger):T.textMuted}}>
+                  {it.score != null ? `${it.score}점` : "-"}
+                </span>
+                <span style={{flex:"0 0 70px", textAlign:"center", fontWeight:700, color:statusColor(it)}}>
+                  {statusIcon(it)} {it.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ═══ 선생님 관리 탭 — 카테고리별(관리자/국어/영어/수학) CRUD ═══ */
 function TeachersTab({sheetsUrl, T, S, onChanged}){
   // ★ v12.2: 폼 단순화 — 이름만 입력, 과목/슬랙ID/비고 제거
@@ -4535,12 +4845,14 @@ export default function App(){
   // (loadDashboard, schStatus, 대시보드 useEffect는 DashboardTab 컴포넌트 내부로 이동됨)
   const reset=()=>{setScreen("home");setTs("");setTg("");setTl("");setTcl("");setTlCat("level");setTlMulti([]);setTcount("");setClasses([]);setExamType("시험");setExamFiles([]);setAnswerFiles([]);setRounds([{label:"",examFiles:[],answerFiles:[],totalQ:30,startNum:1,endNum:30}]);setSameExam(true);setClassRounds({});setMemo("");setAnswers([]);setTypes([]);setSubAns({});setDone(false);setError("");setTotalQ(50);setCustomQ("");setStartNum(1);setSubjMode("auto");setSubjRanges("");setObjRanges("");setAiResults([]);setAiRunning(false);setAiTasks([]);setGradingMode("strict");setGradingModeAuto(true);
     const d=new Date();setExamDate(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`);setExamTime(`${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`);};
-  // ★ v23.4: 탭 메타 정보 (사이드바 + 모바일 하단탭 공유)
+  // ★ v23.16: 탭 메타 정보 (사이드바 + 모바일 하단탭 공유)
+  //   ★ v23.16: "보강 시험 현황" 탭 신규 — 학생 약점 보강 미니 시험 진행 추적
   const _navTabs = [
     {k:"register",  label:"시험 등록",   icon:"📋", section:"main"},
     {k:"dashboard", label:"오늘의 현황", icon:"📊", section:"main"},
     {k:"stats",     label:"반별 성적",   icon:"📈", section:"main"},
-    {k:"generator", label:"문제 생성",   icon:"📚", section:"tools"},
+    {k:"miniexam",  label:"보강 현황",   icon:"📚", section:"main"},
+    {k:"generator", label:"문제 생성",   icon:"✨", section:"tools"},
     {k:"teachers",  label:"선생님 관리", icon:"👥", section:"tools"}
   ];
   return(
@@ -4638,6 +4950,8 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
       {/* ★ v23.1: 일괄 프린트 탭 제거 — 오늘의 현황의 "파일 일괄 다운로드" 버튼으로 대체 */}
       {/* ═══ 반별 성적 탭 (v20.4) ═══ */}
       {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
+      {/* ★ v23.16: 보강 시험 현황 탭 (Phase 5) */}
+      {screen==="home"&&tab==="miniexam"&&(<MiniExamProgressTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} currentTeacher={teacher}/>)}
       {/* ═══ 문제 생성기 탭 (v23.10: 큐 예약 + 모니터링 + 자동 등록) ═══ */}
       {screen==="home"&&tab==="generator"&&(<GeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} currentTeacher={teacher}/>)}
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
