@@ -2755,10 +2755,10 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         </div>}
         {/* 액션 — ★ v22.8: Word/CSV 다운로드 + 시험지/답지 파일 모달 / v23.17: Top 7 오답노트 */}
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-          <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:T.goldDark}} title="새 탭에서 인쇄용 페이지 열기 (PDF 저장 / Word 복사 가능)">📄 인쇄·PDF</button>
-          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:80,background:T.accent}} title="CSV 다운로드 (Excel에서 바로 열기)">📊 CSV(엑셀)</button>
-          <button onClick={()=>downloadTop7Pdf(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:"#E65100",color:T.white}} title="학생들이 자주 틀린 Top 7 문항 풀이 PDF (오답노트 인쇄용 · 1명이라도 응시했으면 OK)">🔥 Top 7 오답</button>
-          <button onClick={()=>openFileModal(c)} style={{...S.btn,flex:"1 1 22%",fontSize:12,minWidth:90,background:T.blue,color:T.white,cursor:"pointer"}} title="시험지/답지 파일 보기">📁 시험지·답지</button>
+          <button onClick={()=>downloadWord(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.goldDark}} title="새 탭에서 인쇄용 페이지 열기 (PDF 저장 / Word 복사 가능)">📄 인쇄·PDF</button>
+          <button onClick={()=>downloadCsv(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:80,background:T.accent}} title="CSV 다운로드 (Excel에서 바로 열기)">📊 CSV(엑셀)</button>
+          {/* ★ v23.25 (2026-05-13): Top 7 오답 버튼 폐기 (사용자 요청) */}
+          <button onClick={()=>openFileModal(c)} style={{...S.btn,flex:"1 1 30%",fontSize:12,minWidth:90,background:T.blue,color:T.white,cursor:"pointer"}} title="시험지/답지 파일 보기">📁 시험지·답지</button>
         </div>
       </div>
     );
@@ -2875,26 +2875,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         </div>}
         <div style={{display:"flex",gap:6}}>
           <button onClick={csvDownload} style={{...S.btn,flex:1,fontSize:12}}>📥 누적 엑셀 다운로드</button>
-          {/* ★ v23.18: 기간 누적 — Top 7 오답노트 (학생 개인 데이터 fallback) */}
-          <button onClick={()=>{
-            // 학생별 wrongs 누적해서 pseudo-students 생성
-            const pseudoStudents = (g.studentRows || []).map(s => {
-              const allWrongs = [];
-              if (s.wrongs) {
-                Object.values(s.wrongs).forEach(arr => {
-                  if (Array.isArray(arr)) allWrongs.push(...arr);
-                });
-              }
-              return {name: s.name, wrongQs: allWrongs};
-            });
-            const synth={
-              subject:m.subject,grade:m.grade,level:m.level,examType:m.examType,
-              teacher:m.teacher,date:(g.dates&&g.dates.length>0?g.dates[g.dates.length-1]:""),
-              hardest:g.hardest,total:g.classCount*5,folderId:"",
-              students: pseudoStudents
-            };
-            downloadTop7Pdf(synth);
-          }} style={{...S.btn,flex:1,fontSize:12,background:"#E65100",color:T.white}} title="기간 누적 Top 7 오답노트">🔥 Top 7 오답</button>
+          {/* ★ v23.25 (2026-05-13): Top 7 오답 버튼 폐기 (사용자 요청 — 개인 성적표·반별 PDF에 AI 풀이로 대체 예정) */}
         </div>
       </div>
     );
@@ -5174,7 +5155,7 @@ export default function App(){
     {k:"register",  label:"시험 등록",   icon:"📋", section:"main"},
     {k:"dashboard", label:"오늘의 현황", icon:"📊", section:"main"},
     {k:"stats",     label:"반별 성적",   icon:"📈", section:"main"},
-    {k:"miniexam",  label:"보강 현황",   icon:"📚", section:"main"},
+    // ★ v23.25 (2026-05-13): 보강 현황 탭 제거 (반별 성적 학생 행에 통합 예정)
     {k:"generator", label:"문제 생성",   icon:"✨", section:"tools"},
     {k:"teachers",  label:"선생님 관리", icon:"👥", section:"tools"}
   ];
@@ -5273,8 +5254,7 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
       {/* ★ v23.1: 일괄 프린트 탭 제거 — 오늘의 현황의 "파일 일괄 다운로드" 버튼으로 대체 */}
       {/* ═══ 반별 성적 탭 (v20.4) ═══ */}
       {screen==="home"&&tab==="stats"&&(<StatsTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} proxyDownload={proxyDownload} proxyPreview={proxyPreview}/>)}
-      {/* ★ v23.16: 보강 시험 현황 탭 (Phase 5) */}
-      {screen==="home"&&tab==="miniexam"&&(<MiniExamProgressTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} currentTeacher={teacher}/>)}
+      {/* ★ v23.25 (2026-05-13): 보강 현황 탭 제거 — 반별 성적에 통합 예정 (MiniExamProgressTab 컴포넌트는 그대로 유지, 라우팅만 제거) */}
       {/* ═══ 문제 생성기 탭 (v23.10: 큐 예약 + 모니터링 + 자동 등록) ═══ */}
       {screen==="home"&&tab==="generator"&&(<GeneratorTab sheetsUrl={SHEETS_URL} T={T} S={S} teacherList={teacherList} currentTeacher={teacher}/>)}
       {/* ═══ 홈: 시험 정보 설정 ═══ */}
