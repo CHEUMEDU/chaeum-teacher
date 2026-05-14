@@ -1877,7 +1877,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const load = useCallback(async()=>{
     setLoading(true);
     try{
-      const params = new URLSearchParams({action:"class_grades"});
+      // ★ v23.28 (2026-05-13): light=1 — reasoning 등 무거운 필드 제거 (응답 70% 감소)
+      const params = new URLSearchParams({action:"class_grades", light:"1"});
       if(dateMode==="single"){
         if(date) params.set("date", date);
       } else {
@@ -2519,9 +2520,11 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   // ★ v23.3: 학생 1명용 PDF — 인쇄용 새 탭 (반 PDF와 동일 양식, 단일 학생)
   const downloadStudentPdf = async (c, s)=>{
     // ★ v23.27 (2026-05-13): AI 풀이 + 영역별 약점 분석 추가
+    // ★ v23.28 (2026-05-13): 자동 생성 fallback — explanations/categories 없으면 즉시 생성
     const esc = (str)=>String(str||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-    // explanations + categories 자동 조회 (없으면 빈 객체)
     let explanations = {}, categories = {};
+    let resolvedFid = c.folderId || "";
+    // 1) view_answer_key 조회
     try {
       const sp = new URLSearchParams({action:"view_answer_key"});
       if (c.folderId) sp.set("folderId", c.folderId);
@@ -2536,8 +2539,57 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       if (d.result==="ok") {
         if (d.explanations) explanations = d.explanations;
         if (d.categories) categories = d.categories;
+        if (d.meta && d.meta.folderId && !resolvedFid) resolvedFid = d.meta.folderId;
       }
     } catch(_e) {}
+    // 2) 학생 오답 문항 중 explanations 없는 것 → 자동 생성 (사용자 확인 후)
+    const wrongQs = (s.perQuestion||[]).filter(p=>p.type==="obj"&&p.verdict==="오답").map(p=>p.q);
+    const missing = wrongQs.filter(q => {
+      const qe = explanations[String(q)] || {};
+      return !qe.explanation && !qe.choiceExplanations;
+    });
+    if (missing.length > 0 && resolvedFid) {
+      if (window.confirm(`📝 학생 ${s.name||""} 의 오답 ${wrongQs.length}개 중 ${missing.length}개의 AI 풀이가 없어요.\n\n자동 생성할까요? (10~30초)\n\n[확인] = AI 자동 생성 (다음번부터 즉시)\n[취소] = AI 풀이 없이 PDF 만들기`)) {
+        try {
+          const body = {
+            action: "generate_explanations",
+            questionNumbers: missing.slice(0, 20),
+            folderId: resolvedFid,
+            subject: c.subject||"",
+            grade: c.grade||""
+          };
+          // ★ v23.28: text/plain 으로 CORS preflight 우회
+          const rsp = await fetch(sheetsUrl, {
+            method:"POST",
+            headers:{"Content-Type":"text/plain;charset=utf-8"},
+            body:JSON.stringify(body)
+          });
+          const rd = await rsp.json();
+          if (rd.result === "ok" && rd.explanations) {
+            Object.keys(rd.explanations).forEach(k => {
+              explanations[k] = {...(explanations[k]||{}), ...rd.explanations[k]};
+            });
+          } else {
+            alert("⚠️ 풀이 생성 실패 (PDF 는 계속 생성됩니다): " + (rd.message||""));
+          }
+        } catch(eGen) {
+          alert("⚠️ 풀이 생성 네트워크 오류 (PDF 는 계속 생성됩니다): " + String(eGen).slice(0,100));
+        }
+      }
+    }
+    // 3) 카테고리도 없으면 자동 생성
+    if (Object.keys(categories).length === 0 && resolvedFid) {
+      try {
+        const body2 = { action: "analyze_exam_categories", folderId: resolvedFid };
+        const rsp2 = await fetch(sheetsUrl, {
+          method:"POST",
+          headers:{"Content-Type":"text/plain;charset=utf-8"},
+          body:JSON.stringify(body2)
+        });
+        const rd2 = await rsp2.json();
+        if (rd2.result === "ok" && rd2.categories) categories = rd2.categories;
+      } catch(_eC) {}
+    }
     // 영역별 정답률 (약점·강점 자동 산출)
     const catStats = {};
     (s.perQuestion||[]).forEach(p => {
