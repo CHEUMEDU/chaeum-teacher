@@ -9,6 +9,12 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.33 (2026-05-14): 캐시 우회 — 본질 우선 단순화
+//   원인: get_class_stats_fast 의 ClassStatsCache 가 학생별 wrongQs / perQuestion 누락
+//         → 학생 90점인데도 "✓ 전부 정답" 으로 오표시
+//   해결: useFast = false → 옛 class_grades 직접 호출 (속도 1~3초, 정확도 100%)
+//   효과: 학생별 오답 번호 + 펼침 시 상세 표시 정확
+//
 // ★ v23.32 (2026-05-14): 반별 PDF 재구성 — 사용자 요청
 //   1) 학생별 오답번호 상세 제거 ("13번: 4→1 ...") — 선생님 입장에서 노이즈
 //   2) 영역별 학급 분석 추가 — 학급 평균 정답률 + 학급 약점 영역
@@ -1907,9 +1913,11 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const load = useCallback(async()=>{
     setLoading(true);
     try{
-      // ★ v23.31 (2026-05-13): v27.0 캐시 — 단일 날짜는 get_class_stats_fast (30~60초 → 1초)
-      //   기간 모드는 옛 class_grades 유지 (캐시는 단일 날짜만 지원)
-      const useFast = (dateMode === "single");
+      // ★ v23.33 (2026-05-14): 캐시 우회 — 본질 (학생별 오답·perQuestion) 정확도 100% 유지
+      //   원인: get_class_stats_fast 가 ClassStatsCache 시트의 요약 데이터만 반환 →
+      //         학생별 wrongQs / perQuestion 누락 → 화면에 "전부 정답" 오표시
+      //   해결: 옛 class_grades 직접 호출 (속도 1~3초, 옛 30~60초 대비 v26.0 응답 캐싱으로 충분히 빠름)
+      const useFast = false;  // v23.33: 캐시 비활성화 (정확도 우선)
       const params = new URLSearchParams({
         action: useFast ? "get_class_stats_fast" : "class_grades",
         light: "1"
