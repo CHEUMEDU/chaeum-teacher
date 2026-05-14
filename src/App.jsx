@@ -9,6 +9,9 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.31 (2026-05-13): v27.0 캐시 기반 호출
+//   StatsTab 단일 날짜 모드 → get_class_stats_fast (30~60초 → 1초)
+//   캐시 미스 시 옛 class_grades 자동 폴백
 // ★ v23.30 (2026-05-13): Phase 3 — 업로드 95% 안전성 달성
 //   1) preflightCheckFiles: 사전 검사 (파일 크기·PDF 손상·온라인·금지 문자)
 //      - 20MB 초과 → 차단 + 압축 안내
@@ -1897,8 +1900,13 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   const load = useCallback(async()=>{
     setLoading(true);
     try{
-      // ★ v23.28 (2026-05-13): light=1 — reasoning 등 무거운 필드 제거 (응답 70% 감소)
-      const params = new URLSearchParams({action:"class_grades", light:"1"});
+      // ★ v23.31 (2026-05-13): v27.0 캐시 — 단일 날짜는 get_class_stats_fast (30~60초 → 1초)
+      //   기간 모드는 옛 class_grades 유지 (캐시는 단일 날짜만 지원)
+      const useFast = (dateMode === "single");
+      const params = new URLSearchParams({
+        action: useFast ? "get_class_stats_fast" : "class_grades",
+        light: "1"
+      });
       if(dateMode==="single"){
         if(date) params.set("date", date);
       } else {
@@ -1910,6 +1918,18 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       if(grade) params.set("grade", grade);
       const r = await fetch(`${sheetsUrl}?${params.toString()}`);
       const j = await r.json();
+      // ★ v23.31: 캐시 응답이 비어있으면 폴백으로 옛 class_grades 호출
+      if (useFast && j.result === "error" && /캐시/.test(j.message||"")) {
+        console.warn("[ClassStats] 캐시 비어있음 → class_grades 폴백");
+        const fbParams = new URLSearchParams({action:"class_grades", light:"1"});
+        if(date) fbParams.set("date", date);
+        if(subject) fbParams.set("subject", subject);
+        if(teacher) fbParams.set("teacher", teacher);
+        if(grade) fbParams.set("grade", grade);
+        const fbR = await fetch(`${sheetsUrl}?${fbParams.toString()}`);
+        const fbJ = await fbR.json();
+        Object.assign(j, fbJ);
+      }
       setClasses(j.classes || []);
     }catch(e){ setClasses([]); }
     setLoading(false);
