@@ -9,6 +9,15 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.29 (2026-05-13): 시험 파일 업로드 안정화 (치명 버그 픽스)
+//   ★ 기존 mode:"no-cors" 제거 — 응답을 못 받아서 실패해도 "성공"으로 표시되던 버그 차단
+//   ★ Content-Type: text/plain;charset=utf-8 (CORS preflight 우회)
+//   ★ uploadExamSafely 헬퍼: 응답 확인 + 자동 재시도 3회 (1.5초·3초 간격)
+//   ★ 실패 시 명확한 alert: 실패한 반/파일 목록 + 해결 방법
+//   ★ 부분 실패 (일부 파일만 실패) 도 명시 — 어느 파일 다시 올려야 할지 안내
+//   원인: 폴더만 만들어지고 파일 X 케이스의 진짜 원인
+//        - 클라이언트가 응답 못 받음 → 사용자는 "완료" 화면 봄 → 실제로는 실패
+// ★ v23.28 (2026-05-13): PDF 자동 explanations 생성 fallback
 // ★ v23.27 (2026-05-13): Phase 2 — 개인 성적표 + 반별 PDF에 AI 풀이·영역별 분석 + AI 검수 인라인
 //   - downloadStudentPdf: 영역별 강점·약점 표 + 객관식 오답마다 AI 풀이·선택지 분석
 //   - ReviewListModal: singleRowIndex prop 추가 (자동 선택)
@@ -5029,6 +5038,33 @@ export default function App(){
   const hSub=useCallback((i,v)=>{setSubAns(p=>({...p,[i]:v}));setAnswers(p=>{const n=[...p];n[i]=v;return n;});},[]);
   const _isFilled=a=>{if(a===null||a===undefined||a==="")return false;if(Array.isArray(a))return a.length>0;return true;};
   const filled=answers.filter(a=>_isFilled(a)).length;
+  // ★ v23.29 (2026-05-13): 업로드 안전 호출 — mode:"no-cors" 제거 + text/plain + 재시도 3회
+  //   원인: 기존 mode:"no-cors" 라 응답을 못 받음 → 실패해도 "성공"으로 보임 → 폴더만 만들어지고 파일 X
+  //   해결: 응답을 받아서 result === "success" 확인 + failedFiles 검사 + 자동 재시도 3회
+  //   반환: { ok: boolean, result, failedFiles, allTried }
+  const uploadExamSafely = async (payload, retries = 3) => {
+    let lastErr = null;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        // text/plain 으로 CORS preflight 우회 + 응답 받기 가능
+        const r = await fetch(SHEETS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(payload)
+        });
+        const d = await r.json();
+        if (d.result === "success") {
+          return { ok: true, ...d, attempt };
+        }
+        lastErr = d.message || "알 수 없는 오류";
+        if (attempt < retries) await new Promise(rs => setTimeout(rs, 1500 * attempt));
+      } catch (e) {
+        lastErr = String(e);
+        if (attempt < retries) await new Promise(rs => setTimeout(rs, 1500 * attempt));
+      }
+    }
+    return { ok: false, error: lastErr, allTried: retries };
+  };
   // 직접입력 저장
   const saveDirect=async()=>{
     if(saving)return; // ★ 중복 제출 방지: 이미 저장 중이면 무시
@@ -5044,13 +5080,22 @@ export default function App(){
         await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
           body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:"",round:"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum,gradingMode})});
       }
-      // 2) 파일(시험지/정답지)이 있으면 Drive에도 업로드 — 반별 개별 업로드
+      // ★ v23.29 (2026-05-13): 안전 업로드 — 응답 받기 + 재시도 + 실패 명확 알림
       if(examFiles.length>0||answerFiles.length>0){
         const aData=await Promise.all(answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+        const uploadResults = [];
         for(const cls of classes){
-          await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:"",round:"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData,gradingMode})});
+          const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:"",round:"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData,gradingMode});
+          uploadResults.push({className: cls.name, ...result});
+        }
+        // 실패 확인 + 알림
+        const failed = uploadResults.filter(r => !r.ok);
+        const partialFailed = uploadResults.filter(r => r.ok && r.failedFiles && r.failedFiles.length > 0);
+        if (failed.length > 0) {
+          alert(`⚠️ 업로드 실패\n\n${failed.map(f => `• ${f.className}: ${f.error||""}`).join("\n")}\n\n[다시 시도] 버튼을 누르거나 페이지 새로고침 후 재업로드 해주세요.\n파일이 매우 크면 (10MB+) 분할 업로드 권장.`);
+        } else if (partialFailed.length > 0) {
+          alert(`⚠️ 일부 파일 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}\n\n실패한 파일만 다시 업로드해주세요.`);
         }
       }
       setDone(true);setScreen("done");
@@ -5077,12 +5122,14 @@ export default function App(){
       setSaving(true);setError("");
       try{
         const aiTasks=[]; // [v21.0] AI 검수 호출용 (반×round)
+        const uploadResults=[]; // ★ v23.29: 업로드 결과 추적
         for(const rd of active){
           const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           for(const cls of classes){
-            await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode})});
+            // ★ v23.29: 안전 업로드 (응답 + 재시도 3회)
+            const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode});
+            uploadResults.push({className: cls.name, label: rd.label||"", ...result});
             // [v21.0] AI 검수 task 등록 (첫 답지 1개 사용)
             if(rd.answerFiles[0]){
               aiTasks.push({
@@ -5093,10 +5140,18 @@ export default function App(){
             }
           }
         }
+        // ★ v23.29: 실패·부분실패 알림
+        const failed = uploadResults.filter(r => !r.ok);
+        const partialFailed = uploadResults.filter(r => r.ok && r.failedFiles && r.failedFiles.length > 0);
+        if (failed.length > 0) {
+          alert(`⚠️ 업로드 실패 (재시도 후에도 실패)\n\n${failed.map(f => `• ${f.className}${f.label?` (${f.label})`:""}: ${f.error||""}`).join("\n")}\n\n페이지 새로고침 후 다시 시도해주세요. 파일이 크면 (10MB+) 분할 권장.`);
+        } else if (partialFailed.length > 0) {
+          alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
+        }
         setDone(true);setScreen("done");
         // [v21.0] AI 자동 검수 — done 화면 표시 후 백그라운드 실행
         if(aiTasks.length>0) runAiExtractTasks(aiTasks);
-      }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
+      }catch(e){setError("업로드 실패. 다시 시도해주세요. (" + String(e).slice(0,100) + ")");}
       setSaving(false);
     }else{
       // ── 반별 다른 시험지: classRounds 사용 ──
@@ -5110,13 +5165,15 @@ export default function App(){
       setSaving(true);setError("");
       try{
         const aiTasks=[];
+        const uploadResults=[];
         for(const cls of classes){
           const cRds=(classRounds[cls.name]||[]).filter(r=>r.answerFiles.length>0||r.examFiles.length>0);
           for(const rd of cRds){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
-            await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode})});
+            // ★ v23.29: 안전 업로드
+            const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode});
+            uploadResults.push({className: cls.name, label: rd.label||"", ...result});
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
@@ -5126,9 +5183,17 @@ export default function App(){
             }
           }
         }
+        // ★ v23.29: 실패 알림
+        const failed = uploadResults.filter(r => !r.ok);
+        const partialFailed = uploadResults.filter(r => r.ok && r.failedFiles && r.failedFiles.length > 0);
+        if (failed.length > 0) {
+          alert(`⚠️ 업로드 실패 (재시도 후에도 실패)\n\n${failed.map(f => `• ${f.className}${f.label?` (${f.label})`:""}: ${f.error||""}`).join("\n")}`);
+        } else if (partialFailed.length > 0) {
+          alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
+        }
         setDone(true);setScreen("done");
         if(aiTasks.length>0) runAiExtractTasks(aiTasks);
-      }catch(e){setError("업로드 실패. 다시 시도해주세요.");}
+      }catch(e){setError("업로드 실패. 다시 시도해주세요. (" + String(e).slice(0,100) + ")");}
       setSaving(false);
     }
   };
