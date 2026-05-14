@@ -9,6 +9,13 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.32 (2026-05-14): 반별 PDF 재구성 — 사용자 요청
+//   1) 학생별 오답번호 상세 제거 ("13번: 4→1 ...") — 선생님 입장에서 노이즈
+//   2) 영역별 학급 분석 추가 — 학급 평균 정답률 + 학급 약점 영역
+//   3) 학생별 약점 영역 표시 — 정답률 80% 미만 카테고리 최대 3개
+//   4) 주관식 답안 상세는 유지 (AI 채점 사유는 의미 있음)
+//   필요: downloadWord 가 async 로 변경 — view_answer_key 호출하여 categories 조회
+//
 // ★ v23.31 (2026-05-13): v27.0 캐시 기반 호출
 //   StatsTab 단일 날짜 모드 → get_class_stats_fast (30~60초 → 1초)
 //   캐시 미스 시 옛 class_grades 자동 폴백
@@ -2122,8 +2129,59 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
   };
   // ★ v23.0: 성적표 보기·인쇄 — 새 탭에서 깔끔한 인쇄용 페이지 (Ctrl+P → PDF/인쇄, Word 복사 가능)
   // 기존 HTML→Word(.doc) 방식은 Word 365 보안 정책으로 "손상된 파일" 오류 → 새 탭 인쇄 방식으로 교체
-  const downloadWord = (c)=>{
+  // ★ v23.32 (2026-05-14): 학생별 오답번호 제거 + 영역별 학급/학생 분석 추가
+  //   - 변경 전: 학생마다 "13번:4→1 17번:5→1..." 식 오답 나열 (선생님 입장에서 노이즈)
+  //   - 변경 후: 영역별 학급 정답률 + 학생별 약점 영역 표시 (피드백 자료)
+  const downloadWord = async (c)=>{
     const esc = (s)=>String(s||"").replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    // ★ v23.32: 카테고리 데이터 fetch — 영역별 정답률 계산용
+    //   서버에서 view_answer_key 호출 → categories: {"1":"문법","2":"어휘",...} 받기
+    let categories = null;
+    try {
+      const params = new URLSearchParams({ action: "view_answer_key" });
+      if (c.folderId) params.set("folderId", c.folderId);
+      else {
+        if (c.subject) params.set("subject", c.subject);
+        if (c.grade) params.set("grade", c.grade);
+        if (c.level) params.set("level", c.level);
+        if (c.examType) params.set("examType", c.examType);
+      }
+      const r = await fetch(`${SHEETS_URL}?${params.toString()}`);
+      const d = await r.json();
+      if (d && d.result === "ok" && d.categories && typeof d.categories === "object") categories = d.categories;
+    } catch(_e){}
+    // 숫자만 있는 카테고리는 의미 없음 — 제외
+    const isBadCat = (cat) => {
+      if (!cat) return true;
+      const s = String(cat).trim();
+      if (s === "" || s === "null" || s === "undefined") return true;
+      if (/^-?\d+$/.test(s)) return true;
+      return false;
+    };
+    // 영역별 통계 계산 (학급 전체 + 학생별)
+    const classCatStats = {};   // { catName: { correct, total } }
+    const studentCatStats = {}; // { studentName: { catName: { correct, total } } }
+    (c.students||[]).forEach(s => {
+      const sName = s.name || "?";
+      studentCatStats[sName] = {};
+      (s.perQuestion||[]).forEach(p => {
+        const cat = categories ? (categories[String(p.q)] || categories[p.q]) : null;
+        if (!cat || isBadCat(cat)) return;
+        if (!classCatStats[cat]) classCatStats[cat] = { correct: 0, total: 0 };
+        classCatStats[cat].total++;
+        if (p.verdict === "정답") classCatStats[cat].correct++;
+        else if (p.verdict === "부분정답") classCatStats[cat].correct += 0.5;
+        if (!studentCatStats[sName][cat]) studentCatStats[sName][cat] = { correct: 0, total: 0 };
+        studentCatStats[sName][cat].total++;
+        if (p.verdict === "정답") studentCatStats[sName][cat].correct++;
+        else if (p.verdict === "부분정답") studentCatStats[sName][cat].correct += 0.5;
+      });
+    });
+    const categoryList = Object.keys(classCatStats).map(name => {
+      const s = classCatStats[name];
+      return { name, correct: s.correct, total: s.total, pct: s.total>0 ? Math.round((s.correct/s.total)*100) : 0 };
+    }).sort((a,b)=>a.pct - b.pct); // 약한 순서대로
+    const hasCategory = categoryList.length > 0;
     const lines = [];
     lines.push('<!DOCTYPE html><html lang="ko"><head>');
     lines.push('<meta charset="utf-8">');
@@ -2182,22 +2240,51 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       lines.push(`<tr><td style="text-align:center">${s.rank}</td><td>${esc(s.name||"?")}</td><td class="${cls}" style="text-align:center">${s.score}점</td><td style="font-size:10pt">${esc(note)}</td></tr>`);
     });
     lines.push('</tbody></table>');
-    const wrongStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답").length>0);
-    if (wrongStudents.length>0) {
-      lines.push('<h2>📝 틀린 문항 상세</h2>');
-      wrongStudents.forEach(s=>{
-        const wrongP = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답");
-        const objWrongs = wrongP.filter(p=>p.type==="obj");
-        const subWrongs = wrongP.filter(p=>p.type==="sub");
+    // ★ v23.32 (2026-05-14): 학생별 오답번호 상세 제거 (선생님 입장에서 노이즈) — 영역별 통계로 대체
+    //   하단 "주관식 답안 상세" 는 유지 (개별 채점 사유는 의미 있음)
+    if (hasCategory) {
+      lines.push('<h2>📊 영역별 학급 분석</h2>');
+      lines.push('<table><thead><tr><th style="width:140pt">영역</th><th style="width:80pt">학급 평균</th><th style="width:120pt">맞은 학생/총 응시</th><th>난이도</th></tr></thead><tbody>');
+      categoryList.forEach(cat => {
+        const diffLabel = cat.pct >= 80 ? "😊 쉬움" : cat.pct >= 60 ? "🤔 보통" : "😣 어려움";
+        const cls = cat.pct >= 80 ? "score-high" : cat.pct >= 60 ? "score-mid" : "score-low";
+        lines.push(`<tr><td><b>${esc(cat.name)}</b></td><td class="${cls}" style="text-align:center">${cat.pct}%</td><td style="text-align:center">${cat.correct.toFixed(1)} / ${cat.total}</td><td>${diffLabel}</td></tr>`);
+      });
+      lines.push('</tbody></table>');
+      // 학급 약점 요약
+      const weakClass = categoryList.filter(cat => cat.pct < 70);
+      if (weakClass.length > 0) {
+        lines.push(`<div style="margin:8pt 0;padding:8pt 12pt;background:#FFEBEE;border-left:3pt solid #C62828;border-radius:4pt;font-size:11pt"><b>🚨 학급 약점 영역:</b> ${weakClass.map(c=>`${esc(c.name)} (${c.pct}%)`).join(" · ")}<br/><span style="font-size:10pt;color:#5C5C5C">이 영역은 다음 보강 시험·수업에서 집중적으로 다루는 것이 좋아요.</span></div>`);
+      }
+      lines.push('<h2>👤 학생별 약점 영역 (정답률 80% 미만, 최대 3개)</h2>');
+      lines.push('<table><thead><tr><th style="width:80pt">학생</th><th style="width:60pt">점수</th><th>약점 영역</th><th style="width:200pt">강점 영역</th></tr></thead><tbody>');
+      (c.students||[]).forEach(s => {
+        const sName = s.name || "?";
+        const sStats = studentCatStats[sName] || {};
+        const sList = Object.keys(sStats).map(name => {
+          const v = sStats[name];
+          return { name, correct: v.correct, total: v.total, pct: v.total>0 ? Math.round((v.correct/v.total)*100) : 0 };
+        });
+        const weak = sList.filter(c=>c.total>=1 && c.pct<80).sort((a,b)=>a.pct-b.pct).slice(0,3);
+        const strong = sList.filter(c=>c.total>=1 && c.pct>=80).sort((a,b)=>b.pct-a.pct).slice(0,2);
+        const cls = s.score>=90?"score-high":s.score>=70?"score-mid":"score-low";
+        const weakStr = weak.length>0 ? weak.map(w=>`<span class="q-obj-item">${esc(w.name)} ${w.pct}%</span>`).join(" ") : "<span style=\"color:#2E7D32\">✓ 약점 없음</span>";
+        const strongStr = strong.length>0 ? strong.map(w=>`${esc(w.name)} ${w.pct}%`).join(" · ") : "-";
+        lines.push(`<tr><td><b>${esc(sName)}</b></td><td class="${cls}" style="text-align:center">${s.score}점</td><td style="font-size:10pt">${weakStr}</td><td style="font-size:10pt;color:#5C5C5C">${strongStr}</td></tr>`);
+      });
+      lines.push('</tbody></table>');
+    } else {
+      // 카테고리 데이터 없음 안내
+      lines.push(`<div style="margin:14pt 0;padding:10pt 14pt;background:#FFF8E1;border-left:3pt solid #FB8C00;border-radius:4pt;font-size:11pt;color:#5C5C5C"><b>📊 영역별 분석 데이터 없음</b><br/>이 시험은 카테고리 분석이 아직 안 됐어요. GAS 에디터에서 <code>rebuildCategoriesForExam("${esc(c.folderId||"")}")</code> 실행 후 다시 인쇄하세요.</div>`);
+    }
+    // 주관식 답안 상세 (반드시 필요 — 개별 채점 사유 확인용)
+    const subWrongStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
+    if (subWrongStudents.length > 0) {
+      lines.push('<h2>📝 주관식 답안 상세 (오답·부분점수)</h2>');
+      subWrongStudents.forEach(s=>{
+        const subWrongs = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
         lines.push(`<div class="student-block">`);
-        lines.push(`<div class="student-head">#${s.rank} ${esc(s.name||"?")} — ${s.score}점</div>`);
-        if (objWrongs.length>0) {
-          lines.push(`<div class="q-list"><span class="q-label">❌ 객관식 오답 ${objWrongs.length}개:</span><br/>`);
-          objWrongs.forEach(p=>{
-            lines.push(`<span class="q-obj-item">${p.q}번: ${esc(p.studentAns||"빈칸")} → <b>${esc(p.correctAns||"-")}</b></span>`);
-          });
-          lines.push(`</div>`);
-        }
+        lines.push(`<div class="student-head">${esc(s.name||"?")} — ${s.score}점</div>`);
         subWrongs.forEach(p=>{
           const isWrong = p.verdict==="오답";
           lines.push(`<div class="q-sub-item${isWrong?" q-sub-wrong":""}">`);
