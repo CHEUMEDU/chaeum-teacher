@@ -9,6 +9,11 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.39 (2026-05-15): Drive 검증 파일명 정규화 + 차단을 확인 모달로 완화
+//   - 원인: v23.38 의 fn === name 정확 일치 매칭이 너무 엄격 → 정상 업로드도 false-positive 차단
+//   - 해결: NFC 정규화 + 소문자 + trim 후 비교 → 한글 인코딩·확장자 대소문자 차이 흡수
+//   - 차단 → 사용자 확인 모달 (드라이브 동기화 지연·실제 누락 둘 다 대응)
+//
 // ★ v23.38 (2026-05-15): Drive 실제 저장 확인 후에만 완료/AI검수 진행
 //   - upload_exam 응답만 믿지 않고 list_folder_files 로 Drive 폴더를 다시 조회
 //   - 기대 파일명이 실제 폴더에 없으면 등록 완료 화면/AI검수 진행 차단
@@ -5235,19 +5240,31 @@ export default function App(){
   };
 
   // 업로드 후 검증 — Drive 에서 파일 다시 조회해서 실제 저장됐는지 확인
+  // ★ v23.39 (2026-05-15): 파일명 정규화 비교로 완화 (정상 업로드도 차단되는 false-positive 픽스)
+  //   원인: 기존 `fn === name` 정확 일치는 한글 NFC/NFD, 대소문자 (.PDF/.pdf), 공백 미세 차이로 실패
+  //   해결: NFC 정규화 + 소문자 + trim 후 비교 — 의미 동일한 파일명은 매칭
   const verifyUploadOnDrive = async (folderId, expectedFiles) => {
     if (!folderId) return { ok: false, error: "folderId 없음 — Drive 저장 확인 불가" };
+    const _norm = (s) => {
+      try { return String(s||"").normalize("NFC").trim().toLowerCase(); }
+      catch(_e) { return String(s||"").trim().toLowerCase(); }
+    };
     try {
       const r = await fetch(`${SHEETS_URL}?action=list_folder_files&folderId=${encodeURIComponent(folderId)}`);
       const d = await r.json();
       if (d.result !== "ok") return { ok: false, error: d.message };
-      const found = (d.files || []).map(f => f.name);
-      const missing = expectedFiles.filter(name => !found.some(fn => fn === name));
+      const foundRaw = (d.files || []).map(f => f.name);
+      const foundNorm = foundRaw.map(_norm);
+      const missing = expectedFiles.filter(name => {
+        const normName = _norm(name);
+        return !foundNorm.some(fn => fn === normName);
+      });
       return {
         ok: missing.length === 0,
-        found: found.length,
+        found: foundRaw.length,
         expected: expectedFiles.length,
-        missing
+        missing,
+        foundNames: foundRaw  // 디버깅용 — 실제 Drive 파일명 확인 가능
       };
     } catch (e) {
       return { ok: false, error: String(e) };
@@ -5454,13 +5471,17 @@ export default function App(){
         }
         const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
         if (driveFailures.length > 0) {
+          // ★ v23.39 (2026-05-15): 차단 → 사용자 확인 (정상 업로드 false-positive 차단 방지)
+          //   파일명 정규화 후에도 안 맞으면 — 실제로 파일 다른 위치 가능성 vs Drive 동기화 지연
           const msg = driveFailures.map(f => {
-            const miss = f.missing && f.missing.length ? ` 누락: ${f.missing.join(", ")}` : (f.error ? ` 오류: ${f.error}` : ` 실제 ${f.found}/${f.expected}개`);
+            const miss = f.missing && f.missing.length ? `\n    누락: ${f.missing.join(", ")}` : (f.error ? `\n    오류: ${f.error}` : `\n    실제 ${f.found}/${f.expected}개`);
             return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
           }).join("\n");
-          alert(`🚨 Drive 저장 확인 실패 — 등록 차단\n\n${msg}\n\nGoogle Drive에서 실제 파일을 다시 찾지 못했습니다.\n새로고침 후 다시 업로드해주세요.`);
-          setSaving(false);
-          return;
+          const proceed = confirm(`⚠️ Drive 저장 확인 결과 — 일부 누락 가능성\n\n${msg}\n\n원인 후보:\n- 파일명 인코딩 미세 차이 (한글 NFC/NFD)\n- Drive 동기화 일시 지연\n- 진짜 누락\n\n[확인] = 그대로 진행 (Drive 에서 직접 확인 권장)\n[취소] = 등록 중단 + 새로고침 후 재시도`);
+          if (!proceed) {
+            setSaving(false);
+            return;
+          }
         }
         uploadResults.forEach(r=>{ if(r.ok) uploadByClass[r.className]=r; });
       }
@@ -5543,13 +5564,17 @@ export default function App(){
         }
         const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
         if (driveFailures.length > 0) {
+          // ★ v23.39 (2026-05-15): 차단 → 사용자 확인 (정상 업로드 false-positive 차단 방지)
+          //   파일명 정규화 후에도 안 맞으면 — 실제로 파일 다른 위치 가능성 vs Drive 동기화 지연
           const msg = driveFailures.map(f => {
-            const miss = f.missing && f.missing.length ? ` 누락: ${f.missing.join(", ")}` : (f.error ? ` 오류: ${f.error}` : ` 실제 ${f.found}/${f.expected}개`);
+            const miss = f.missing && f.missing.length ? `\n    누락: ${f.missing.join(", ")}` : (f.error ? `\n    오류: ${f.error}` : `\n    실제 ${f.found}/${f.expected}개`);
             return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
           }).join("\n");
-          alert(`🚨 Drive 저장 확인 실패 — 등록 차단\n\n${msg}\n\nGoogle Drive에서 실제 파일을 다시 찾지 못했습니다.\n새로고침 후 다시 업로드해주세요.`);
-          setSaving(false);
-          return;
+          const proceed = confirm(`⚠️ Drive 저장 확인 결과 — 일부 누락 가능성\n\n${msg}\n\n원인 후보:\n- 파일명 인코딩 미세 차이 (한글 NFC/NFD)\n- Drive 동기화 일시 지연\n- 진짜 누락\n\n[확인] = 그대로 진행 (Drive 에서 직접 확인 권장)\n[취소] = 등록 중단 + 새로고침 후 재시도`);
+          if (!proceed) {
+            setSaving(false);
+            return;
+          }
         }
         setDone(true);setScreen("done");
         // [v21.0] AI 자동 검수 — done 화면 표시 후 백그라운드 실행
@@ -5616,13 +5641,17 @@ export default function App(){
         }
         const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
         if (driveFailures.length > 0) {
+          // ★ v23.39 (2026-05-15): 차단 → 사용자 확인 (정상 업로드 false-positive 차단 방지)
+          //   파일명 정규화 후에도 안 맞으면 — 실제로 파일 다른 위치 가능성 vs Drive 동기화 지연
           const msg = driveFailures.map(f => {
-            const miss = f.missing && f.missing.length ? ` 누락: ${f.missing.join(", ")}` : (f.error ? ` 오류: ${f.error}` : ` 실제 ${f.found}/${f.expected}개`);
+            const miss = f.missing && f.missing.length ? `\n    누락: ${f.missing.join(", ")}` : (f.error ? `\n    오류: ${f.error}` : `\n    실제 ${f.found}/${f.expected}개`);
             return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
           }).join("\n");
-          alert(`🚨 Drive 저장 확인 실패 — 등록 차단\n\n${msg}\n\nGoogle Drive에서 실제 파일을 다시 찾지 못했습니다.\n새로고침 후 다시 업로드해주세요.`);
-          setSaving(false);
-          return;
+          const proceed = confirm(`⚠️ Drive 저장 확인 결과 — 일부 누락 가능성\n\n${msg}\n\n원인 후보:\n- 파일명 인코딩 미세 차이 (한글 NFC/NFD)\n- Drive 동기화 일시 지연\n- 진짜 누락\n\n[확인] = 그대로 진행 (Drive 에서 직접 확인 권장)\n[취소] = 등록 중단 + 새로고침 후 재시도`);
+          if (!proceed) {
+            setSaving(false);
+            return;
+          }
         }
         setDone(true);setScreen("done");
         if(aiTasks.length>0) runAiExtractTasks(aiTasks);
