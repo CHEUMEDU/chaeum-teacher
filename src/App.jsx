@@ -9,6 +9,12 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.36 (2026-05-15): 업로드/등록 안정화
+//   - 분할 업로드 append 파일의 MIME type 보존 (type 을 answer/exam 으로 덮어쓰지 않음)
+//   - GAS 가 반환한 folderId 를 우선 사용해 append 폴더 추적 안정화
+//   - 반별 다른 시험지 분기에서도 누락/실패 시 등록 완료로 넘어가지 않게 차단
+//   - 직접입력+파일 업로드는 업로드 성공 후 정답목록 저장, folderId 함께 기록
+//
 // ★ v23.33 (2026-05-14): 캐시 우회 — 본질 우선 단순화
 //   원인: get_class_stats_fast 의 ClassStatsCache 가 학생별 wrongQs / perQuestion 누락
 //         → 학생 90점인데도 "✓ 전부 정답" 으로 오표시
@@ -5281,16 +5287,19 @@ export default function App(){
       if (!r1.ok) return r1;
       firstResult = r1;
       const folderUrl = r1.folderUrl || "";
-      const folderId = (folderUrl.match(/folders\/([^?]+)/) || [])[1] || "";
+      const folderId = r1.folderId || (folderUrl.match(/folders\/([^?]+)/) || [])[1] || "";
+      if (!folderId) {
+        return { ok: false, error: "업로드 폴더ID를 받지 못했습니다. GAS 최신 버전 배포를 확인해주세요.", allTried: 1 };
+      }
       if (r1.failedFiles) allFailedFiles.push(...r1.failedFiles);
       if (r1.files) allSavedFiles.push(...r1.files);  // ★ v23.34: 첫 호출 저장 파일
       // 2) 나머지 파일 — 같은 폴더에 추가 (_appendFolderId 사용)
       const remaining = [
-        ...restAnswers.map(f => ({...f, type: "answer"})),
-        ...restExams.map(f => ({...f, type: "exam"}))
+        ...restAnswers.map(f => ({...f, uploadKind: "answer"})),
+        ...restExams.map(f => ({...f, uploadKind: "exam"}))
       ];
       for (const file of remaining) {
-        const isAns = file.type === "answer";
+        const isAns = file.uploadKind === "answer";
         const restPayload = {
           ...payload,
           _appendFolderId: folderId,
@@ -5374,13 +5383,11 @@ export default function App(){
       const answersSer=answers.map(v=>Array.isArray(v)?v.join(","):v);
       const answersObj=normalizeAnswerData(answersSer);
       const typesObj=normalizeAnswerData(types);
-      // 1) 정답 데이터 시트 저장 (반별) — 시험 구분(setType) 포함
-      for(const cls of classes){
-        await fetch(SHEETS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/json"},
-          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:"",round:"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum,gradingMode})});
-      }
-      // ★ v23.29 (2026-05-13): 안전 업로드 — 응답 받기 + 재시도 + 실패 명확 알림
-      if(examFiles.length>0||answerFiles.length>0){
+      const hasFiles=examFiles.length>0||answerFiles.length>0;
+      const uploadByClass={};
+      // ★ v23.36: 파일이 있으면 먼저 업로드 성공을 검증한 뒤 정답목록 행을 저장
+      //   이전: save_answer_key 를 먼저 저장 → 업로드 실패 시 폴더ID 없는 행이 남을 수 있었음
+      if(hasFiles){
         // ★ v23.30: 사전 검사
         const preCheck = await preflightCheckFiles([...answerFiles, ...examFiles]);
         if (!preCheck.ok) { setSaving(false); return; }
@@ -5414,6 +5421,15 @@ export default function App(){
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}\n\n실패한 파일만 다시 업로드해주세요.`);
         }
+        uploadResults.forEach(r=>{ if(r.ok) uploadByClass[r.className]=r; });
+      }
+      // 정답 데이터 시트 저장 (반별) — 업로드가 있으면 folderId 까지 같이 저장
+      for(const cls of classes){
+        const up=uploadByClass[cls.name]||{};
+        const res=await fetch(SHEETS_URL,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},
+          body:JSON.stringify({action:"save_answer_key",subject:cls.subject,grade:cls.grade,level:cls.level,examType,setType:"",round:"",totalQuestions:qc,answers:answersObj,types:typesObj,teacher,studentCount:cls.count,date:dateStr,className:cls.name,startNumber:startNum,gradingMode,folderId:up.folderId||""})});
+        const d=await res.json();
+        if(!d||d.result!=="success") throw new Error(`${cls.name} 정답 저장 실패: ${(d&&d.message)||"응답 오류"}`);
       }
       setDone(true);setScreen("done");
     }catch(e){setError("저장 실패. 다시 시도해주세요.");}
@@ -5524,11 +5540,24 @@ export default function App(){
             }
           }
         }
-        // ★ v23.29: 실패 알림
+        // ★ v23.36: 실패·부분실패·누락 검증 (같은 시험지 분기와 동일하게 등록 차단)
         const failed = uploadResults.filter(r => !r.ok);
         const partialFailed = uploadResults.filter(r => r.ok && r.failedFiles && r.failedFiles.length > 0);
+        const missingResults = uploadResults.filter(r => r.ok && ((r.missingExam||0) > 0 || (r.missingAnswer||0) > 0));
         if (failed.length > 0) {
-          alert(`⚠️ 업로드 실패 (재시도 후에도 실패)\n\n${failed.map(f => `• ${f.className}${f.label?` (${f.label})`:""}: ${f.error||""}`).join("\n")}`);
+          alert(`🚨 업로드 실패 (재시도 후에도 실패)\n\n${failed.map(f => `• ${f.className}${f.label?` (${f.label})`:""}: ${f.error||""}`).join("\n")}\n\n등록은 진행되지 않았습니다.`);
+          setSaving(false);
+          return;
+        } else if (missingResults.length > 0) {
+          const msg = missingResults.map(r => {
+            var parts = [];
+            if (r.missingExam > 0) parts.push(`시험지 ${r.missingExam}개`);
+            if (r.missingAnswer > 0) parts.push(`정답지 ${r.missingAnswer}개`);
+            return `• ${r.className}${r.label?` (${r.label})`:""}: ${parts.join(" + ")} 누락 (예상 ${r.expectedExamCount + r.expectedAnswerCount}개, 실제 ${r.savedExam + r.savedAnswer}개)`;
+          }).join("\n");
+          alert(`🚨 파일 누락 발견 — 등록 차단\n\n${msg}\n\nGAS 측에서 파일 일부 처리 실패. 다시 업로드해주세요.\n파일이 크면 PDF 압축 후 시도. 등록은 진행되지 않았습니다.`);
+          setSaving(false);
+          return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
         }
@@ -5547,6 +5576,10 @@ export default function App(){
     setAiResults(tasks.map(t=>({label:t.label, status:"pending"})));
     const CHUNK=2; // 4 → 2 로 감소 (Gemini rate limit 여유)
     const allResults=[];
+    // ★ v23.35 (2026-05-15): 첫 mismatch 발견 시 자동으로 인라인 검수 모달 열기
+    //   원인: 사용자가 done 화면을 빨리 떠나서 검수 버튼 못 봄 → 오늘의 현황으로 옮겨졌다고 오해
+    //   해결: mismatch 가 나오는 순간 자동 모달 열기 (사용자가 무조건 봐야 함)
+    let autoOpenedReview = false;
     for(let i=0; i<tasks.length; i+=CHUNK){
       // 첫 청크 아니면 청크 사이 4초 대기 — 분당 한도 회복 시간
       if(i>0) await new Promise(r=>setTimeout(r,4000));
@@ -5563,6 +5596,15 @@ export default function App(){
         chunkResults.forEach((cr,k)=>{ next[i+k]=cr; });
         return next;
       });
+      // ★ v23.35: 첫 mismatch 자동으로 모달 열기 (1회만)
+      if (!autoOpenedReview) {
+        const firstMismatch = chunkResults.find(cr => cr.status === "mismatch" && cr.rowIndex);
+        if (firstMismatch) {
+          autoOpenedReview = true;
+          setInlineReviewRowIndex(firstMismatch.rowIndex);
+          setInlineReviewOpen(true);
+        }
+      }
     }
     setAiRunning(false);
   };
@@ -6227,7 +6269,18 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
               onClose={()=>{setInlineReviewOpen(false);setInlineReviewRowIndex(null);}}
             />
           )}
-          <button style={{...S.btnG,maxWidth:320,margin:"0 auto"}} onClick={reset}>다른 시험 등록하기</button>
+          {/* ★ v23.35 (2026-05-15): mismatch·error 있는 채로 떠나려 하면 경고 */}
+          <button style={{...S.btnG,maxWidth:320,margin:"0 auto"}} onClick={()=>{
+            const pendingCount = aiResults.filter(r=>r.status==="pending").length;
+            const mismatchCount = aiResults.filter(r=>r.status==="mismatch").length;
+            const errorCount = aiResults.filter(r=>r.status==="error").length;
+            if (pendingCount > 0) {
+              if (!confirm(`⏳ AI 검수가 아직 진행 중입니다 (${pendingCount}건).\n\n결과를 기다리지 않고 떠나면 검수 모달이 자동으로 안 뜹니다.\n나중에 "오늘의 현황 → AI 검수 대기" 에서 처리해야 합니다.\n\n그래도 떠나시겠어요?`)) return;
+            } else if (mismatchCount > 0 || errorCount > 0) {
+              if (!confirm(`⚠️ 검수 필요 항목 ${mismatchCount + errorCount}건이 처리되지 않았습니다.\n\n지금 처리 안 하면 "오늘의 현황 → AI 검수 대기" 에서 다시 찾아야 합니다.\n선생님들은 보통 오늘의 현황을 잘 안 보니까 지금 처리 권장.\n\n그래도 떠나시겠어요?`)) return;
+            }
+            reset();
+          }}>다른 시험 등록하기</button>
         </div>
       </div>)}
       {error&&<div style={{position:"fixed",bottom:80,left:"50%",transform:"translateX(-50%)",background:T.dangerLight,color:T.danger,padding:"10px 20px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:999}}>{error}</div>}
