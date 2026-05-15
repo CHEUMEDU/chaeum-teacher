@@ -5254,7 +5254,10 @@ export default function App(){
       return sz;
     };
     const totalSize = calcPayloadSize(payload);
-    const SPLIT_THRESHOLD = 5 * 1024 * 1024;  // 5MB (Base64, 실제 파일 약 3.7MB)
+    // ★ v23.34 (2026-05-15): 5MB → 2MB 로 임계값 낮춤 (GAS timeout 안전망)
+    //   원인: 시험지 PDF (큰 파일) 가 5MB 미만일 때 분할 안 돼서 GAS timeout 시 시험지만 실패
+    //   해결: 2MB 초과 + 파일 2개 이상이면 항상 분할 (안전)
+    const SPLIT_THRESHOLD = 2 * 1024 * 1024;
     // 큰 페이로드 → 파일별 분할 호출
     if (totalSize > SPLIT_THRESHOLD && (payload.answerFiles||[]).length + (payload.examFiles||[]).length > 1) {
       console.log(`[uploadExamSafely] 페이로드 ${(totalSize/1024/1024).toFixed(1)}MB → 파일별 분할 호출`);
@@ -5262,6 +5265,7 @@ export default function App(){
       const allExams = payload.examFiles || [];
       let firstResult = null;
       let allFailedFiles = [];
+      let allSavedFiles = [];  // ★ v23.34: 모든 호출의 저장 파일 합산 (검증용)
       // 첫 번째 파일은 풀 페이로드 (폴더 생성 + 시험정보.txt)
       // 나머지는 _appendToFolder 플래그로 추가 모드
       const firstFile = allAnswers[0] || allExams[0];
@@ -5279,6 +5283,7 @@ export default function App(){
       const folderUrl = r1.folderUrl || "";
       const folderId = (folderUrl.match(/folders\/([^?]+)/) || [])[1] || "";
       if (r1.failedFiles) allFailedFiles.push(...r1.failedFiles);
+      if (r1.files) allSavedFiles.push(...r1.files);  // ★ v23.34: 첫 호출 저장 파일
       // 2) 나머지 파일 — 같은 폴더에 추가 (_appendFolderId 사용)
       const remaining = [
         ...restAnswers.map(f => ({...f, type: "answer"})),
@@ -5295,14 +5300,48 @@ export default function App(){
         const ri = await _uploadOnce(restPayload, retries);
         if (!ri.ok) {
           allFailedFiles.push({ name: file.name, error: ri.error });
-        } else if (ri.failedFiles) {
-          allFailedFiles.push(...ri.failedFiles);
+        } else {
+          if (ri.failedFiles) allFailedFiles.push(...ri.failedFiles);
+          if (ri.files) allSavedFiles.push(...ri.files);  // ★ v23.34: 추가 호출의 저장 파일도 합산
         }
       }
-      return { ...firstResult, failedFiles: allFailedFiles };
+      // ★ v23.34 (2026-05-15): 분할 업로드 후 명시 검증
+      const expectedExamCount = (payload.examFiles||[]).length;
+      const expectedAnswerCount = (payload.answerFiles||[]).length;
+      const savedExam = allSavedFiles.filter(f=>f.type==="exam").length;
+      const savedAnswer = allSavedFiles.filter(f=>f.type==="answer").length;
+      console.log(`[uploadExamSafely] 예상: 시험지 ${expectedExamCount} + 정답지 ${expectedAnswerCount} / 실제 저장: 시험지 ${savedExam} + 정답지 ${savedAnswer}`);
+      return {
+        ...firstResult,
+        files: allSavedFiles,            // ★ v23.34: 분할 호출 전체 파일
+        failedFiles: allFailedFiles,
+        expectedExamCount,
+        expectedAnswerCount,
+        savedExam,
+        savedAnswer,
+        missingExam: expectedExamCount - savedExam,
+        missingAnswer: expectedAnswerCount - savedAnswer
+      };
     }
     // 작은 페이로드 → 일반 호출
-    return await _uploadOnce(payload, retries);
+    const rSingle = await _uploadOnce(payload, retries);
+    // ★ v23.34: 일반 호출도 누락 검증 (시험지·정답지 둘 다 저장됐나)
+    if (rSingle.ok) {
+      const expectedExamCount = (payload.examFiles||[]).length;
+      const expectedAnswerCount = (payload.answerFiles||[]).length;
+      const savedExam = (rSingle.files||[]).filter(f=>f.type==="exam").length;
+      const savedAnswer = (rSingle.files||[]).filter(f=>f.type==="answer").length;
+      return {
+        ...rSingle,
+        expectedExamCount,
+        expectedAnswerCount,
+        savedExam,
+        savedAnswer,
+        missingExam: expectedExamCount - savedExam,
+        missingAnswer: expectedAnswerCount - savedAnswer
+      };
+    }
+    return rSingle;
   };
   // 단일 호출 헬퍼
   const _uploadOnce = async (payload, retries = 3) => {
@@ -5355,8 +5394,23 @@ export default function App(){
         // 실패 확인 + 알림
         const failed = uploadResults.filter(r => !r.ok);
         const partialFailed = uploadResults.filter(r => r.ok && r.failedFiles && r.failedFiles.length > 0);
+        // ★ v23.34 (2026-05-15): 누락 검증 — 예상 vs 실제 저장 파일 수 비교
+        const missingResults = uploadResults.filter(r => r.ok && ((r.missingExam||0) > 0 || (r.missingAnswer||0) > 0));
         if (failed.length > 0) {
-          alert(`⚠️ 업로드 실패\n\n${failed.map(f => `• ${f.className}: ${f.error||""}`).join("\n")}\n\n[다시 시도] 버튼을 누르거나 페이지 새로고침 후 재업로드 해주세요.\n파일이 매우 크면 (10MB+) 분할 업로드 권장.`);
+          alert(`🚨 업로드 실패\n\n${failed.map(f => `• ${f.className}: ${f.error||""}`).join("\n")}\n\n다시 시도해주세요.`);
+          setSaving(false);
+          return;  // ★ 등록 안 함 (실패 시 진행 차단)
+        } else if (missingResults.length > 0) {
+          // ★ v23.34: 누락 파일 발견 — 사용자에게 명확히 알리고 등록 차단
+          const msg = missingResults.map(r => {
+            var parts = [];
+            if (r.missingExam > 0) parts.push(`시험지 ${r.missingExam}개`);
+            if (r.missingAnswer > 0) parts.push(`정답지 ${r.missingAnswer}개`);
+            return `• ${r.className}: ${parts.join(" + ")} 누락 (예상 ${r.expectedExamCount + r.expectedAnswerCount}개, 실제 저장 ${r.savedExam + r.savedAnswer}개)`;
+          }).join("\n");
+          alert(`🚨 파일 누락 발견 — 등록 차단\n\n${msg}\n\n원인: GAS 측에서 일부 파일 처리 실패 (큰 파일·timeout)\n\n해결: 파일을 다시 업로드하세요. 큰 PDF (10MB+) 는 압축 후 시도.\n\n등록은 진행되지 않았습니다.`);
+          setSaving(false);
+          return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}\n\n실패한 파일만 다시 업로드해주세요.`);
         }
@@ -5407,11 +5461,25 @@ export default function App(){
             }
           }
         }
-        // ★ v23.29: 실패·부분실패 알림
+        // ★ v23.34 (2026-05-15): 실패·부분실패·누락 검증
         const failed = uploadResults.filter(r => !r.ok);
         const partialFailed = uploadResults.filter(r => r.ok && r.failedFiles && r.failedFiles.length > 0);
+        const missingResults = uploadResults.filter(r => r.ok && ((r.missingExam||0) > 0 || (r.missingAnswer||0) > 0));
         if (failed.length > 0) {
-          alert(`⚠️ 업로드 실패 (재시도 후에도 실패)\n\n${failed.map(f => `• ${f.className}${f.label?` (${f.label})`:""}: ${f.error||""}`).join("\n")}\n\n페이지 새로고침 후 다시 시도해주세요. 파일이 크면 (10MB+) 분할 권장.`);
+          alert(`🚨 업로드 실패 (재시도 후에도 실패)\n\n${failed.map(f => `• ${f.className}${f.label?` (${f.label})`:""}: ${f.error||""}`).join("\n")}\n\n페이지 새로고침 후 다시 시도해주세요.`);
+          setSaving(false);
+          return;
+        } else if (missingResults.length > 0) {
+          // ★ v23.34: 누락 검증 — 응답 success 인데 실제 저장 파일 수 부족
+          const msg = missingResults.map(r => {
+            var parts = [];
+            if (r.missingExam > 0) parts.push(`시험지 ${r.missingExam}개`);
+            if (r.missingAnswer > 0) parts.push(`정답지 ${r.missingAnswer}개`);
+            return `• ${r.className}${r.label?` (${r.label})`:""}: ${parts.join(" + ")} 누락 (예상 ${r.expectedExamCount + r.expectedAnswerCount}개, 실제 ${r.savedExam + r.savedAnswer}개)`;
+          }).join("\n");
+          alert(`🚨 파일 누락 발견 — 등록 차단\n\n${msg}\n\nGAS 측에서 파일 일부 처리 실패. 다시 업로드해주세요.\n파일이 크면 PDF 압축 후 시도. 등록은 진행되지 않았습니다.`);
+          setSaving(false);
+          return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
         }
