@@ -4,6 +4,10 @@
 // ============================================================
 // 버전 이력
 // ─────────────────────────────────────────
+// v22.8 (2026-05-15) — GPT 비활성 메타 명시 + 답지/시험지 혼동 안전장치
+//   · gpt 결과에 disabled/attempts=0 명시 → GAS 가 Gemini+Claude 2모델 기준으로 판단
+//   · PDF가 정답지가 아니라 시험지로 보이면 answers 를 추측하지 않고 notAnswerKey 오류 반환
+//
 // v22.2 (2026-04-28)  — Node Runtime Express-style 로 전환 (작동 복구)
 //   · 이전 (v22.1): Web API (new Response) 사용 → Node Runtime 에서 빈 응답
 //   · 변경: req/res Express-style 로 변환 → 60초 한도 정상 작동
@@ -15,7 +19,7 @@
 
 export const maxDuration = 60;
 
-const VERSION = "v22.7"; // ★ v22.7: gradingMode 추가 (loose=해석/번역 — 한국어 해석 추출 명시)
+const VERSION = "v22.8"; // ★ v22.8: GPT disabled 메타 + 시험지 오분류 추측 차단
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -83,7 +87,7 @@ export default async function handler(req, res) {
   const settled = await Promise.allSettled(tasks);
   const results = {
     gemini: settled[0].status === 'fulfilled' ? settled[0].value : { error: errMsg(settled[0]) },
-    gpt:    { error: 'GPT 비활성화 (PDF OCR 부정확으로 v22.0에서 코드 삭제)' },
+    gpt:    { error: 'GPT 비활성화 (PDF OCR 부정확으로 v22.0에서 코드 삭제)', disabled: true, attempts: 0 },
     claude: settled[1].status === 'fulfilled' ? settled[1].value : { error: errMsg(settled[1]) }
   };
 
@@ -181,6 +185,7 @@ function buildExtractPrompt(examInfo) {
   ] : [];
   const commonRules = [
     '## 절대 규칙',
+    '0. 먼저 PDF가 정답지인지 확인하세요. 정답표/답안/해설/채점 기준이 없고 학생용 문제만 있으면 절대 추측하지 말고 notAnswerKey:true 를 반환하세요.',
     '1. 절대로 문제를 읽고 답을 추론하지 마세요. 오직 답지에 표기된 정답만 옮기세요.',
     '2. 정답이 보이지 않거나 모호하면 "?" 로 표시하세요. 추측 금지.',
     '3. 객관식 답이 ①②③④⑤ 형태라면 1,2,3,4,5 숫자로 변환하세요.',
@@ -196,9 +201,10 @@ function buildExtractPrompt(examInfo) {
     '8. **문항 수는 PDF가 결정**: 답지에 보이는 모든 문항 번호를 빠짐없이 추출하세요. 답이 안 보이는 번호는 "?"로.',
     '',
     '## 응답 형식 — 반드시 이 JSON만 출력 (마크다운 코드블록 금지)',
-    '{"startNumber": 1, "answers": {"1": "정답", "2": "정답", ...}, "types": {"1": "mc 또는 sa", "2": "mc 또는 sa", ...}, "notes": ""}',
+    '{"startNumber": 1, "answers": {"1": "정답", "2": "정답", ...}, "types": {"1": "mc 또는 sa", "2": "mc 또는 sa", ...}, "notAnswerKey": false, "notes": ""}',
     '',
     '**중요**:',
+    '- 학생용 시험지로 보이면: {"startNumber":1,"answers":{},"types":{},"notAnswerKey":true,"notes":"정답지가 아니라 시험지로 보임"}',
     '- answers 와 types 의 key 는 동일하게, 답지에 표기된 실제 문항 번호 사용',
     '- PDF에 보이는 모든 문항을 빠짐없이 포함 (1번부터 마지막 번호까지)',
     '- startNumber 가 확실치 않으면 1 로 기록',
@@ -298,6 +304,14 @@ function parseModelOutput(model, raw) {
     let answersText = String(raw || '').trim();
     answersText = answersText.replace(/^```(?:json)?\s*/m, '').replace(/```\s*$/m, '').trim();
     const parsed = JSON.parse(answersText);
+    if (parsed.notAnswerKey === true) {
+      return {
+        error: model + ' 판단: 정답지가 아니라 시험지로 보임 — 답 추측 차단',
+        notAnswerKey: true,
+        notes: parsed.notes || '',
+        raw: answersText.substring(0, 1000)
+      };
+    }
     let startNum = parseInt(parsed.startNumber, 10);
     if (!startNum || isNaN(startNum) || startNum < 1) startNum = 1;
     const rawAns = parsed.answers || {};
