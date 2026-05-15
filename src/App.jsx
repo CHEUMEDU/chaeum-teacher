@@ -9,6 +9,26 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.40 (2026-05-15): base64 인코딩 빈 파일 차단 (4중복 사고 방지)
+//   - fileToBase64 결과의 data 길이가 100 byte 미만이면 즉시 등록 차단
+//   - React state 비동기 미반영 / fileToBase64 실패 케이스 모두 잡힘
+//   - GAS 빈 폴더 + AUTO_OK 좀비 행 사고 차단
+//
+// ★ v23.39 (2026-05-15): Drive 검증 파일명 정규화 + 차단을 확인 모달로 완화
+//   - 원인: v23.38 의 fn === name 정확 일치 매칭이 너무 엄격 → 정상 업로드도 false-positive 차단
+//   - 해결: NFC 정규화 + 소문자 + trim 후 비교 → 한글 인코딩·확장자 대소문자 차이 흡수
+//   - 차단 → 사용자 확인 모달 (드라이브 동기화 지연·실제 누락 둘 다 대응)
+//
+// ★ v23.38 (2026-05-15): Drive 실제 저장 확인 후에만 완료/AI검수 진행
+//   - upload_exam 응답만 믿지 않고 list_folder_files 로 Drive 폴더를 다시 조회
+//   - 기대 파일명이 실제 폴더에 없으면 등록 완료 화면/AI검수 진행 차단
+//   - "만장일치인데 Drive/오늘의 현황에 없음" 증상 차단
+//
+// ★ v23.37 (2026-05-15): AI 검수 저장 전 folderId 직접 전달
+//   - upload_exam 성공 결과의 folderId 를 ai_extract_answers 에 직접 전달
+//   - requireFolderId=true 로 저장 단계에서 폴더 연결 실패 시 자동등록 차단
+//   - "AI 만장일치인데 Drive/오늘의 현황에 없음" 상태를 성공처럼 보이지 않게 함
+//
 // ★ v23.36 (2026-05-15): 업로드/등록 안정화
 //   - 분할 업로드 append 파일의 MIME type 보존 (type 을 answer/exam 으로 덮어쓰지 않음)
 //   - GAS 가 반환한 folderId 를 우선 사용해 append 폴더 추적 안정화
@@ -5225,23 +5245,55 @@ export default function App(){
   };
 
   // 업로드 후 검증 — Drive 에서 파일 다시 조회해서 실제 저장됐는지 확인
+  // ★ v23.39 (2026-05-15): 파일명 정규화 비교로 완화 (정상 업로드도 차단되는 false-positive 픽스)
+  //   원인: 기존 `fn === name` 정확 일치는 한글 NFC/NFD, 대소문자 (.PDF/.pdf), 공백 미세 차이로 실패
+  //   해결: NFC 정규화 + 소문자 + trim 후 비교 — 의미 동일한 파일명은 매칭
   const verifyUploadOnDrive = async (folderId, expectedFiles) => {
-    if (!folderId) return { ok: true, note: "folderId 없음 — 검증 skip" };
+    if (!folderId) return { ok: false, error: "folderId 없음 — Drive 저장 확인 불가" };
+    const _norm = (s) => {
+      try { return String(s||"").normalize("NFC").trim().toLowerCase(); }
+      catch(_e) { return String(s||"").trim().toLowerCase(); }
+    };
     try {
       const r = await fetch(`${SHEETS_URL}?action=list_folder_files&folderId=${encodeURIComponent(folderId)}`);
       const d = await r.json();
       if (d.result !== "ok") return { ok: false, error: d.message };
-      const found = (d.files || []).map(f => f.name);
-      const missing = expectedFiles.filter(name => !found.some(fn => fn === name));
+      const foundRaw = (d.files || []).map(f => f.name);
+      const foundNorm = foundRaw.map(_norm);
+      const missing = expectedFiles.filter(name => {
+        const normName = _norm(name);
+        return !foundNorm.some(fn => fn === normName);
+      });
       return {
         ok: missing.length === 0,
-        found: found.length,
+        found: foundRaw.length,
         expected: expectedFiles.length,
-        missing
+        missing,
+        foundNames: foundRaw  // 디버깅용 — 실제 Drive 파일명 확인 가능
       };
     } catch (e) {
       return { ok: false, error: String(e) };
     }
+  };
+
+  const verifyUploadResultsOnDrive = async (uploadResults) => {
+    const failures = [];
+    for (const r of uploadResults) {
+      if (!r || !r.ok) continue;
+      const expected = r.expectedFileNames || [];
+      const v = await verifyUploadOnDrive(r.folderId || "", expected);
+      if (!v.ok) {
+        failures.push({
+          className: r.className || "",
+          label: r.label || "",
+          expected: expected.length,
+          found: v.found || 0,
+          missing: v.missing || [],
+          error: v.error || ""
+        });
+      }
+    }
+    return failures;
   };
 
   // ★ v23.29 (2026-05-13): 업로드 안전 호출 — mode:"no-cors" 제거 + text/plain + 재시도 3회
@@ -5393,10 +5445,19 @@ export default function App(){
         if (!preCheck.ok) { setSaving(false); return; }
         const aData=await Promise.all(answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+        // ★ v23.40 (2026-05-15): base64 인코딩 결과 검증 — 데이터가 빈 파일은 즉시 차단
+        //   원인: fileToBase64 실패 또는 React state 비동기 미반영으로 빈 데이터 전송 → GAS 빈 폴더 + AUTO_OK 사고
+        const _badFiles = [...aData, ...eData].filter(f => !f.data || f.data.length < 100);
+        if (_badFiles.length > 0) {
+          alert(`🚨 파일 인코딩 실패 — 등록 차단\n\n다음 파일 데이터가 비어있습니다:\n${_badFiles.map(f=>`• ${f.name}`).join("\n")}\n\n파일을 다시 첨부해주세요. (페이지 새로고침 후 재시도 권장)`);
+          setSaving(false);
+          return;
+        }
+        const expectedFileNames=[...answerFiles, ...examFiles].map(f=>f.name);
         const uploadResults = [];
         for(const cls of classes){
           const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:"",round:"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData,gradingMode});
-          uploadResults.push({className: cls.name, ...result});
+          uploadResults.push({className: cls.name, expectedFileNames, ...result});
         }
         // 실패 확인 + 알림
         const failed = uploadResults.filter(r => !r.ok);
@@ -5420,6 +5481,20 @@ export default function App(){
           return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}\n\n실패한 파일만 다시 업로드해주세요.`);
+        }
+        const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
+        if (driveFailures.length > 0) {
+          // ★ v23.39 (2026-05-15): 차단 → 사용자 확인 (정상 업로드 false-positive 차단 방지)
+          //   파일명 정규화 후에도 안 맞으면 — 실제로 파일 다른 위치 가능성 vs Drive 동기화 지연
+          const msg = driveFailures.map(f => {
+            const miss = f.missing && f.missing.length ? `\n    누락: ${f.missing.join(", ")}` : (f.error ? `\n    오류: ${f.error}` : `\n    실제 ${f.found}/${f.expected}개`);
+            return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
+          }).join("\n");
+          const proceed = confirm(`⚠️ Drive 저장 확인 결과 — 일부 누락 가능성\n\n${msg}\n\n원인 후보:\n- 파일명 인코딩 미세 차이 (한글 NFC/NFD)\n- Drive 동기화 일시 지연\n- 진짜 누락\n\n[확인] = 그대로 진행 (Drive 에서 직접 확인 권장)\n[취소] = 등록 중단 + 새로고침 후 재시도`);
+          if (!proceed) {
+            setSaving(false);
+            return;
+          }
         }
         uploadResults.forEach(r=>{ if(r.ok) uploadByClass[r.className]=r; });
       }
@@ -5463,15 +5538,16 @@ export default function App(){
         for(const rd of active){
           const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+          const expectedFileNames=[...rd.answerFiles, ...rd.examFiles].map(f=>f.name);
           for(const cls of classes){
             // ★ v23.29: 안전 업로드 (응답 + 재시도 3회)
             const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode});
-            uploadResults.push({className: cls.name, label: rd.label||"", ...result});
+            uploadResults.push({className: cls.name, label: rd.label||"", expectedFileNames, ...result});
             // [v21.0] AI 검수 task 등록 (첫 답지 1개 사용)
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0, gradingMode },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0, gradingMode, folderId:result.folderId||"", requireFolderId:true },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -5498,6 +5574,20 @@ export default function App(){
           return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
+        }
+        const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
+        if (driveFailures.length > 0) {
+          // ★ v23.39 (2026-05-15): 차단 → 사용자 확인 (정상 업로드 false-positive 차단 방지)
+          //   파일명 정규화 후에도 안 맞으면 — 실제로 파일 다른 위치 가능성 vs Drive 동기화 지연
+          const msg = driveFailures.map(f => {
+            const miss = f.missing && f.missing.length ? `\n    누락: ${f.missing.join(", ")}` : (f.error ? `\n    오류: ${f.error}` : `\n    실제 ${f.found}/${f.expected}개`);
+            return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
+          }).join("\n");
+          const proceed = confirm(`⚠️ Drive 저장 확인 결과 — 일부 누락 가능성\n\n${msg}\n\n원인 후보:\n- 파일명 인코딩 미세 차이 (한글 NFC/NFD)\n- Drive 동기화 일시 지연\n- 진짜 누락\n\n[확인] = 그대로 진행 (Drive 에서 직접 확인 권장)\n[취소] = 등록 중단 + 새로고침 후 재시도`);
+          if (!proceed) {
+            setSaving(false);
+            return;
+          }
         }
         setDone(true);setScreen("done");
         // [v21.0] AI 자동 검수 — done 화면 표시 후 백그라운드 실행
@@ -5528,13 +5618,14 @@ export default function App(){
           for(const rd of cRds){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+            const expectedFileNames=[...rd.answerFiles, ...rd.examFiles].map(f=>f.name);
             // ★ v23.29: 안전 업로드
             const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode});
-            uploadResults.push({className: cls.name, label: rd.label||"", ...result});
+            uploadResults.push({className: cls.name, label: rd.label||"", expectedFileNames, ...result});
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0, gradingMode },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:0, gradingMode, folderId:result.folderId||"", requireFolderId:true },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -5560,6 +5651,20 @@ export default function App(){
           return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
+        }
+        const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
+        if (driveFailures.length > 0) {
+          // ★ v23.39 (2026-05-15): 차단 → 사용자 확인 (정상 업로드 false-positive 차단 방지)
+          //   파일명 정규화 후에도 안 맞으면 — 실제로 파일 다른 위치 가능성 vs Drive 동기화 지연
+          const msg = driveFailures.map(f => {
+            const miss = f.missing && f.missing.length ? `\n    누락: ${f.missing.join(", ")}` : (f.error ? `\n    오류: ${f.error}` : `\n    실제 ${f.found}/${f.expected}개`);
+            return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
+          }).join("\n");
+          const proceed = confirm(`⚠️ Drive 저장 확인 결과 — 일부 누락 가능성\n\n${msg}\n\n원인 후보:\n- 파일명 인코딩 미세 차이 (한글 NFC/NFD)\n- Drive 동기화 일시 지연\n- 진짜 누락\n\n[확인] = 그대로 진행 (Drive 에서 직접 확인 권장)\n[취소] = 등록 중단 + 새로고침 후 재시도`);
+          if (!proceed) {
+            setSaving(false);
+            return;
+          }
         }
         setDone(true);setScreen("done");
         if(aiTasks.length>0) runAiExtractTasks(aiTasks);
