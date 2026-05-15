@@ -9,6 +9,11 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.38 (2026-05-15): Drive 실제 저장 확인 후에만 완료/AI검수 진행
+//   - upload_exam 응답만 믿지 않고 list_folder_files 로 Drive 폴더를 다시 조회
+//   - 기대 파일명이 실제 폴더에 없으면 등록 완료 화면/AI검수 진행 차단
+//   - "만장일치인데 Drive/오늘의 현황에 없음" 증상 차단
+//
 // ★ v23.37 (2026-05-15): AI 검수 저장 전 folderId 직접 전달
 //   - upload_exam 성공 결과의 folderId 를 ai_extract_answers 에 직접 전달
 //   - requireFolderId=true 로 저장 단계에서 폴더 연결 실패 시 자동등록 차단
@@ -5231,7 +5236,7 @@ export default function App(){
 
   // 업로드 후 검증 — Drive 에서 파일 다시 조회해서 실제 저장됐는지 확인
   const verifyUploadOnDrive = async (folderId, expectedFiles) => {
-    if (!folderId) return { ok: true, note: "folderId 없음 — 검증 skip" };
+    if (!folderId) return { ok: false, error: "folderId 없음 — Drive 저장 확인 불가" };
     try {
       const r = await fetch(`${SHEETS_URL}?action=list_folder_files&folderId=${encodeURIComponent(folderId)}`);
       const d = await r.json();
@@ -5247,6 +5252,26 @@ export default function App(){
     } catch (e) {
       return { ok: false, error: String(e) };
     }
+  };
+
+  const verifyUploadResultsOnDrive = async (uploadResults) => {
+    const failures = [];
+    for (const r of uploadResults) {
+      if (!r || !r.ok) continue;
+      const expected = r.expectedFileNames || [];
+      const v = await verifyUploadOnDrive(r.folderId || "", expected);
+      if (!v.ok) {
+        failures.push({
+          className: r.className || "",
+          label: r.label || "",
+          expected: expected.length,
+          found: v.found || 0,
+          missing: v.missing || [],
+          error: v.error || ""
+        });
+      }
+    }
+    return failures;
   };
 
   // ★ v23.29 (2026-05-13): 업로드 안전 호출 — mode:"no-cors" 제거 + text/plain + 재시도 3회
@@ -5398,10 +5423,11 @@ export default function App(){
         if (!preCheck.ok) { setSaving(false); return; }
         const aData=await Promise.all(answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
         const eData=await Promise.all(examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+        const expectedFileNames=[...answerFiles, ...examFiles].map(f=>f.name);
         const uploadResults = [];
         for(const cls of classes){
           const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:"",round:"",date:dateStr,memo:"(직접 입력 모드 · 시험지/정답지 업로드)",teacher,studentCount:cls.count,subjMode:"direct",subjRanges:"",objRanges:"",answerFiles:aData,examFiles:eData,gradingMode});
-          uploadResults.push({className: cls.name, ...result});
+          uploadResults.push({className: cls.name, expectedFileNames, ...result});
         }
         // 실패 확인 + 알림
         const failed = uploadResults.filter(r => !r.ok);
@@ -5425,6 +5451,16 @@ export default function App(){
           return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}\n\n실패한 파일만 다시 업로드해주세요.`);
+        }
+        const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
+        if (driveFailures.length > 0) {
+          const msg = driveFailures.map(f => {
+            const miss = f.missing && f.missing.length ? ` 누락: ${f.missing.join(", ")}` : (f.error ? ` 오류: ${f.error}` : ` 실제 ${f.found}/${f.expected}개`);
+            return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
+          }).join("\n");
+          alert(`🚨 Drive 저장 확인 실패 — 등록 차단\n\n${msg}\n\nGoogle Drive에서 실제 파일을 다시 찾지 못했습니다.\n새로고침 후 다시 업로드해주세요.`);
+          setSaving(false);
+          return;
         }
         uploadResults.forEach(r=>{ if(r.ok) uploadByClass[r.className]=r; });
       }
@@ -5468,10 +5504,11 @@ export default function App(){
         for(const rd of active){
           const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
           const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+          const expectedFileNames=[...rd.answerFiles, ...rd.examFiles].map(f=>f.name);
           for(const cls of classes){
             // ★ v23.29: 안전 업로드 (응답 + 재시도 3회)
             const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode});
-            uploadResults.push({className: cls.name, label: rd.label||"", ...result});
+            uploadResults.push({className: cls.name, label: rd.label||"", expectedFileNames, ...result});
             // [v21.0] AI 검수 task 등록 (첫 답지 1개 사용)
             if(rd.answerFiles[0]){
               aiTasks.push({
@@ -5504,6 +5541,16 @@ export default function App(){
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
         }
+        const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
+        if (driveFailures.length > 0) {
+          const msg = driveFailures.map(f => {
+            const miss = f.missing && f.missing.length ? ` 누락: ${f.missing.join(", ")}` : (f.error ? ` 오류: ${f.error}` : ` 실제 ${f.found}/${f.expected}개`);
+            return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
+          }).join("\n");
+          alert(`🚨 Drive 저장 확인 실패 — 등록 차단\n\n${msg}\n\nGoogle Drive에서 실제 파일을 다시 찾지 못했습니다.\n새로고침 후 다시 업로드해주세요.`);
+          setSaving(false);
+          return;
+        }
         setDone(true);setScreen("done");
         // [v21.0] AI 자동 검수 — done 화면 표시 후 백그라운드 실행
         if(aiTasks.length>0) runAiExtractTasks(aiTasks);
@@ -5533,9 +5580,10 @@ export default function App(){
           for(const rd of cRds){
             const aData=await Promise.all(rd.answerFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
+            const expectedFileNames=[...rd.answerFiles, ...rd.examFiles].map(f=>f.name);
             // ★ v23.29: 안전 업로드
             const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:0,endNumber:0,gradingMode});
-            uploadResults.push({className: cls.name, label: rd.label||"", ...result});
+            uploadResults.push({className: cls.name, label: rd.label||"", expectedFileNames, ...result});
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
@@ -5565,6 +5613,16 @@ export default function App(){
           return;
         } else if (partialFailed.length > 0) {
           alert(`⚠️ 일부 파일만 업로드 실패\n\n${partialFailed.map(p => `• ${p.className}${p.label?` (${p.label})`:""}: ${p.failedFiles.map(f=>f.name).join(", ")}`).join("\n")}`);
+        }
+        const driveFailures = await verifyUploadResultsOnDrive(uploadResults);
+        if (driveFailures.length > 0) {
+          const msg = driveFailures.map(f => {
+            const miss = f.missing && f.missing.length ? ` 누락: ${f.missing.join(", ")}` : (f.error ? ` 오류: ${f.error}` : ` 실제 ${f.found}/${f.expected}개`);
+            return `• ${f.className}${f.label?` (${f.label})`:""}:${miss}`;
+          }).join("\n");
+          alert(`🚨 Drive 저장 확인 실패 — 등록 차단\n\n${msg}\n\nGoogle Drive에서 실제 파일을 다시 찾지 못했습니다.\n새로고침 후 다시 업로드해주세요.`);
+          setSaving(false);
+          return;
         }
         setDone(true);setScreen("done");
         if(aiTasks.length>0) runAiExtractTasks(aiTasks);
