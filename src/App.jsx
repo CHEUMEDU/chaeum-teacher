@@ -5541,13 +5541,13 @@ export default function App(){
           const expectedFileNames=[...rd.answerFiles, ...rd.examFiles].map(f=>f.name);
           for(const cls of classes){
             // ★ v23.29: 안전 업로드 (응답 + 재시도 3회)
-            const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:rd.startNum||0,endNumber:0,gradingMode});
+            const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode:rd.subjRanges?"mixed":subjMode,subjRanges:rd.subjRanges||subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:(rd.endNum&&rd.startNum&&rd.endNum>=rd.startNum?(rd.endNum-rd.startNum+1):0),startNumber:rd.startNum||0,endNumber:rd.endNum||0,subQuestionMap:rd.subQMap||"",gradingMode});
             uploadResults.push({className: cls.name, label: rd.label||"", expectedFileNames, ...result});
             // [v21.0] AI 검수 task 등록 (첫 답지 1개 사용)
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:rd.startNum||0, gradingMode, folderId:result.folderId||"", requireFolderId:true },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:(rd.endNum&&rd.startNum&&rd.endNum>=rd.startNum?(rd.endNum-rd.startNum+1):0), subjMode:rd.subjRanges?"mixed":subjMode, subjRanges:rd.subjRanges||subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:rd.startNum||0, subQuestionMap:rd.subQMap||"", gradingMode, folderId:result.folderId||"", requireFolderId:true },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -5620,12 +5620,12 @@ export default function App(){
             const eData=await Promise.all(rd.examFiles.map(async f=>({name:f.name,type:f.type,data:await fileToBase64(f)})));
             const expectedFileNames=[...rd.answerFiles, ...rd.examFiles].map(f=>f.name);
             // ★ v23.29: 안전 업로드
-            const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode,subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:0,startNumber:rd.startNum||0,endNumber:0,gradingMode});
+            const result = await uploadExamSafely({action:"upload_exam",classes:[{subject:cls.subject,grade:cls.grade,level:cls.level,count:cls.count}],classNames:cls.name,examType,setType:rd.label||"",round:rd.label||"",date:dateStr,memo,teacher,studentCount:cls.count,subjMode:rd.subjRanges?"mixed":subjMode,subjRanges:rd.subjRanges||subjRanges,objRanges,answerFiles:aData,examFiles:eData,totalQuestions:(rd.endNum&&rd.startNum&&rd.endNum>=rd.startNum?(rd.endNum-rd.startNum+1):0),startNumber:rd.startNum||0,endNumber:rd.endNum||0,subQuestionMap:rd.subQMap||"",gradingMode});
             uploadResults.push({className: cls.name, label: rd.label||"", expectedFileNames, ...result});
             if(rd.answerFiles[0]){
               aiTasks.push({
                 file: rd.answerFiles[0],
-                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:0, subjMode, subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:rd.startNum||0, gradingMode, folderId:result.folderId||"", requireFolderId:true },
+                examInfo: { subject:cls.subject, grade:cls.grade, level:cls.level, examType, teacher, setType:rd.label||"", totalQuestions:(rd.endNum&&rd.startNum&&rd.endNum>=rd.startNum?(rd.endNum-rd.startNum+1):0), subjMode:rd.subjRanges?"mixed":subjMode, subjRanges:rd.subjRanges||subjRanges, date:dateStr, className:cls.name, studentCount:cls.count, startNumber:rd.startNum||0, subQuestionMap:rd.subQMap||"", gradingMode, folderId:result.folderId||"", requireFolderId:true },
                 label: `${cls.name}${rd.label?" ("+rd.label+")":""}`
               });
             }
@@ -6238,14 +6238,24 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
                   <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차, 중간고사 등) — 선택`} value={rd.label||""} onChange={e=>updateRound(ri,"label",e.target.value)}/>
                   {rounds.length>1&&(<button onClick={()=>setRounds(p=>p.filter((_,j)=>j!==ri))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                 </div>
-                {/* v23.41 (2026-05-28): 시작번호 직접 입력 — AI 자동 인식이 답지를 보고 "1번부터"로 잘못 판단하는 경우 보완 */}
-                <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,padding:"8px 10px",borderRadius:6,background:T.goldPale,border:`1px solid ${T.goldMuted}`,flexWrap:"wrap"}}>
-                  <span style={{fontSize:11,fontWeight:700,color:T.goldDeep,flexShrink:0}}>🔢 시작 번호</span>
-                  <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateRound(ri,"startNum",Math.max(1,parseInt(e.target.value)||1))} style={{width:80,padding:"5px 8px",borderRadius:5,border:`1px solid ${T.goldMuted}`,textAlign:"center",fontWeight:700,fontSize:13,background:T.white,fontFamily:"inherit"}}/>
-                  <span style={{fontSize:11,color:T.textSub,flexShrink:0}}>번부터 시작</span>
-                  {(rd.startNum||1)>1 && <span style={{fontSize:10,color:T.accent,fontWeight:700,padding:"2px 6px",borderRadius:4,background:T.accentLight+"55"}}>→ 학생앱에 {rd.startNum},{rd.startNum+1}... 표시</span>}
-                  <span style={{flex:1,minWidth:0}}></span>
-                  <span style={{fontSize:10,color:T.textMuted,flexShrink:0}}>💡 1이면 AI 자동 인식 / 학교 시험지 31번 발췌 같으면 31 입력</span>
+                {/* v23.42 (2026-05-30): 시작/끝 번호 + 주관식 범위 + 하위 주관식 갯수 — 실장님 4가지 오류 응급 픽스 */}
+                <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:8,padding:"10px 12px",borderRadius:8,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
+                  <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:T.goldDeep,flexShrink:0,minWidth:80}}>🔢 번호 범위</span>
+                    <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateRound(ri,"startNum",Math.max(1,parseInt(e.target.value)||1))} style={{width:70,padding:"5px 8px",borderRadius:5,border:`1px solid ${T.goldMuted}`,textAlign:"center",fontWeight:700,fontSize:13,background:T.white,fontFamily:"inherit"}}/>
+                    <span style={{fontSize:11,color:T.textSub,flexShrink:0}}>~</span>
+                    <input type="number" min="1" value={rd.endNum||""} onChange={e=>updateRound(ri,"endNum",Math.max(1,parseInt(e.target.value)||1))} placeholder="끝번호" style={{width:80,padding:"5px 8px",borderRadius:5,border:`1px solid ${T.goldMuted}`,textAlign:"center",fontWeight:700,fontSize:13,background:T.white,fontFamily:"inherit"}}/>
+                    {(rd.endNum && rd.startNum && rd.endNum>=rd.startNum) ? <span style={{fontSize:10,color:T.accent,fontWeight:700,padding:"2px 6px",borderRadius:4,background:T.accentLight+"55"}}>→ 총 {rd.endNum-rd.startNum+1}문항 강제</span> : <span style={{fontSize:10,color:T.textMuted}}>끝번호 입력하면 총 문항수 강제 → AI 누락 즉시 발견</span>}
+                  </div>
+                  <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:T.goldDeep,flexShrink:0,minWidth:80}}>📝 주관식 번호</span>
+                    <input type="text" value={rd.subjRanges||""} onChange={e=>updateRound(ri,"subjRanges",e.target.value)} placeholder="예: 5,8,12-15 (비우면 AI 자동 판별)" style={{flex:1,minWidth:160,padding:"5px 8px",borderRadius:5,border:`1px solid ${T.goldMuted}`,fontSize:12,background:T.white,fontFamily:"inherit"}}/>
+                  </div>
+                  <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                    <span style={{fontSize:11,fontWeight:700,color:T.goldDeep,flexShrink:0,minWidth:80}}>📋 하위 주관식</span>
+                    <input type="text" value={rd.subQMap||""} onChange={e=>updateRound(ri,"subQMap",e.target.value)} placeholder="예: 51:3, 67:2  →  51번에 빈칸 3개, 67번에 빈칸 2개" style={{flex:1,minWidth:200,padding:"5px 8px",borderRadius:5,border:`1px solid ${T.goldMuted}`,fontSize:12,background:T.white,fontFamily:"inherit"}}/>
+                  </div>
+                  <div style={{fontSize:10,color:T.textMuted,paddingTop:2}}>💡 AI가 답을 "answer1|answer2|answer3" 형태로 추출 → 학생앱이 자동으로 빈칸 N개 표시</div>
                 </div>
                 <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                 <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
@@ -6268,14 +6278,23 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
                         <input style={{...S.inp,flex:1,margin:0,padding:"8px 10px",fontSize:13}} placeholder={`차수명 (예: 1차, 2차) — 선택`} value={rd.label||""} onChange={e=>updateClassRound(cls.name,ri,"label",e.target.value)}/>
                         {(classRounds[cls.name]||[]).length>1&&(<button onClick={()=>setClassRounds(p=>({...p,[cls.name]:(p[cls.name]||[]).filter((_,j)=>j!==ri)}))} style={{padding:"6px 10px",fontSize:11,borderRadius:6,border:`1px solid ${T.danger}`,background:T.white,color:T.danger,cursor:"pointer"}}>✕ 삭제</button>)}
                       </div>
-                      {/* v23.41 (2026-05-28): 시작번호 직접 입력 — AI 자동 인식 실패 시 보완 */}
-                      <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:6,padding:"6px 8px",borderRadius:5,background:T.goldPale,border:`1px solid ${T.goldMuted}`,flexWrap:"wrap"}}>
-                        <span style={{fontSize:10,fontWeight:700,color:T.goldDeep,flexShrink:0}}>🔢 시작</span>
-                        <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateClassRound(cls.name,ri,"startNum",Math.max(1,parseInt(e.target.value)||1))} style={{width:60,padding:"4px 6px",borderRadius:4,border:`1px solid ${T.goldMuted}`,textAlign:"center",fontWeight:700,fontSize:12,background:T.white,fontFamily:"inherit"}}/>
-                        <span style={{fontSize:10,color:T.textSub,flexShrink:0}}>번부터</span>
-                        {(rd.startNum||1)>1 && <span style={{fontSize:9,color:T.accent,fontWeight:700,padding:"1px 5px",borderRadius:3,background:T.accentLight+"55"}}>→ 학생앱 {rd.startNum}~ 표시</span>}
-                        <span style={{flex:1,minWidth:0}}></span>
-                        <span style={{fontSize:9,color:T.textMuted,flexShrink:0}}>1이면 AI 자동</span>
+                      {/* v23.42 (2026-05-30): 시작/끝 + 주관식 + 하위 주관식 — 실장님 4가지 오류 응급 (반별 컴팩트) */}
+                      <div style={{display:"flex",flexDirection:"column",gap:4,marginBottom:6,padding:"6px 8px",borderRadius:5,background:T.goldPale,border:`1px solid ${T.goldMuted}`}}>
+                        <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
+                          <span style={{fontSize:10,fontWeight:700,color:T.goldDeep,flexShrink:0,minWidth:50}}>🔢 범위</span>
+                          <input type="number" min="1" value={rd.startNum||1} onChange={e=>updateClassRound(cls.name,ri,"startNum",Math.max(1,parseInt(e.target.value)||1))} style={{width:55,padding:"3px 5px",borderRadius:4,border:`1px solid ${T.goldMuted}`,textAlign:"center",fontWeight:700,fontSize:11,background:T.white,fontFamily:"inherit"}}/>
+                          <span style={{fontSize:10,color:T.textSub,flexShrink:0}}>~</span>
+                          <input type="number" min="1" value={rd.endNum||""} onChange={e=>updateClassRound(cls.name,ri,"endNum",Math.max(1,parseInt(e.target.value)||1))} placeholder="끝" style={{width:55,padding:"3px 5px",borderRadius:4,border:`1px solid ${T.goldMuted}`,textAlign:"center",fontWeight:700,fontSize:11,background:T.white,fontFamily:"inherit"}}/>
+                          {(rd.endNum && rd.startNum && rd.endNum>=rd.startNum) && <span style={{fontSize:9,color:T.accent,fontWeight:700,padding:"1px 5px",borderRadius:3,background:T.accentLight+"55"}}>총 {rd.endNum-rd.startNum+1}문항</span>}
+                        </div>
+                        <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                          <span style={{fontSize:10,fontWeight:700,color:T.goldDeep,flexShrink:0,minWidth:50}}>📝 주관식</span>
+                          <input type="text" value={rd.subjRanges||""} onChange={e=>updateClassRound(cls.name,ri,"subjRanges",e.target.value)} placeholder="5,8,12-15 (비우면 AI 자동)" style={{flex:1,padding:"3px 5px",borderRadius:4,border:`1px solid ${T.goldMuted}`,fontSize:11,background:T.white,fontFamily:"inherit"}}/>
+                        </div>
+                        <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                          <span style={{fontSize:10,fontWeight:700,color:T.goldDeep,flexShrink:0,minWidth:50}}>📋 하위</span>
+                          <input type="text" value={rd.subQMap||""} onChange={e=>updateClassRound(cls.name,ri,"subQMap",e.target.value)} placeholder="51:3, 67:2 (51번 3빈칸, 67번 2빈칸)" style={{flex:1,padding:"3px 5px",borderRadius:4,border:`1px solid ${T.goldMuted}`,fontSize:11,background:T.white,fontFamily:"inherit"}}/>
+                        </div>
                       </div>
                       <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                       <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateClassRound(cls.name,ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
