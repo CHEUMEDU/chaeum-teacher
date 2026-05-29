@@ -141,10 +141,24 @@ async function callWithRetry(name, fn) {
 function buildExtractPrompt(examInfo) {
   const totalQ = parseInt(examInfo.totalQuestions || examInfo.totalQ || 0, 10);
   const totalLine = totalQ > 0
-    ? '- 총 문항수: 약 ' + totalQ + '문제 (참고용 — PDF에서 직접 확인하세요)'
+    ? '- 총 문항수: ' + totalQ + '문제 (★ 정확히 이 개수를 빠짐없이 추출. 못 찾으면 "?" 로 채워서라도 ' + totalQ + '개 만들기)'
     : '- 총 문항수: PDF에서 직접 식별하세요 (1번부터 마지막 번호까지 빠짐없이)';
   // ★ v22.7: 해석/번역 시험 감지 → 한국어 해석만 추출하라고 명시
   const isLoose = String(examInfo.gradingMode || '').toLowerCase() === 'loose';
+  // ★ v22.9 (2026-05-30): 사용자 입력 메타 (시작번호/주관식 범위/하위 주관식)
+  const userStartNum = parseInt(examInfo.startNumber, 10) || 0;
+  const userSubjRanges = String(examInfo.subjRanges || '').trim();
+  const userSubQMap = String(examInfo.subQuestionMap || '').trim();
+  const userMetaLines = [];
+  if (userStartNum > 1) {
+    userMetaLines.push('- ★ 사용자 지정 시작 번호: ' + userStartNum + ' (답지가 ' + userStartNum + '번부터 시작. answers 키도 ' + userStartNum + ' 부터 사용. startNumber=' + userStartNum + ')');
+  }
+  if (userSubjRanges) {
+    userMetaLines.push('- ★ 사용자 지정 주관식 번호: ' + userSubjRanges + ' (이 번호는 반드시 type="sa")');
+  }
+  if (userSubQMap) {
+    userMetaLines.push('- ★ 사용자 지정 하위 주관식: ' + userSubQMap + ' (예 "51:3" 은 51번 답에 (1)(2)(3) 3개 답을 "|" 로 묶기. answers["51"]="a1|a2|a3")');
+  }
   const baseLines = [
     '당신은 시험 답지(정답지) OCR 전문가입니다.',
     '이 PDF는 학생이 푸는 시험지가 아니라, 선생님이 보는 정답지입니다.',
@@ -156,10 +170,11 @@ function buildExtractPrompt(examInfo) {
     '- 레벨/교재: ' + (examInfo.level || ''),
     '- 시험명: ' + (examInfo.examType || ''),
     '- 채점 모드: ' + (isLoose ? '해석/번역 (의역 인정)' : '단답형/영작 (엄격)'),
-    totalLine,
+    totalLine
+  ].concat(userMetaLines).concat([
     '- 문항별 객관식·주관식 여부는 답지를 보고 직접 판별하세요',
     ''
-  ];
+  ]);
   // ★ v22.7: 해석시험 전용 추가 규칙 (영문 원문 ≠ 답)
   const looseRules = isLoose ? [
     '## ★★★ 해석시험 — 답안 추출 규칙 (필수) ★★★',
@@ -259,16 +274,27 @@ async function callClaude(pdfBase64, examInfo) {
       skipped: true
     };
   }
+  // ★ v22.9 (2026-05-30): Claude Sonnet 환각 차단 — temperature 0 + system + prefill 3중 보강
+  //   원인: temperature 미지정 = 기본 1.0 → 답지 OCR 같은 정밀 작업에서 환각 발생
+  //   해결: temp 0 (재현성), system (임무 명확), prefill (JSON 강제)
   const payload = {
     model: 'claude-sonnet-4-5-20250929',
     max_tokens: 8000,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-        { type: 'text', text: buildExtractPrompt(examInfo) }
-      ]
-    }]
+    temperature: 0,
+    system: '당신은 시험 답지(정답지) OCR 전문가입니다. PDF 안에 표시된 정답만 그대로 옮겨 JSON 으로 출력하세요. 답을 추측하거나 추론하지 마세요.',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+          { type: 'text', text: buildExtractPrompt(examInfo) }
+        ]
+      },
+      {
+        role: 'assistant',
+        content: '{"startNumber":'
+      }
+    ]
   };
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -295,7 +321,11 @@ async function callClaude(pdfBase64, examInfo) {
   let json;
   try { json = JSON.parse(text); } catch (e) { return { error: 'claude json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
   const blocks = json.content || [];
-  const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
+  let answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
+  // ★ v22.9: prefill 사용 시 응답이 {"startNumber": 다음부터 시작 → 다시 붙여줌
+  if (!answersText.trim().startsWith('{')) {
+    answersText = '{"startNumber":' + answersText;
+  }
   return parseModelOutput('claude', answersText);
 }
 
