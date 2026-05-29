@@ -3770,6 +3770,10 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfErr, setPdfErr] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // ★ v23.43 (2026-05-30): 답 일괄 입력 모달 상태 (해설형 답지 대응 — AI 정확도 낮을 때 사용자 백업)
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkObj, setBulkObj] = useState("");
+  const [bulkSub, setBulkSub] = useState("");
   // 기본은 "결정 필요" 문항만 보여주기 (자동 채워진 건 숨김)
   // 단, 자동 채움이 0개면 답지를 보면서 다 입력해야 하므로 전체 보기 ON
   const initialShowAll = useMemo(()=>{
@@ -3921,6 +3925,10 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
             )}
           </div>
           <div style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+            {/* ★ v23.43 (2026-05-30): 답 일괄 입력 — AI 정확도 낮을 때 사용자가 답지 보며 빠르게 채움 (해설형 답지 대응) */}
+            <button onClick={()=>setBulkOpen(true)} title="답지를 보면서 답 50개를 한 번에 입력 (객관식: 숫자만 쉼표/공백 구분, 주관식: 줄단위)" style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:`1px solid ${T.accent}`,background:T.accentLight,color:T.accent,cursor:"pointer",fontFamily:"inherit"}}>
+              📋 답 일괄 입력
+            </button>
             <button onClick={aiRetry} disabled={retrying} title="불일치 문항만 AI에게 다시 요청해서 다수결로 채웁니다" style={{padding:"6px 10px",fontSize:11,fontWeight:700,borderRadius:6,border:`1px solid ${T.gold}`,background:T.white,color:T.goldDark,cursor:retrying?"wait":"pointer",fontFamily:"inherit"}}>
               {retrying?"⏳ 재요청 중...":"🔄 불일치 재요청"}
             </button>
@@ -4102,6 +4110,86 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
             <button onClick={submit} disabled={submitting} style={{padding:"8px 20px",fontSize:13,fontWeight:700,borderRadius:8,border:"none",background:submitting?T.borderLight:T.goldDark,color:T.white,cursor:submitting?"not-allowed":"pointer",fontFamily:"inherit"}}>{submitting?"저장 중...":"✅ 검수 확정"}</button>
           </div>
         </div>
+        {/* ★ v23.43 (2026-05-30): 답 일괄 입력 모달 — 해설형 답지에서 AI 정확도 낮을 때 사용자 백업 */}
+        {bulkOpen && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={()=>setBulkOpen(false)}>
+            <div onClick={e=>e.stopPropagation()} style={{background:T.white,borderRadius:12,maxWidth:700,width:"100%",maxHeight:"90vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,.4)"}}>
+              <div style={{padding:"14px 18px",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div>
+                  <div style={{fontSize:15,fontWeight:800,color:T.text}}>📋 답 일괄 입력</div>
+                  <div style={{fontSize:11,color:T.textSub,marginTop:3}}>답지를 보면서 답을 한 번에 빠르게 채웁니다. 미입력 칸만 채워지고, 이미 입력된 답은 유지됩니다.</div>
+                </div>
+                <button onClick={()=>setBulkOpen(false)} style={{...S.btnO,padding:"6px 12px"}}>✕</button>
+              </div>
+              <div style={{padding:18}}>
+                <div style={{padding:"10px 12px",background:T.goldPale,borderRadius:8,fontSize:11,color:T.goldDeep,marginBottom:14,lineHeight:1.6}}>
+                  💡 <b>사용법</b><br/>
+                  · <b>객관식</b>: 답 번호만 입력. <code style={{background:T.white,padding:"1px 5px",borderRadius:3}}>2,4,1,3,5,2</code> 또는 <code style={{background:T.white,padding:"1px 5px",borderRadius:3}}>2 4 1 3 5 2</code> 또는 한 줄에 하나씩.<br/>
+                  · <b>주관식</b>: 한 줄에 한 답. 빈 줄로 다음 문항 구분.<br/>
+                  · 시작번호 {Number(item.startNumber)||1}부터 순서대로 매핑됩니다. 미입력은 빈칸으로 두면 됨.
+                </div>
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:6,display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{padding:"2px 8px",background:T.goldDark,color:T.white,borderRadius:4,fontSize:10}}>객관식</span>
+                    답 번호 (1~5) — 쉼표·공백·줄바꿈으로 구분
+                  </div>
+                  <textarea value={bulkObj} onChange={e=>setBulkObj(e.target.value)} placeholder={"예: 2,4,1,3,5,2,4,1,3,5,...\n또는 한 줄에 하나씩"} rows={4} style={{width:"100%",padding:"8px 10px",fontSize:13,border:`1.5px solid ${T.border}`,borderRadius:8,fontFamily:"monospace",resize:"vertical",minHeight:80}}/>
+                  <div style={{fontSize:10,color:T.textMuted,marginTop:3}}>
+                    파싱 결과: {(()=>{
+                      const tokens = bulkObj.split(/[\s,;\n\r]+/).filter(t=>t.trim());
+                      const valid = tokens.filter(t=>/^[1-5](,[1-5])*$/.test(t.trim()));
+                      return `${valid.length}개 답 인식 (전체 ${tokens.length}개 토큰)`;
+                    })()}
+                  </div>
+                </div>
+                <div style={{marginBottom:14}}>
+                  <div style={{fontSize:12,fontWeight:700,color:T.text,marginBottom:6,display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{padding:"2px 8px",background:T.accent,color:T.white,borderRadius:4,fontSize:10}}>주관식</span>
+                    답 텍스트 — 한 줄에 하나, 하위 주관식은 |로 구분
+                  </div>
+                  <textarea value={bulkSub} onChange={e=>setBulkSub(e.target.value)} placeholder={"예 (주관식만 따로):\nsince\nHe has lived in Seoul for five years.\nwhat|ever|some\n환경 오염은 심각한 문제가 되었다."} rows={6} style={{width:"100%",padding:"8px 10px",fontSize:13,border:`1.5px solid ${T.border}`,borderRadius:8,fontFamily:"monospace",resize:"vertical",minHeight:120}}/>
+                  <div style={{fontSize:10,color:T.textMuted,marginTop:3}}>
+                    파싱 결과: {bulkSub.split(/\n/).filter(s=>s.trim()).length}개 줄 (각 줄 = 한 문항)
+                  </div>
+                </div>
+                <div style={{padding:"10px 12px",background:"#fff5f0",borderRadius:8,fontSize:11,color:T.textSub,marginBottom:10,lineHeight:1.6}}>
+                  <b style={{color:T.danger}}>⚠️ 적용 방식</b><br/>
+                  객관식 답은 <b>types 가 "obj/mc"</b> 인 문항에만 순서대로. 주관식 답은 <b>types 가 "sub/sa"</b> 인 문항에만 순서대로.<br/>
+                  이미 입력된 답은 <b>유지</b>됩니다 (덮어쓰기 안 함). 새로 입력하려면 먼저 비우기.
+                </div>
+              </div>
+              <div style={{padding:"12px 18px",borderTop:`1px solid ${T.border}`,background:T.bg,display:"flex",gap:8,justifyContent:"flex-end"}}>
+                <button onClick={()=>{setBulkObj("");setBulkSub("");}} style={{...S.btnO,padding:"8px 14px"}}>모두 비우기</button>
+                <button onClick={()=>setBulkOpen(false)} style={{...S.btnO,padding:"8px 14px"}}>취소</button>
+                <button onClick={()=>{
+                  // 객관식 토큰 파싱
+                  const objTokens = bulkObj.split(/[\s,;\n\r]+/).map(t=>t.trim()).filter(t=>/^[1-5](,[1-5])*$/.test(t));
+                  // 주관식 줄 파싱
+                  const subLines = bulkSub.split(/\n/).map(s=>s.trim()).filter(s=>s.length>0);
+                  // types 기준으로 obj 문항만 순서대로, sub 문항만 순서대로
+                  let oi=0, si=0, applied=0;
+                  setFinalAns(prev=>{
+                    const next = {...prev};
+                    for(let q=1; q<=totalQ; q++){
+                      const k = String(q);
+                      const isSub = (types[k]||"")==="sa" || (types[k]||"")==="sub";
+                      const cur = String(prev[k]||"").trim();
+                      if(cur) continue; // 이미 입력된 건 유지
+                      if(isSub){
+                        if(si<subLines.length){next[k]=subLines[si];si++;applied++;}
+                      } else {
+                        if(oi<objTokens.length){next[k]=objTokens[oi];oi++;applied++;}
+                      }
+                    }
+                    return next;
+                  });
+                  alert(`✅ ${applied}개 문항 적용\n· 객관식 ${oi}개\n· 주관식 ${si}개`);
+                  setBulkOpen(false);
+                }} style={{padding:"8px 18px",fontSize:13,fontWeight:700,borderRadius:8,border:"none",background:T.accent,color:T.white,cursor:"pointer",fontFamily:"inherit"}}>📥 일괄 적용</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -6503,4 +6591,32 @@ const S={
   textarea:{width:"100%",padding:"11px 14px",fontSize:14,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.bg,color:T.text,fontFamily:"inherit",resize:"vertical",lineHeight:1.5},
   dateInp:{padding:"11px 14px",fontSize:15,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.bg,color:T.text,fontFamily:"inherit",cursor:"pointer"},
   cw:{display:"flex",flexWrap:"wrap",gap:6},
-  ch:{padding:"8px 14px",borderRadius:20,border:"1.5px solid",fontSize:13,cursor:"pointer"
+  ch:{padding:"8px 14px",borderRadius:20,border:"1.5px solid",fontSize:13,cursor:"pointer",fontFamily:"inherit",transition:"all .12s"},
+  chInp:{padding:"8px 14px",borderRadius:20,border:`1.5px solid ${T.border}`,fontSize:13,fontFamily:"inherit",width:80,textAlign:"center"},
+  addRow:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 14px",background:T.goldPale,borderRadius:10,border:`1px solid ${T.goldMuted}`,marginBottom:4},
+  addBtn:{padding:"8px 16px",borderRadius:10,border:"none",background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,color:T.white,fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit"},
+  tag:{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",borderRadius:20,background:T.accentLight,border:`1px solid ${T.accent}40`,fontSize:13,fontWeight:600,color:T.accent},
+  tagX:{background:"none",border:"none",color:T.danger,fontWeight:700,fontSize:16,cursor:"pointer",padding:0,lineHeight:1},
+  modeCard:{display:"block",width:"100%",background:T.white,borderRadius:14,padding:"24px 20px",marginBottom:12,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",border:`1px solid ${T.borderLight}`,cursor:"pointer",fontFamily:"inherit",textAlign:"center",transition:"all .15s"},
+  btnG:{width:"100%",padding:"14px",fontSize:15,fontWeight:700,color:T.white,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,border:"none",borderRadius:12,cursor:"pointer",fontFamily:"inherit"},
+  btnO:{padding:"12px",fontSize:14,fontWeight:600,color:T.textSub,background:T.white,border:`1.5px solid ${T.border}`,borderRadius:12,cursor:"pointer",fontFamily:"inherit"},
+  uploadBox:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"28px 16px",borderRadius:12,border:`2px dashed ${T.border}`,background:T.bg,cursor:"pointer",transition:"all .2s"},
+  fileCard:{display:"flex",alignItems:"center",padding:"12px 14px",borderRadius:10,background:T.accentLight,border:`1px solid ${T.accent}40`,gap:10},
+  rmBtn:{width:28,height:28,borderRadius:14,border:"none",background:T.dangerLight,color:T.danger,fontSize:14,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"},
+  progA:{padding:"10px 14px 4px",background:T.white,borderBottom:`1px solid ${T.borderLight}`},
+  progBg:{height:5,borderRadius:3,background:T.borderLight,overflow:"hidden"},progF:{height:"100%",borderRadius:3,transition:"width .3s,background .3s"},
+  qRow:{display:"flex",alignItems:"center",gap:6,padding:"7px 6px 7px 5px",marginBottom:3,borderRadius:10,transition:"all .12s"},
+  qNum:{flex:"0 0 28px",height:28,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700},
+  cBtn:{flex:1,height:36,minWidth:0,borderRadius:9,border:"1.5px solid",fontSize:14,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"},
+  sInp:{flex:1,padding:"8px 12px",fontSize:14,borderRadius:9,border:`1.5px solid ${T.border}`,fontFamily:"inherit",background:T.bg},
+  subBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:960,background:T.white,borderTop:`1px solid ${T.border}`,padding:"10px 16px",paddingBottom:"max(10px,env(safe-area-inset-bottom))",display:"flex",alignItems:"center",gap:10,zIndex:200}, /* sub-bar-fix 클래스로 PC 반응형 */
+  subBtn:{padding:"11px 24px",fontSize:15,fontWeight:700,color:T.white,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,border:"none",borderRadius:10,cursor:"pointer",fontFamily:"inherit"},
+  overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20},
+  modal:{background:T.white,borderRadius:18,padding:"40px 20px",maxWidth:320,width:"100%",textAlign:"center"},
+  resRow:{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${T.borderLight}`,fontSize:13,color:T.text},
+  sumCard:{background:T.white,borderRadius:12,padding:"12px 8px",border:`1px solid ${T.borderLight}`,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"},
+  pill:{padding:"4px 10px",borderRadius:20,background:T.goldPale,color:T.goldDeep,fontWeight:700},
+  pillBlue:{padding:"4px 10px",borderRadius:20,background:T.blueLight,color:T.blue,fontWeight:700},
+  pillGreen:{padding:"4px 10px",borderRadius:20,background:T.accentLight,color:T.accent,fontWeight:700},
+  pillGold:{padding:"4px 10px",borderRadius:20,background:T.goldLight,color:T.goldDark,fontWeight:700},
+};
