@@ -3930,6 +3930,21 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
             <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
           </div>
         </div>
+        {/* ★ v23.42 (2026-05-30): 자동 경고 박스 — GAS 가 보낸 autoWarnings 표시 (실장님 피드백 추가 #3) */}
+        {Array.isArray(item.autoWarnings) && item.autoWarnings.length > 0 && (
+          <div style={{padding:"10px 14px",background:"#fff5f0",borderBottom:`2px solid ${T.danger}`,borderTop:`1px solid ${T.border}`}}>
+            <div style={{fontSize:12,fontWeight:700,color:T.danger,marginBottom:4,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{fontSize:14}}>⚠️</span>
+              자동 검출된 경고 {item.autoWarnings.length}건
+              <span style={{fontSize:10,fontWeight:500,color:T.textMuted,marginLeft:"auto"}}>
+                {item.userTotalQuestions>0 && `사용자 지정 ${item.userTotalQuestions}개 · AI 추출 ${item.aiAnswerCount}개`}
+              </span>
+            </div>
+            <ul style={{margin:"4px 0 0 18px",padding:0,fontSize:11,color:T.textSub,lineHeight:1.6}}>
+              {item.autoWarnings.map((w,wi)=>(<li key={wi}>{w}</li>))}
+            </ul>
+          </div>
+        )}
         {/* 본문: 좌측 답지 PDF + 우측 답안 비교 */}
         <div style={{flex:1,display:"flex",overflow:"hidden"}}>
           {/* 좌측: 답지 PDF */}
@@ -4008,14 +4023,49 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
                         </button>
                       );
                     };
+                    // ★ v23.42 (2026-05-30): 표시 번호 매핑 (실장님 #2 — 시작번호 무시 픽스)
+                    //   우선순위: questionNumberMap > startNumber 매핑 > 그대로
+                    const _qNumMap = item.questionNumberMap || {};
+                    const _startNum = Number(item.startNumber)||1;
+                    const displayNum = _qNumMap[k] ? _qNumMap[k] : (_startNum>1 ? (_startNum + q - 1) : q);
+                    // ★ v23.42 (2026-05-30): 하위 주관식 갯수 (실장님 #3 — 한 칸 픽스)
+                    //   우선순위: subQuestionMap > 답에 들어있는 | 갯수
+                    const _subQMap = item.subQuestionMap || {};
+                    const declaredSubCount = Number(_subQMap[String(displayNum)]||_subQMap[k]||0);
+                    const _curAns = String(finalAns[k]||"");
+                    const _pipeCount = _curAns ? _curAns.split("|").length : 1;
+                    // 추출 답안에 | 가 있으면 그 갯수 우선, 사용자가 51:3 지정했으면 그 값 우선 (둘 다 있으면 큰 값)
+                    const nBlanks = isSubj ? Math.max(declaredSubCount, _pipeCount, 1) : 1;
+                    const subParts = isSubj && nBlanks>1 ? (function(){
+                      var arr = _curAns.split("|");
+                      while(arr.length < nBlanks) arr.push("");
+                      return arr.slice(0, nBlanks);
+                    })() : [];
+                    const updateBlank = (idx, val) => {
+                      const np = [...subParts]; np[idx] = val;
+                      setQ(q, np.slice(0, nBlanks).join("|"));
+                    };
                     return (
                       <tr key={q} style={{background: isMis?"#fff5f0":T.white}}>
-                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",fontWeight:700,color:isMis?T.danger:T.textSub,verticalAlign:"top"}}>{q}{isSubj&&<span style={{fontSize:9,color:T.textMuted,display:"block"}}>주관식</span>}</td>
+                        <td style={{padding:"4px 4px",border:`1px solid ${T.border}`,textAlign:"center",fontWeight:700,color:isMis?T.danger:T.textSub,verticalAlign:"top"}}>
+                          {displayNum}
+                          {_startNum>1 && <span style={{fontSize:8,color:T.textMuted,display:"block",opacity:.7}}>({q})</span>}
+                          {isSubj&&<span style={{fontSize:9,color:T.textMuted,display:"block"}}>주관식{nBlanks>1?` ${nBlanks}개`:""}</span>}
+                        </td>
                         <td style={{padding:0,border:`1px solid ${T.border}`,verticalAlign:"top"}}>{renderModelCell(g,"#0d8aff")}</td>
                         <td style={{padding:0,border:`1px solid ${T.border}`,verticalAlign:"top"}}>{renderModelCell(p,"#10a37f")}</td>
                         <td style={{padding:0,border:`1px solid ${T.border}`,verticalAlign:"top"}}>{renderModelCell(c,"#ca8a04")}</td>
                         <td style={{padding:"4px",border:`1px solid ${T.border}`,verticalAlign:"top"}}>
-                          {isSubj ? (
+                          {isSubj && nBlanks>1 ? (
+                            <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                              {Array.from({length:nBlanks},(_,bi)=>(
+                                <div key={bi} style={{display:"flex",alignItems:"center",gap:4}}>
+                                  <span style={{fontSize:10,fontWeight:700,color:T.accent,minWidth:18}}>({bi+1})</span>
+                                  <input value={subParts[bi]||""} onChange={e=>updateBlank(bi,e.target.value)} placeholder={`${bi+1}번째 답`} style={{flex:1,padding:"3px 6px",fontSize:12,border:`1.5px solid ${isMis?T.danger:T.border}`,borderRadius:5,fontFamily:"inherit",background:isMis?"#fffbf6":T.white,fontWeight:isMis?700:500,textAlign:"left"}}/>
+                                </div>
+                              ))}
+                            </div>
+                          ) : isSubj ? (
                             <textarea value={finalAns[k]||""} onChange={e=>setQ(q,e.target.value)} placeholder="답 입력 (위 모델 답안 클릭 가능)" rows={Math.max(1,Math.ceil((finalAns[k]||"").length/40))} style={{width:"100%",padding:"4px 6px",fontSize:12,border:`1.5px solid ${isMis?T.danger:T.border}`,borderRadius:6,fontFamily:"inherit",background:isMis?"#fffbf6":T.white,fontWeight:isMis?700:500,textAlign:"left",resize:"vertical",minHeight:28}}/>
                           ) : (
                             <input value={finalAns[k]||""} onChange={e=>setQ(q,e.target.value)} placeholder="1~5" style={{width:"100%",padding:"4px 6px",fontSize:13,border:`1.5px solid ${isMis?T.danger:T.border}`,borderRadius:6,fontFamily:"inherit",background:isMis?"#fffbf6":T.white,fontWeight:isMis?700:500,textAlign:"center"}}/>
@@ -5530,6 +5580,9 @@ export default function App(){
         if(suspAns){if(!confirm(`⚠️ 정답지로 올린 파일 "${suspAns.name}"이 시험지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
         const suspExam=rd.examFiles.find(f=>/(정답|답지|답안|해설|풀이|answer|solution|key)/i.test(f.name));
         if(suspExam){if(!confirm(`⚠️ 시험지로 올린 파일 "${suspExam.name}"이 답지처럼 보입니다.\n시험지·답지를 바꿔 올리신 건 아닌가요?\n그대로 진행하시겠습니까?`))return;}
+        // ★ v23.42 (2026-05-30): 답지 파일명에 키워드 없으면 경고 (실장님 #1 — 검수 모달 PDF 매칭 사고 예방)
+        const noAnsKw=rd.answerFiles.find(f=>!/(answer|정답|답지|key|solution|해설|\bAns\b|_Ans)/i.test(f.name));
+        if(noAnsKw){if(!confirm(`⚠️ 답지 파일 "${noAnsKw.name}" 에 '정답/답지/Ans' 키워드가 없습니다.\n→ 검수 화면에서 시험지 PDF 가 답지 영역에 잘못 표시될 수 있습니다.\n\n파일명에 "정답" 또는 "답지" 추가 권장 (예: "${noAnsKw.name.replace(/\.pdf$/i,"")}_정답.pdf")\n\n그래도 그대로 진행할까요?`))return;}
       }
       setSaving(true);setError("");
       try{
@@ -6255,7 +6308,7 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
                     <span style={{fontSize:11,fontWeight:700,color:T.goldDeep,flexShrink:0,minWidth:80}}>📋 하위 주관식</span>
                     <input type="text" value={rd.subQMap||""} onChange={e=>updateRound(ri,"subQMap",e.target.value)} placeholder="예: 51:3, 67:2  →  51번에 빈칸 3개, 67번에 빈칸 2개" style={{flex:1,minWidth:200,padding:"5px 8px",borderRadius:5,border:`1px solid ${T.goldMuted}`,fontSize:12,background:T.white,fontFamily:"inherit"}}/>
                   </div>
-                  <div style={{fontSize:10,color:T.textMuted,paddingTop:2}}>💡 AI가 답을 "answer1|answer2|answer3" 형태로 추출 → 학생앱이 자동으로 빈칸 N개 표시</div>
+                  <div style={{fontSize:10,color:T.textMuted,paddingTop:2,lineHeight:1.6}}>💡 <b>채움 답지 형식</b> 예: <span style={{background:T.white,padding:"1px 4px",borderRadius:3,color:T.textSub,fontFamily:"monospace"}}>{rd.startNum||1}) [정답] ②</span> · <span style={{background:T.white,padding:"1px 4px",borderRadius:3,color:T.textSub,fontFamily:"monospace"}}>75) [정답] (1) is (2) running</span> → AI가 "is|running" 추출 → 학생앱이 빈칸 N개 자동 표시 · <span style={{color:T.danger,fontWeight:600}}>답지 파일명에 "정답" 또는 "답지" 포함 권장</span></div>
                 </div>
                 <FileUploadMulti label={`시험지${rd.label?" ("+rd.label+")":""}`} files={rd.examFiles} onFilesChange={v=>updateRound(ri,"examFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
                 <FileUploadMulti label={`정답지${rd.label?" ("+rd.label+")":""}`} files={rd.answerFiles} onFilesChange={v=>updateRound(ri,"answerFiles",v)} accept=".pdf,.docx,.doc,.jpg,.jpeg,.png,.hwp,.hwpx"/>
@@ -6450,32 +6503,4 @@ const S={
   textarea:{width:"100%",padding:"11px 14px",fontSize:14,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.bg,color:T.text,fontFamily:"inherit",resize:"vertical",lineHeight:1.5},
   dateInp:{padding:"11px 14px",fontSize:15,borderRadius:10,border:`1.5px solid ${T.border}`,background:T.bg,color:T.text,fontFamily:"inherit",cursor:"pointer"},
   cw:{display:"flex",flexWrap:"wrap",gap:6},
-  ch:{padding:"8px 14px",borderRadius:20,border:"1.5px solid",fontSize:13,cursor:"pointer",fontFamily:"inherit",transition:"all .12s"},
-  chInp:{padding:"8px 14px",borderRadius:20,border:`1.5px solid ${T.border}`,fontSize:13,fontFamily:"inherit",width:80,textAlign:"center"},
-  addRow:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 14px",background:T.goldPale,borderRadius:10,border:`1px solid ${T.goldMuted}`,marginBottom:4},
-  addBtn:{padding:"8px 16px",borderRadius:10,border:"none",background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,color:T.white,fontWeight:700,fontSize:13,cursor:"pointer",fontFamily:"inherit"},
-  tag:{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",borderRadius:20,background:T.accentLight,border:`1px solid ${T.accent}40`,fontSize:13,fontWeight:600,color:T.accent},
-  tagX:{background:"none",border:"none",color:T.danger,fontWeight:700,fontSize:16,cursor:"pointer",padding:0,lineHeight:1},
-  modeCard:{display:"block",width:"100%",background:T.white,borderRadius:14,padding:"24px 20px",marginBottom:12,boxShadow:"0 1px 4px rgba(0,0,0,0.04)",border:`1px solid ${T.borderLight}`,cursor:"pointer",fontFamily:"inherit",textAlign:"center",transition:"all .15s"},
-  btnG:{width:"100%",padding:"14px",fontSize:15,fontWeight:700,color:T.white,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,border:"none",borderRadius:12,cursor:"pointer",fontFamily:"inherit"},
-  btnO:{padding:"12px",fontSize:14,fontWeight:600,color:T.textSub,background:T.white,border:`1.5px solid ${T.border}`,borderRadius:12,cursor:"pointer",fontFamily:"inherit"},
-  uploadBox:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"28px 16px",borderRadius:12,border:`2px dashed ${T.border}`,background:T.bg,cursor:"pointer",transition:"all .2s"},
-  fileCard:{display:"flex",alignItems:"center",padding:"12px 14px",borderRadius:10,background:T.accentLight,border:`1px solid ${T.accent}40`,gap:10},
-  rmBtn:{width:28,height:28,borderRadius:14,border:"none",background:T.dangerLight,color:T.danger,fontSize:14,fontWeight:700,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"},
-  progA:{padding:"10px 14px 4px",background:T.white,borderBottom:`1px solid ${T.borderLight}`},
-  progBg:{height:5,borderRadius:3,background:T.borderLight,overflow:"hidden"},progF:{height:"100%",borderRadius:3,transition:"width .3s,background .3s"},
-  qRow:{display:"flex",alignItems:"center",gap:6,padding:"7px 6px 7px 5px",marginBottom:3,borderRadius:10,transition:"all .12s"},
-  qNum:{flex:"0 0 28px",height:28,borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700},
-  cBtn:{flex:1,height:36,minWidth:0,borderRadius:9,border:"1.5px solid",fontSize:14,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"},
-  sInp:{flex:1,padding:"8px 12px",fontSize:14,borderRadius:9,border:`1.5px solid ${T.border}`,fontFamily:"inherit",background:T.bg},
-  subBar:{position:"fixed",bottom:0,left:"50%",transform:"translateX(-50%)",width:"100%",maxWidth:960,background:T.white,borderTop:`1px solid ${T.border}`,padding:"10px 16px",paddingBottom:"max(10px,env(safe-area-inset-bottom))",display:"flex",alignItems:"center",gap:10,zIndex:200}, /* sub-bar-fix 클래스로 PC 반응형 */
-  subBtn:{padding:"11px 24px",fontSize:15,fontWeight:700,color:T.white,background:`linear-gradient(135deg,${T.gold},${T.goldDark})`,border:"none",borderRadius:10,cursor:"pointer",fontFamily:"inherit"},
-  overlay:{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20},
-  modal:{background:T.white,borderRadius:18,padding:"40px 20px",maxWidth:320,width:"100%",textAlign:"center"},
-  resRow:{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${T.borderLight}`,fontSize:13,color:T.text},
-  sumCard:{background:T.white,borderRadius:12,padding:"12px 8px",border:`1px solid ${T.borderLight}`,textAlign:"center",boxShadow:"0 1px 3px rgba(0,0,0,0.04)"},
-  pill:{padding:"4px 10px",borderRadius:20,background:T.goldPale,color:T.goldDeep,fontWeight:700},
-  pillBlue:{padding:"4px 10px",borderRadius:20,background:T.blueLight,color:T.blue,fontWeight:700},
-  pillGreen:{padding:"4px 10px",borderRadius:20,background:T.accentLight,color:T.accent,fontWeight:700},
-  pillGold:{padding:"4px 10px",borderRadius:20,background:T.goldLight,color:T.goldDark,fontWeight:700},
-};
+  ch:{padding:"8px 14px",borderRadius:20,border:"1.5px solid",fontSize:13,cursor:"pointer"
