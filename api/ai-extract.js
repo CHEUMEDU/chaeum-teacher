@@ -140,8 +140,11 @@ async function callWithRetry(name, fn) {
 
 function buildExtractPrompt(examInfo) {
   const totalQ = parseInt(examInfo.totalQuestions || examInfo.totalQ || 0, 10);
+  // ★ v22.10 (2026-05-30): A안 응급 — 강제 "?" 채우기 지시 제거
+  //   v22.9 사고: "못 찾으면 ? 로 채워서라도 50개" → AI 가 어렵다 싶으면 모든 답 ? 로 도망감 → 50문항 빈칸 사고
+  //   복원: v22.8 의 "참고용" 형태. AI 가 답을 찾도록 유도.
   const totalLine = totalQ > 0
-    ? '- 총 문항수: ' + totalQ + '문제 (★ 정확히 이 개수를 빠짐없이 추출. 못 찾으면 "?" 로 채워서라도 ' + totalQ + '개 만들기)'
+    ? '- 총 문항수: 약 ' + totalQ + '문제 (참고용 — PDF에서 직접 확인하세요)'
     : '- 총 문항수: PDF에서 직접 식별하세요 (1번부터 마지막 번호까지 빠짐없이)';
   // ★ v22.7: 해석/번역 시험 감지 → 한국어 해석만 추출하라고 명시
   const isLoose = String(examInfo.gradingMode || '').toLowerCase() === 'loose';
@@ -274,27 +277,21 @@ async function callClaude(pdfBase64, examInfo) {
       skipped: true
     };
   }
-  // ★ v22.9 (2026-05-30): Claude Sonnet 환각 차단 — temperature 0 + system + prefill 3중 보강
-  //   원인: temperature 미지정 = 기본 1.0 → 답지 OCR 같은 정밀 작업에서 환각 발생
-  //   해결: temp 0 (재현성), system (임무 명확), prefill (JSON 강제)
+  // ★ v22.10 (2026-05-30): A안 응급 — prefill 제거 (Sonnet 응답 잘림 사고 픽스)
+  //   v22.9 prefill 사고: Sonnet 이 prefill 받고 짧게 끝나서 answers 가 빈 객체로 나옴
+  //   해결: prefill 제거. temperature 0 + system 만 유지 (이건 안전).
   const payload = {
     model: 'claude-sonnet-4-5-20250929',
     max_tokens: 8000,
     temperature: 0,
     system: '당신은 시험 답지(정답지) OCR 전문가입니다. PDF 안에 표시된 정답만 그대로 옮겨 JSON 으로 출력하세요. 답을 추측하거나 추론하지 마세요.',
-    messages: [
-      {
-        role: 'user',
-        content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-          { type: 'text', text: buildExtractPrompt(examInfo) }
-        ]
-      },
-      {
-        role: 'assistant',
-        content: '{"startNumber":'
-      }
-    ]
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+        { type: 'text', text: buildExtractPrompt(examInfo) }
+      ]
+    }]
   };
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -321,11 +318,8 @@ async function callClaude(pdfBase64, examInfo) {
   let json;
   try { json = JSON.parse(text); } catch (e) { return { error: 'claude json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
   const blocks = json.content || [];
-  let answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
-  // ★ v22.9: prefill 사용 시 응답이 {"startNumber": 다음부터 시작 → 다시 붙여줌
-  if (!answersText.trim().startsWith('{')) {
-    answersText = '{"startNumber":' + answersText;
-  }
+  const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
+  // ★ v22.10: prefill 제거됨 — 응답 그대로 파싱
   return parseModelOutput('claude', answersText);
 }
 
