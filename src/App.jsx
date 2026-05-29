@@ -3938,6 +3938,19 @@ function ReviewDetailModal({item, sheetsUrl, T, S, onClose, onConfirmed, onDelet
             <button onClick={onClose} style={{...S.btnO,padding:"6px 12px"}}>✕ 닫기</button>
           </div>
         </div>
+        {/* ★ v23.44 (2026-05-30): AI 출처 칩 — Vercel(Sonnet) vs GAS 폴백(Haiku) 즉시 식별 (B안 추가 1) */}
+        {item.aiSource && item.aiSource !== "unknown" && (
+          <div style={{padding:"6px 14px",background:item.aiSource==="vercel"?T.accentLight+"55":"#fff5f0",borderBottom:`1px solid ${T.border}`,display:"flex",alignItems:"center",gap:10,fontSize:11}}>
+            <span style={{fontWeight:700,color:item.aiSource==="vercel"?T.accent:T.danger}}>
+              {item.aiSource==="vercel" ? "⚙️ AI 출처: Vercel · Claude Sonnet 4.5 ✓" : "⚠️ AI 출처: GAS 폴백 · Claude Haiku 4.5 (Vercel API 실패)"}
+            </span>
+            {item.answerDistribution && (
+              <span style={{color:T.textMuted,marginLeft:"auto"}}>
+                객관식 {item.answerDistribution.mcCount}개 · 빈칸 {item.answerDistribution.unknownCount}/{item.answerDistribution.totalAnsCount} ({item.answerDistribution.unknownRatio}%)
+              </span>
+            )}
+          </div>
+        )}
         {/* ★ v23.42 (2026-05-30): 자동 경고 박스 — GAS 가 보낸 autoWarnings 표시 (실장님 피드백 추가 #3) */}
         {Array.isArray(item.autoWarnings) && item.autoWarnings.length > 0 && (
           <div style={{padding:"10px 14px",background:"#fff5f0",borderBottom:`2px solid ${T.danger}`,borderTop:`1px solid ${T.border}`}}>
@@ -5219,7 +5232,14 @@ export default function App(){
                 examType: examInfo.examType || "",
                 totalQuestions: examInfo.totalQuestions || examInfo.totalQ || 0,
                 // ★ v22.7: 채점 모드 전달 (loose=해석/번역 — AI가 한국어 해석만 추출)
-                gradingMode: examInfo.gradingMode || ""
+                gradingMode: examInfo.gradingMode || "",
+                // ★ v23.44 (2026-05-30): 사용자 입력 메타 Vercel 에도 전달 (시작번호/주관식/하위 주관식)
+                //   기존: Vercel 은 이 정보 못 받아서 51번 시험지를 1번부터 매핑 → 답 어긋남 사고
+                //   해결: examInfo 에 명시 추가. Vercel API (v22.9) 가 받아서 프롬프트에 반영.
+                startNumber: examInfo.startNumber || 0,
+                subjMode: examInfo.subjMode || "auto",
+                subjRanges: examInfo.subjRanges || "",
+                subQuestionMap: examInfo.subQuestionMap || ""
               }
             })
           });
