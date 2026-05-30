@@ -5055,7 +5055,8 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
                           {/* 과목·학년·반 */}
                           <div style={{minWidth:0}}>
                             <div style={{fontSize:12,fontWeight:800,color:T.text,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
-                              {subjEmoji} {ex.subject||""} {ex.grade||""} {lvLabel}
+                              {/* ★ v23.45 (2026-05-30): 학년·레벨이 비어있으면 반이름(className)으로 표시 — 업로드기록에 과목/학년 칸이 비어도 "남인천여중반"처럼 식별 가능 */}
+                              {subjEmoji} {(!ex.grade && !lvLabel && (ex.className||"").trim()) ? ex.className : `${ex.subject||""} ${ex.grade||""} ${lvLabel}`.replace(/\s+/g," ").trim()}
                             </div>
                           </div>
                           {/* 선생님 */}
