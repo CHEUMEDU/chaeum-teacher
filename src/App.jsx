@@ -9,6 +9,9 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.41 (2026-05-30): 운영 전 검수 보강
+//   - 주관식 재채점 필요(채점중) 문항은 CSV/PDF/성적표에서 "재채점 필요"로 표시
+//   - 채점중 문항은 영역별 약점/강점 통계에서 제외
 // ★ v23.40 (2026-05-15): base64 인코딩 빈 파일 차단 (4중복 사고 방지)
 //   - fileToBase64 결과의 data 길이가 100 byte 미만이면 즉시 등록 차단
 //   - React state 비동기 미반영 / fileToBase64 실패 케이스 모두 잡힘
@@ -2040,8 +2043,9 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       const subOk = subAll.filter(p=>p.verdict==="정답").length;
       const subPart = subAll.filter(p=>p.verdict==="부분정답").length;
       const subWrong = subAll.filter(p=>p.verdict==="오답").length;
-      const wrongCnt = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답").length;
-      const note = s.score===100 ? "만점" : s.score<70 ? "보충 필요" : wrongCnt===0 ? "양호" : "복습 권장";
+      const subPending = subAll.filter(p=>p.verdict==="채점중").length;
+      const wrongCnt = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답"||p.verdict==="채점중").length;
+      const note = subPending>0 ? "주관식 재채점 필요" : s.score===100 ? "만점" : s.score<70 ? "보충 필요" : wrongCnt===0 ? "양호" : "복습 권장";
       out.push(row(String(s.rank||""), s.name||"?", String(s.score||0), String(objWrongs.length), String(subOk), String(subPart), String(subWrong), note));
     });
     sep();
@@ -2064,11 +2068,12 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     // ★ v23.6: 수정·추가 가이드를 텍스트로 정리해서 별도 컬럼에 포함
     const subStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
     if (subStudents.length>0) {
-      out.push(row("[주관식 검토 (오답·부분점수)]"));
-      out.push(row("학생","문항","점수","정답","학생답","수정·추가 가이드","AI 채점 사유"));
+      out.push(row("[주관식 검토 (오답·부분점수·재채점 필요)]"));
+      out.push(row("학생","문항","점수/상태","정답","학생답","수정·추가 가이드","AI 채점 사유"));
       subStudents.forEach(s=>{
         const w = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
         w.forEach(p=>{
+          const scoreText = p.verdict==="채점중" ? "재채점 필요" : String(p.score||0);
           // 수정·추가 가이드 텍스트 생성 (1) X→Y · 2) Z (추가) 형식)
           let guideTxt = "";
           if (p.correctAns && p.studentAns) {
@@ -2082,7 +2087,7 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
               }).join(" · ");
             } catch(_e) {}
           }
-          out.push(row(s.name||"?", `${p.q})`, String(p.score||0), p.correctAns||"-", p.studentAns||"(빈칸)", guideTxt, p.reasoning||""));
+          out.push(row(s.name||"?", `${p.q})`, scoreText, p.correctAns||"-", p.studentAns||"(빈칸)", guideTxt, p.reasoning||""));
         });
       });
       sep();
@@ -2126,11 +2131,12 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       const objLine = objWrongs.length>0
         ? objWrongs.map(p=>`${p.q}번: ${esc(p.studentAns||"빈칸")}→${esc(p.correctAns||"-")}`).join(", ")
         : "-";
+      const subPending = subAll.filter(p=>p.verdict==="채점중").length;
       const subSummary = subAll.length>0
-        ? `정답 ${subAll.filter(p=>p.verdict==="정답").length} / 부분 ${subAll.filter(p=>p.verdict==="부분정답").length} / 오답 ${subAll.filter(p=>p.verdict==="오답").length}`
+        ? `정답 ${subAll.filter(p=>p.verdict==="정답").length} / 부분 ${subAll.filter(p=>p.verdict==="부분정답").length} / 오답 ${subAll.filter(p=>p.verdict==="오답").length}${subPending>0?` / 재채점 ${subPending}`:""}`
         : "-";
-      const wrongCnt = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답").length;
-      const note = wrongCnt>0 ? `오답·부분 ${wrongCnt}` : "전부 정답";
+      const wrongCnt = (s.perQuestion||[]).filter(p=>p.verdict==="오답"||p.verdict==="부분정답"||p.verdict==="채점중").length;
+      const note = subPending>0 ? `재채점 필요 ${subPending}` : wrongCnt>0 ? `오답·부분 ${wrongCnt}` : "전부 정답";
       lines.push(`<tr><td style="text-align:center">${s.rank}</td><td><b>${esc(s.name||"?")}</b></td><td class="${cls}" style="text-align:center">${s.score}점</td><td class="wrong" style="font-size:10pt">${esc(objLine)}</td><td style="font-size:10pt">${esc(subSummary)}</td><td style="font-size:10pt">${esc(note)}</td></tr>`);
     });
     const subStudents = (c.students||[]).filter(s=>(s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답").length>0);
@@ -2141,7 +2147,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         const subWrongs = (s.perQuestion||[]).filter(p=>p.type==="sub"&&p.verdict!=="정답");
         subWrongs.forEach(p=>{
           const wcls = p.verdict==="오답" ? "wrong" : "";
-          lines.push(`<tr class="sub"><td><b>${esc(s.name||"?")}</b></td><td style="text-align:center">${p.q}번</td><td style="text-align:center" class="${wcls}">${p.score}점</td><td style="font-size:10pt">${esc(p.studentAns||"(빈칸)")}</td><td class="correct" style="font-size:10pt">${esc(p.correctAns||"-")}</td><td style="font-size:9.5pt;color:#5C5C5C">${esc(p.reasoning||"")}</td></tr>`);
+          const scoreLabel = p.verdict==="채점중" ? "재채점 필요" : `${p.score}점`;
+          lines.push(`<tr class="sub"><td><b>${esc(s.name||"?")}</b></td><td style="text-align:center">${p.q}번</td><td style="text-align:center" class="${wcls}">${scoreLabel}</td><td style="font-size:10pt">${esc(p.studentAns||"(빈칸)")}</td><td class="correct" style="font-size:10pt">${esc(p.correctAns||"-")}</td><td style="font-size:9.5pt;color:#5C5C5C">${esc(p.reasoning||"")}</td></tr>`);
         });
       });
     }
@@ -2199,6 +2206,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       const sName = s.name || "?";
       studentCatStats[sName] = {};
       (s.perQuestion||[]).forEach(p => {
+        // ★ v23.41 (2026-05-30): 주관식 재채점 필요 문항은 영역별 정답률에서 제외
+        if (p.verdict === "채점중") return;
         const cat = categories ? (categories[String(p.q)] || categories[p.q]) : null;
         if (!cat || isBadCat(cat)) return;
         if (!classCatStats[cat]) classCatStats[cat] = { correct: 0, total: 0 };
@@ -2270,7 +2279,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       const wrongOnly = (s.perQuestion||[]).filter(p=>p.verdict==="오답");
       const wrongCount = wrongOnly.length || (s.wrongQs||[]).length;
       const partial = (s.perQuestion||[]).filter(p=>p.verdict==="부분정답").length;
-      const note = wrongCount>0 ? `틀린 ${wrongCount}문항${partial>0?` · 부분 ${partial}`:""}` : (partial>0 ? `부분점수 ${partial}개` : "전부 정답");
+      const pending = (s.perQuestion||[]).filter(p=>p.verdict==="채점중").length;
+      const note = pending>0 ? `재채점 필요 ${pending}개${wrongCount>0?` · 틀린 ${wrongCount}`:""}${partial>0?` · 부분 ${partial}`:""}` : wrongCount>0 ? `틀린 ${wrongCount}문항${partial>0?` · 부분 ${partial}`:""}` : (partial>0 ? `부분점수 ${partial}개` : "전부 정답");
       lines.push(`<tr><td style="text-align:center">${s.rank}</td><td>${esc(s.name||"?")}</td><td class="${cls}" style="text-align:center">${s.score}점</td><td style="font-size:10pt">${esc(note)}</td></tr>`);
     });
     lines.push('</tbody></table>');
@@ -2321,8 +2331,9 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
         lines.push(`<div class="student-head">${esc(s.name||"?")} — ${s.score}점</div>`);
         subWrongs.forEach(p=>{
           const isWrong = p.verdict==="오답";
+          const scoreLabel = p.verdict==="채점중" ? "재채점 필요" : `${p.score}점`;
           lines.push(`<div class="q-sub-item${isWrong?" q-sub-wrong":""}">`);
-          lines.push(`<div><span class="q-label">${p.q}번 (주관식, ${p.score}점)</span></div>`);
+          lines.push(`<div><span class="q-label">${p.q}번 (주관식, ${scoreLabel})</span></div>`);
           lines.push(`<div style="margin-top:3pt"><b>학생답:</b> ${esc(p.studentAns||"(빈칸)")}</div>`);
           lines.push(`<div><b>정답:</b> ${esc(p.correctAns||"-")}</div>`);
           if (p.reasoning) lines.push(`<div class="reasoning">💬 ${esc(p.reasoning)}</div>`);
@@ -2754,6 +2765,8 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
     // 영역별 정답률 (약점·강점 자동 산출)
     const catStats = {};
     (s.perQuestion||[]).forEach(p => {
+      // ★ v23.41 (2026-05-30): 아직 재채점이 필요한 주관식은 약점/강점 통계에서 제외
+      if (p.verdict === "채점중") return;
       const cat = categories[String(p.q)] || categories[p.q];
       if (!cat) return;
       if (!catStats[cat]) catStats[cat] = {correct:0,total:0};
@@ -2861,8 +2874,9 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
       lines.push('<h2>📝 주관식 검토 ('+subW.length+'개)</h2>');
       subW.forEach(p=>{
         const isWrong = p.verdict==="오답";
+        const scoreLabel = p.verdict==="채점중" ? "재채점 필요" : `${p.score}점`;
         lines.push(`<div class="sub-block${isWrong?" wrong":""}">`);
-        lines.push(`<div><b>${p.q}번 (주관식, ${p.score}점)</b></div>`);
+        lines.push(`<div><b>${p.q}번 (주관식, ${scoreLabel})</b></div>`);
         lines.push(`<div style="margin-top:5pt"><b>✓ 정답:</b> <span class="sub-correct">${esc(p.correctAns||"-")}</span></div>`);
         // ★ v23.6: 학생답 본문 — 빨간 취소선만 (가독성 우선, add는 가이드 박스에 분리)
         const ops = diffWordsKor(p.correctAns||"", p.studentAns||"");
@@ -2955,10 +2969,11 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
               // ★ v22.9: 재검증된 perQuestion 우선 사용 (옛 wrongQs 무시 — false-positive 방지)
               const showPQ = Array.isArray(s.perQuestion) && s.perQuestion.length>0;
               const partialCount = showPQ ? s.perQuestion.filter(p=>p.verdict==="부분정답").length : 0;
-              const wrongPQ = showPQ ? s.perQuestion.filter(p=>p.verdict==="오답"||p.verdict==="부분정답") : [];
+              const pendingCount = showPQ ? s.perQuestion.filter(p=>p.verdict==="채점중").length : 0;
+              const wrongPQ = showPQ ? s.perQuestion.filter(p=>p.verdict==="오답"||p.verdict==="부분정답"||p.verdict==="채점중") : [];
               const wrongOnly = showPQ ? s.perQuestion.filter(p=>p.verdict==="오답") : [];
               const wrongCountDisp = showPQ ? wrongOnly.length : ((s.wrongQs||[]).length);
-              const has = wrongCountDisp>0;
+              const has = wrongCountDisp>0 || pendingCount>0;
               const expandable = has || (showPQ && wrongPQ.length>0);
               return (
                 <div key={si} style={{background:s.score<LOW_THRESHOLD?T.dangerLight:s.score===100?T.goldPale:T.bg,borderRadius:6,fontSize:12,overflow:"hidden"}}>
@@ -2969,7 +2984,9 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                     {/* ★ v23.3: 학생별 PDF 다운로드 (각 점수 옆) */}
                     <button onClick={(e)=>{e.stopPropagation();downloadStudentPdf(c,s);}} title={`${s.name||"학생"} 개인 성적표 PDF`} style={{padding:"3px 8px",fontSize:10,fontWeight:700,borderRadius:6,border:`1px solid ${T.goldDark}`,background:T.white,color:T.goldDark,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>📄 PDF</button>
                     <span style={{flex:1,color:T.textSub,fontSize:11,textAlign:"right"}}>
-                      {has ? (
+                      {pendingCount>0 ? (
+                        <span style={{color:T.goldDark,fontWeight:600}}>{open?"▼":"▶"} 주관식 재채점 필요 {pendingCount}개{wrongCountDisp>0?` · 틀린 ${wrongCountDisp}`:""}{partialCount>0?` · 부분 ${partialCount}`:""}</span>
+                      ) : has ? (
                         <span style={{color:T.danger,fontWeight:600}}>{open?"▼":"▶"} 틀린 {wrongCountDisp}문항{partialCount>0?` · 부분 ${partialCount}`:""}</span>
                       ) : partialCount>0 ? (
                         <span style={{color:T.goldDark,fontWeight:600}}>{open?"▼":"▶"} 부분점수 {partialCount}개</span>
@@ -3005,12 +3022,13 @@ function StatsTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview}){
                           {/* ★ v22.8: 주관식 — 풀어서 표시 (학생답/정답/AI사유) */}
                           {wrongPQ.filter(p=>p.type==="sub").map((p,pi)=>{
                             const isWrong = p.verdict==="오답";
+                            const isPending = p.verdict==="채점중";
                             const bg = isWrong?"#fff5f5":"#fffaf0";
                             return (
                               <div key={pi} style={{padding:"6px 10px",background:bg,borderRadius:4,marginBottom:4,border:`1px solid ${isWrong?"#ffd0d0":"#ffe7b8"}`}}>
                                 <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3}}>
                                   <span style={{fontWeight:700,color:isWrong?T.danger:T.goldDark,fontSize:12}}>{p.q}번 (주관식)</span>
-                                  <span style={{fontSize:10,fontWeight:700,color:isWrong?T.danger:T.goldDark}}>{p.score}점</span>
+                                  <span style={{fontSize:10,fontWeight:700,color:isWrong?T.danger:T.goldDark}}>{isPending?"재채점 필요":`${p.score}점`}</span>
                                 </div>
                                 <div style={{fontSize:11,color:T.textSub,wordBreak:"break-word"}}>
                                   {/* ★ v23.3: 정답 먼저 + 학생답 diff 표시 */}
@@ -4524,11 +4542,18 @@ function DashboardTab({sheetsUrl, T, S, teacherList, proxyDownload, proxyPreview
         setAnsEditMode(false);
         const regradedN = d.regraded || 0;
         const subjN = d.subjectNeedsAI || 0;
+        const subjInvalidatedN = d.subjectiveRegradeRequired || d.subjectiveInvalidated || 0;
         let msg = "✅ 정답 저장 완료!\n\n";
         if (regradedN > 0) {
           msg += `🎯 객관식 ${regradedN}명 자동 재채점 완료\n`;
           msg += `📡 학생앱도 즉시 새 정답 기준으로 조회됩니다`;
-          if (subjN > 0) msg += `\n📝 주관식 ${subjN}명은 밤 11시 AI 채점에 반영`;
+          if (subjInvalidatedN > 0) {
+            msg += `\n📝 주관식 ${subjInvalidatedN}명은 정답/유형이 바뀌어 재채점이 필요합니다`;
+          } else if (subjN > 0) {
+            msg += `\n📝 기존 주관식 AI 채점상세는 보존되었습니다`;
+          }
+        } else if (subjInvalidatedN > 0) {
+          msg += `📝 주관식 ${subjInvalidatedN}명은 정답/유형이 바뀌어 재채점이 필요합니다`;
         } else {
           msg += `📡 학생앱에 새 정답이 즉시 적용됩니다 (제출자 없음)`;
         }
