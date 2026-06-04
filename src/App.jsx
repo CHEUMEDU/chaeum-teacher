@@ -23,6 +23,8 @@ const AI_EXTRACT_URL = "/api/ai-extract";
 //   - 차단 → 사용자 확인 모달 (드라이브 동기화 지연·실제 누락 둘 다 대응)
 //
 // ★ v23.38 (2026-05-15): Drive 실제 저장 확인 후에만 완료/AI검수 진행
+// v23.41 (2026-06-04) — 직접입력 저장 실패 메시지 노출
+//   - save_answer_key 실패 시 서버 메시지를 화면에 표시해 문항수/권한/업로드 오류 원인 확인 가능
 //   - upload_exam 응답만 믿지 않고 list_folder_files 로 Drive 폴더를 다시 조회
 //   - 기대 파일명이 실제 폴더에 없으면 등록 완료 화면/AI검수 진행 차단
 //   - "만장일치인데 Drive/오늘의 현황에 없음" 증상 차단
@@ -5691,7 +5693,7 @@ export default function App(){
         if(!d||d.result!=="success") throw new Error(`${cls.name} 정답 저장 실패: ${(d&&d.message)||"응답 오류"}`);
       }
       setDone(true);setScreen("done");
-    }catch(e){setError("저장 실패. 다시 시도해주세요.");}
+    }catch(e){setError("저장 실패: " + String(e && e.message ? e.message : e).slice(0,300));}
     setSaving(false);
   };
   // 파일업로드 저장 (차수별)
