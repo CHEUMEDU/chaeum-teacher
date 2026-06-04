@@ -8,18 +8,27 @@
 //   · gpt 결과에 disabled/attempts=0 명시 → GAS 가 Gemini+Claude 2모델 기준으로 판단
 //   · PDF가 정답지가 아니라 시험지로 보이면 answers 를 추측하지 않고 notAnswerKey 오류 반환
 //
+// v22.9 (2026-06-04) — Claude 모델 fallback + 모델 오류 재시도
+//   · 배포 환경변수 ANTHROPIC_MODEL 우선 사용, 실패 시 공식 Sonnet 4/3.7 후보로 재시도
+//   · 잘못된 Claude 모델명 때문에 AI 추출 전체가 PENDING 되는 상황 차단
+//
 // v22.2 (2026-04-28)  — Node Runtime Express-style 로 전환 (작동 복구)
 //   · 이전 (v22.1): Web API (new Response) 사용 → Node Runtime 에서 빈 응답
 //   · 변경: req/res Express-style 로 변환 → 60초 한도 정상 작동
 //   · maxDuration: 60초
 //
 // v22.0  — GPT 완전 제거 (PDF OCR 부정확)
-//   · 활성 모델: Gemini 2.5 Flash + Claude Sonnet 4.5
+//   · 활성 모델: Gemini 2.5 Flash + Claude Sonnet 4/3.7 fallback
 // ============================================================
 
 export const maxDuration = 60;
 
-const VERSION = "v22.8"; // ★ v22.8: GPT disabled 메타 + 시험지 오분류 추측 차단
+const VERSION = "v22.9"; // ★ v22.9: Claude 모델 fallback + 모델 오류 재시도
+const CLAUDE_MODEL_CANDIDATES = [...new Set([
+  process.env.ANTHROPIC_MODEL,
+  'claude-sonnet-4-20250514',
+  'claude-3-7-sonnet-20250219'
+].filter(Boolean))];
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -280,47 +289,60 @@ async function callClaude(pdfBase64, examInfo) {
   // ★ v22.10 (2026-05-30): A안 응급 — prefill 제거 (Sonnet 응답 잘림 사고 픽스)
   //   v22.9 prefill 사고: Sonnet 이 prefill 받고 짧게 끝나서 answers 가 빈 객체로 나옴
   //   해결: prefill 제거. temperature 0 + system 만 유지 (이건 안전).
-  const payload = {
-    model: 'claude-sonnet-4-5-20250929',
-    max_tokens: 8000,
-    temperature: 0,
-    system: '당신은 시험 답지(정답지) OCR 전문가입니다. PDF 안에 표시된 정답만 그대로 옮겨 JSON 으로 출력하세요. 답을 추측하거나 추론하지 마세요.',
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-        { type: 'text', text: buildExtractPrompt(examInfo) }
-      ]
-    }]
-  };
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
-    },
-    body: JSON.stringify(payload)
-  });
-  const text = await r.text();
-  if (!r.ok) {
-    // ★ v22.7: 에러 메시지에서 message 필드 추출해서 사람이 읽기 좋게
-    let detail = '';
-    try {
-      const errJson = JSON.parse(text);
-      detail = (errJson.error && (errJson.error.message || errJson.error.type)) || '';
-    } catch(_e) {}
-    return {
-      error: 'claude HTTP ' + r.status + (detail ? ' — ' + detail.substring(0, 200) : ''),
-      rawHttp: text.substring(0, 800)
+  let lastError = null;
+  for (const modelName of CLAUDE_MODEL_CANDIDATES) {
+    const payload = {
+      model: modelName,
+      max_tokens: 8000,
+      temperature: 0,
+      system: '당신은 시험 답지(정답지) OCR 전문가입니다. PDF 안에 표시된 정답만 그대로 옮겨 JSON 으로 출력하세요. 답을 추측하거나 추론하지 마세요.',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+          { type: 'text', text: buildExtractPrompt(examInfo) }
+        ]
+      }]
     };
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify(payload)
+    });
+    const text = await r.text();
+    if (!r.ok) {
+      // ★ v22.9: 배포 환경변수 모델명이 폐기/오타인 경우 다음 후보로 재시도
+      let detail = '';
+      try {
+        const errJson = JSON.parse(text);
+        detail = (errJson.error && (errJson.error.message || errJson.error.type)) || '';
+      } catch(_e) {}
+      lastError = {
+        error: 'claude HTTP ' + r.status + ' (' + modelName + ')' + (detail ? ' — ' + detail.substring(0, 200) : ''),
+        rawHttp: text.substring(0, 800)
+      };
+      const modelError = /model|not_found|not found|invalid|retired|deprecated/i.test(detail + ' ' + text);
+      if (modelError) continue;
+      return lastError;
+    }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (e) {
+      return { error: 'claude json parse (' + modelName + '): ' + e.message, rawHttp: text.substring(0, 800) };
+    }
+    const blocks = json.content || [];
+    const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
+    // ★ v22.10: prefill 제거됨 — 응답 그대로 파싱
+    const parsed = parseModelOutput('claude', answersText);
+    if (parsed && !parsed.model) parsed.model = modelName;
+    return parsed;
   }
-  let json;
-  try { json = JSON.parse(text); } catch (e) { return { error: 'claude json parse: ' + e.message, rawHttp: text.substring(0, 800) }; }
-  const blocks = json.content || [];
-  const answersText = blocks.filter(b => b.type === 'text').map(b => b.text).join('');
-  // ★ v22.10: prefill 제거됨 — 응답 그대로 파싱
-  return parseModelOutput('claude', answersText);
+  return lastError || { error: 'claude model candidates missing' };
 }
 
 function parseModelOutput(model, raw) {
