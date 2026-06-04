@@ -9,6 +9,9 @@ const SHEETS_URL = "https://script.google.com/macros/s/AKfycbzablzeV_gVdLoUG-Oh4
 // - 다른 도메인이면 절대 URL 입력 (예: "https://your-app.vercel.app/api/ai-extract")
 // - 빈 문자열 ""이면 GAS 호출로 폴백
 const AI_EXTRACT_URL = "/api/ai-extract";
+// ★ v23.42 (2026-06-04): 직접입력 시작번호 표시 보강
+//   - 수동 정답 입력 화면에서도 원본 문항번호(startNumber+i)를 표시
+//   - 저장 정답 키는 기존처럼 1-base 유지하고 startNumber 메타만 함께 저장
 // ★ v23.41 (2026-05-30): 운영 전 검수 보강
 //   - 주관식 재채점 필요(채점중) 문항은 CSV/PDF/성적표에서 "재채점 필요"로 표시
 //   - 채점중 문항은 영역별 약점/강점 통계에서 제외
@@ -6378,14 +6381,16 @@ input:focus,textarea:focus{outline:none;border-color:${T.gold}!important;box-sha
             <span style={{fontWeight:700,color:T.goldDark,fontSize:13}}>{filled}</span><span style={{color:T.textMuted,fontSize:13}}>/{qc}</span>
             <span style={{marginLeft:"auto",fontSize:12,fontWeight:600,color:filled===qc?T.accent:T.textMuted}}>{filled===qc?"✓ 완료":`${qc-filled}문항 남음`}</span>
           </div></div>
-        <div style={{padding:"6px 12px",background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,textAlign:"center"}}>{classes.map(c=>c.name).join(", ")} · {examType}</div>
+        <div style={{padding:"6px 12px",background:T.goldPale,fontSize:12,color:T.goldDeep,fontWeight:600,textAlign:"center"}}>{classes.map(c=>c.name).join(", ")} · {examType}{startNum>1?` · 원본 ${startNum}~${startNum+qc-1}번`:""}</div>
         <div style={{padding:"8px 12px",background:T.accentLight+"55",fontSize:11,color:T.accent,fontWeight:600,textAlign:"center",lineHeight:1.5}}>💡 <b>객관식 복수정답</b>: 2개 이상 버튼 눌러서 선택 · <b>주관식 여러 빈칸</b>: "solve|gathered|announced"처럼 <b>|</b>로 구분 · <b>대체답</b>: "to look/looking"처럼 <b>/</b>로 구분</div>
         <div style={{padding:"8px 10px 100px"}}>
           {Array.from({length:qc},(_,i)=>{const isObj=types[i]==="obj";const sel=answers[i];const fi=_isFilled(sel);
             const selArr=Array.isArray(sel)?sel:(fi&&typeof sel!=="string"?[Number(sel)]:[]);
             const multi=selArr.length>1;
+            const displayNum=startNum>1?startNum+i:i+1;
+            const numBoxW=startNum>1?Math.max(42,String(displayNum).length*8+14):28;
             return(<div key={i} style={{...S.qRow,borderLeft:fi?`3px solid ${isObj?(multi?T.accent:T.gold):T.accent}`:`3px solid transparent`,background:fi?(isObj?(multi?T.accentLight+"66":T.goldPale):T.accentLight+"66"):T.white}}>
-              <div style={{...S.qNum,background:fi?(isObj?(multi?T.accent:T.gold):T.accent):T.borderLight,color:fi?T.white:T.textMuted}}>{i+1}</div>
+              <div style={{...S.qNum,flex:startNum>1?`0 0 ${numBoxW}px`:S.qNum.flex,minWidth:numBoxW,height:startNum>1?34:28,flexDirection:startNum>1?"column":"row",lineHeight:1.05,fontSize:startNum>1?10:11,padding:startNum>1?"2px 3px":0,background:fi?(isObj?(multi?T.accent:T.gold):T.accent):T.borderLight,color:fi?T.white:T.textMuted}}>{displayNum}{startNum>1&&<span style={{fontSize:7,opacity:.72}}>({i+1})</span>}</div>
               <button onClick={()=>hType(i)} style={{padding:"4px 8px",borderRadius:6,fontSize:10,fontWeight:700,border:`1px solid ${isObj?T.border:T.accent}`,cursor:"pointer",fontFamily:"inherit",background:isObj?T.white:T.accentLight,color:isObj?T.textMuted:T.accent,flex:"0 0 auto"}}>{isObj?"객":"주"}</button>
               {isObj?(<div style={{display:"flex",gap:4,flex:1,alignItems:"center"}}>
                 {[1,2,3,4,5].map(v=>{const p=selArr.includes(v);return(<button key={v} onClick={()=>hAns(i,v)} style={{...S.cBtn,background:p?T.goldDark:T.white,color:p?T.white:T.text,borderColor:p?T.goldDark:T.border,fontWeight:p?700:400}}>{v}</button>);})}
